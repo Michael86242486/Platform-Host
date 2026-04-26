@@ -1,0 +1,109 @@
+WEBFORGE AI — MANDATORY TELEGRAM COMMAND LIST
+🔒 RULE
+If any of these commands are missing → your platform is incomplete.
+✅ CORE MANDATORY COMMANDS
+1. /start
+Purpose: Initialize user
+MUST DO:
+Register user (create user_id)
+Show intro + quick commands
+2. /create <prompt>
+Purpose: Create a website
+MUST DO:
+Create job in queue
+Return job_id instantly
+Start pipeline
+Send progress updates
+Return final URL
+3. /edit <site_id> <instruction>
+Purpose: Modify existing site
+MUST DO:
+Load existing project
+Apply AI edit
+Re-run pipeline
+Redeploy
+4. /status <job_id>
+Purpose: Track job
+MUST DO:
+Show:
+status
+progress %
+current step
+5. /preview <site_id>
+Purpose: Preview site
+MUST DO:
+Return:
+live URL
+preview (image or description)
+6. /mysites
+Purpose: List user sites
+MUST DO:
+Show all sites with:
+site_id
+status
+URL
+7. /retry <job_id>
+Purpose: Retry failed job
+MUST DO:
+Restart failed job
+Resume pipeline if possible
+8. /delete <site_id>
+Purpose: Remove site
+MUST DO:
+Delete files
+Remove from database
+Confirm deletion
+⚙️ SYSTEM CONTROL COMMANDS (MANDATORY)
+9. /tasks
+Purpose: Show active jobs
+10. /queue
+Purpose: Show queue status
+🔐 BOT INTEGRATION (MANDATORY FOR PLATFORM VISION)
+11. /hostbot <token>
+Purpose: Connect user Telegram bot
+MUST DO:
+Validate token
+DELETE user message immediately (security)
+Encrypt token
+Store securely
+12. /mybots
+Purpose: List connected bots
+13. /stopbot <bot_username>
+Purpose: Disconnect bot
+⚠️ EXECUTION RULES (STRICT)
+Every command MUST:
+✅ ALWAYS:
+Validate input
+Authenticate user
+Create job (if heavy)
+Return response instantly
+Log activity
+❌ NEVER:
+Run heavy AI directly in Telegram
+Block user waiting for result
+Skip job queue
+🔁 REQUIRED COMMAND FLOW
+Example /create:
+User sends command
+Bot responds immediately:
+Text
+Copy code
+⚙️ Job created: #A1B2C3
+Backend processes job
+Bot sends updates
+Final result sent
+🧠 MINIMUM SYSTEM COVERAGE
+These commands together must cover:
+Website creation ✅
+Editing ✅
+Deployment ✅
+Monitoring ✅
+Hosting control ✅
+Bot integration ✅
+🚀 FINAL CHECKLIST
+Your bot is READY only if:
+[ ] All 13 commands exist
+[ ] All commands use job queue
+[ ] All commands send feedback
+[ ] No command blocks execution
+[ ] Errors handled properly

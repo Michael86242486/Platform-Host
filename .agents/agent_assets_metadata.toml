@@ -1,0 +1,8 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "izilbqYYkQLfnCnczYkux"
+uri = "file://artifacts/webforge/assets/images/icon.png"
+type = "image"
+title = "generated_image"
