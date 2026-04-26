@@ -6,6 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
+export interface HostBotInput {
+  /**
+   * @minLength 20
+   * @maxLength 200
+   */
+  token: string;
 }

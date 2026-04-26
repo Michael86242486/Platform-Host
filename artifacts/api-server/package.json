@@ -10,14 +10,19 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@clerk/express": "^2.1.9",
+    "@types/node-telegram-bot-api": "^0.64.14",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
     "cookie-parser": "^1.4.7",
     "cors": "^2",
     "drizzle-orm": "catalog:",
     "express": "^5",
+    "node-telegram-bot-api": "^0.67.0",
     "pino": "^9",
-    "pino-http": "^10"
+    "pino-http": "^10",
+    "slugify": "^1.6.9",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

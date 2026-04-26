@@ -1,29 +1,209 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: WebForge API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
-    description: Health operations
+  - name: me
+  - name: sites
+  - name: jobs
+  - name: bots
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
-          description: Healthy
+          description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /me:
+    get:
+      operationId: getMe
+      tags: [me]
+      summary: Current authenticated user
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+
+  /sites:
+    get:
+      operationId: listSites
+      tags: [sites]
+      summary: List my sites
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Site"
+    post:
+      operationId: createSite
+      tags: [sites]
+      summary: Create a new site (queues generation)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSiteInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+
+  /sites/{id}:
+    get:
+      operationId: getSite
+      tags: [sites]
+      summary: Get site by id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+    delete:
+      operationId: deleteSite
+      tags: [sites]
+      summary: Delete a site
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted
+
+  /sites/{id}/edit:
+    post:
+      operationId: editSite
+      tags: [sites]
+      summary: Edit site with a new prompt
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EditSiteInput"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+
+  /sites/{id}/retry:
+    post:
+      operationId: retrySite
+      tags: [sites]
+      summary: Retry failed site generation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+
+  /jobs:
+    get:
+      operationId: listJobs
+      tags: [jobs]
+      summary: List my jobs (queue + recent tasks)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Job"
+
+  /bots:
+    get:
+      operationId: listBots
+      tags: [bots]
+      summary: List my Telegram bots
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Bot"
+    post:
+      operationId: hostBot
+      tags: [bots]
+      summary: Register and start hosting a Telegram bot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostBotInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bot"
+
+  /bots/{id}:
+    delete:
+      operationId: stopBot
+      tags: [bots]
+      summary: Stop and remove a Telegram bot
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +211,99 @@ components:
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    Me:
+      type: object
+      properties:
+        id: { type: string }
+        clerkUserId: { type: string }
+        email: { type: string, nullable: true }
+        firstName: { type: string, nullable: true }
+        lastName: { type: string, nullable: true }
+        imageUrl: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+      required: [id, clerkUserId, createdAt]
+
+    Site:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        prompt: { type: string }
+        status:
+          type: string
+          enum: [queued, generating, ready, failed]
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+        previewUrl: { type: string, nullable: true }
+        publicUrl: { type: string, nullable: true }
+        coverColor: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+      required: [id, name, slug, prompt, status, progress, createdAt, updatedAt]
+
+    CreateSiteInput:
+      type: object
+      properties:
+        prompt:
+          type: string
+          minLength: 4
+          maxLength: 1000
+        name:
+          type: string
+          maxLength: 80
+          nullable: true
+      required: [prompt]
+
+    EditSiteInput:
+      type: object
+      properties:
+        prompt:
+          type: string
+          minLength: 4
+          maxLength: 1000
+      required: [prompt]
+
+    Job:
+      type: object
+      properties:
+        id: { type: string }
+        siteId: { type: string }
+        siteName: { type: string }
+        kind:
+          type: string
+          enum: [create, edit, retry]
+        status:
+          type: string
+          enum: [queued, running, done, failed]
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time, nullable: true }
+      required: [id, siteId, siteName, kind, status, progress, createdAt]
+
+    Bot:
+      type: object
+      properties:
+        id: { type: string }
+        username: { type: string, nullable: true }
+        displayName: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [active, stopped, error]
+        lastError: { type: string, nullable: true }
+        tokenPreview: { type: string }
+        createdAt: { type: string, format: date-time }
+      required: [id, status, tokenPreview, createdAt]
+
+    HostBotInput:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 20
+          maxLength: 200
+      required: [token]
