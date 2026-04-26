@@ -707,6 +707,16 @@ export function publicBaseUrl(): string {
   );
 }
 
+export function publicHost(): string {
+  const url = publicBaseUrl();
+  if (!url) return "";
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
 export const telegramBots = new TelegramBotManager();
 
 void usersTable;

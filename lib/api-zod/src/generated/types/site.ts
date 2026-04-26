@@ -5,6 +5,7 @@
  * WebForge API
  * OpenAPI spec version: 0.1.0
  */
+import type { SiteCustomDomainStatus } from "./siteCustomDomainStatus";
 import type { SiteStatus } from "./siteStatus";
 
 export interface Site {
@@ -23,6 +24,12 @@ export interface Site {
   previewUrl?: string | null;
   publicUrl?: string | null;
   coverColor?: string | null;
+  customDomain?: string | null;
+  customDomainStatus?: SiteCustomDomainStatus;
+  customDomainError?: string | null;
+  customDomainTxtName?: string | null;
+  customDomainTxtValue?: string | null;
+  customDomainTarget?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

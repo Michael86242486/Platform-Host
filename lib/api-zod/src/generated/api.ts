@@ -48,6 +48,12 @@ export const ListSitesResponseItem = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
   createdAt: zod.coerce.date(),
   updatedAt: zod.coerce.date(),
 });
@@ -94,6 +100,12 @@ export const GetSiteResponse = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
   createdAt: zod.coerce.date(),
   updatedAt: zod.coerce.date(),
 });
@@ -137,6 +149,12 @@ export const EditSiteResponse = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
   createdAt: zod.coerce.date(),
   updatedAt: zod.coerce.date(),
 });
@@ -166,6 +184,127 @@ export const RetrySiteResponse = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
+});
+
+/**
+ * @summary Attach a custom domain to a site
+ */
+export const SetSiteDomainParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const setSiteDomainBodyDomainMin = 3;
+export const setSiteDomainBodyDomainMax = 253;
+
+export const SetSiteDomainBody = zod.object({
+  domain: zod
+    .string()
+    .min(setSiteDomainBodyDomainMin)
+    .max(setSiteDomainBodyDomainMax),
+});
+
+export const setSiteDomainResponseProgressMin = 0;
+export const setSiteDomainResponseProgressMax = 100;
+
+export const SetSiteDomainResponse = zod.object({
+  id: zod.string(),
+  name: zod.string(),
+  slug: zod.string(),
+  prompt: zod.string(),
+  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  progress: zod
+    .number()
+    .min(setSiteDomainResponseProgressMin)
+    .max(setSiteDomainResponseProgressMax),
+  message: zod.string().nullish(),
+  error: zod.string().nullish(),
+  previewUrl: zod.string().nullish(),
+  publicUrl: zod.string().nullish(),
+  coverColor: zod.string().nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
+});
+
+/**
+ * @summary Detach the custom domain from a site
+ */
+export const RemoveSiteDomainParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const removeSiteDomainResponseProgressMin = 0;
+export const removeSiteDomainResponseProgressMax = 100;
+
+export const RemoveSiteDomainResponse = zod.object({
+  id: zod.string(),
+  name: zod.string(),
+  slug: zod.string(),
+  prompt: zod.string(),
+  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  progress: zod
+    .number()
+    .min(removeSiteDomainResponseProgressMin)
+    .max(removeSiteDomainResponseProgressMax),
+  message: zod.string().nullish(),
+  error: zod.string().nullish(),
+  previewUrl: zod.string().nullish(),
+  publicUrl: zod.string().nullish(),
+  coverColor: zod.string().nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
+});
+
+/**
+ * @summary Verify the custom domain by checking DNS records
+ */
+export const VerifySiteDomainParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const verifySiteDomainResponseProgressMin = 0;
+export const verifySiteDomainResponseProgressMax = 100;
+
+export const VerifySiteDomainResponse = zod.object({
+  id: zod.string(),
+  name: zod.string(),
+  slug: zod.string(),
+  prompt: zod.string(),
+  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  progress: zod
+    .number()
+    .min(verifySiteDomainResponseProgressMin)
+    .max(verifySiteDomainResponseProgressMax),
+  message: zod.string().nullish(),
+  error: zod.string().nullish(),
+  previewUrl: zod.string().nullish(),
+  publicUrl: zod.string().nullish(),
+  coverColor: zod.string().nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
   createdAt: zod.coerce.date(),
   updatedAt: zod.coerce.date(),
 });

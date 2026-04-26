@@ -28,6 +28,16 @@ export const SiteStatus = {
   failed: "failed",
 } as const;
 
+export type SiteCustomDomainStatus =
+  | (typeof SiteCustomDomainStatus)[keyof typeof SiteCustomDomainStatus]
+  | null;
+
+export const SiteCustomDomainStatus = {
+  pending: "pending",
+  verified: "verified",
+  failed: "failed",
+} as const;
+
 export interface Site {
   id: string;
   name: string;
@@ -44,6 +54,12 @@ export interface Site {
   previewUrl?: string | null;
   publicUrl?: string | null;
   coverColor?: string | null;
+  customDomain?: string | null;
+  customDomainStatus?: SiteCustomDomainStatus;
+  customDomainError?: string | null;
+  customDomainTxtName?: string | null;
+  customDomainTxtValue?: string | null;
+  customDomainTarget?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -64,6 +80,14 @@ export interface EditSiteInput {
    * @maxLength 1000
    */
   prompt: string;
+}
+
+export interface SetDomainInput {
+  /**
+   * @minLength 3
+   * @maxLength 253
+   */
+  domain: string;
 }
 
 export type JobKind = (typeof JobKind)[keyof typeof JobKind];

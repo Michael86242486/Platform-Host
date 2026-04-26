@@ -143,6 +143,64 @@ paths:
               schema:
                 $ref: "#/components/schemas/Site"
 
+  /sites/{id}/domain:
+    post:
+      operationId: setSiteDomain
+      tags: [sites]
+      summary: Attach a custom domain to a site
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetDomainInput"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+    delete:
+      operationId: removeSiteDomain
+      tags: [sites]
+      summary: Detach the custom domain from a site
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+
+  /sites/{id}/domain/verify:
+    post:
+      operationId: verifySiteDomain
+      tags: [sites]
+      summary: Verify the custom domain by checking DNS records
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+
   /jobs:
     get:
       operationId: listJobs
@@ -241,6 +299,15 @@ components:
         previewUrl: { type: string, nullable: true }
         publicUrl: { type: string, nullable: true }
         coverColor: { type: string, nullable: true }
+        customDomain: { type: string, nullable: true }
+        customDomainStatus:
+          type: string
+          enum: [pending, verified, failed]
+          nullable: true
+        customDomainError: { type: string, nullable: true }
+        customDomainTxtName: { type: string, nullable: true }
+        customDomainTxtValue: { type: string, nullable: true }
+        customDomainTarget: { type: string, nullable: true }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
       required: [id, name, slug, prompt, status, progress, createdAt, updatedAt]
@@ -266,6 +333,15 @@ components:
           minLength: 4
           maxLength: 1000
       required: [prompt]
+
+    SetDomainInput:
+      type: object
+      properties:
+        domain:
+          type: string
+          minLength: 3
+          maxLength: 253
+      required: [domain]
 
     Job:
       type: object

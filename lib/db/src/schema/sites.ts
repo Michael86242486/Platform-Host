@@ -31,6 +31,12 @@ export const sitesTable = pgTable(
     html: text("html"),
     css: text("css"),
     js: text("js"),
+    customDomain: text("custom_domain").unique(),
+    customDomainStatus: text("custom_domain_status", {
+      enum: ["pending", "verified", "failed"],
+    }),
+    customDomainToken: text("custom_domain_token"),
+    customDomainError: text("custom_domain_error"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -38,7 +44,10 @@ export const sitesTable = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [index("sites_user_id_idx").on(t.userId)],
+  (t) => [
+    index("sites_user_id_idx").on(t.userId),
+    index("sites_custom_domain_idx").on(t.customDomain),
+  ],
 );
 
 export type Site = typeof sitesTable.$inferSelect;

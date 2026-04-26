@@ -16,5 +16,7 @@ export * from "./job";
 export * from "./jobKind";
 export * from "./jobStatus";
 export * from "./me";
+export * from "./setDomainInput";
 export * from "./site";
+export * from "./siteCustomDomainStatus";
 export * from "./siteStatus";

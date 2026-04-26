@@ -14,6 +14,7 @@ import {
   Share,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
@@ -23,7 +24,10 @@ import {
   getGetSiteQueryKey,
   useDeleteSite,
   useGetSite,
+  useRemoveSiteDomain,
   useRetrySite,
+  useSetSiteDomain,
+  useVerifySiteDomain,
   type Site,
 } from "@workspace/api-client-react";
 
@@ -51,6 +55,9 @@ export default function SiteDetailScreen() {
   });
   const retry = useRetrySite();
   const del = useDeleteSite();
+  const setDomain = useSetSiteDomain();
+  const removeDomain = useRemoveSiteDomain();
+  const verifyDomain = useVerifySiteDomain();
 
   const site = siteQuery.data as Site | undefined;
 
@@ -235,6 +242,27 @@ export default function SiteDetailScreen() {
               {site.prompt}
             </Text>
           </Surface>
+
+          <DomainSection
+            site={site}
+            onSet={async (domain) => {
+              await setDomain.mutateAsync({ id: site.id, data: { domain } });
+              await siteQuery.refetch();
+            }}
+            onVerify={async () => {
+              await verifyDomain.mutateAsync({ id: site.id });
+              await siteQuery.refetch();
+            }}
+            onRemove={async () => {
+              await removeDomain.mutateAsync({ id: site.id });
+              await siteQuery.refetch();
+            }}
+            isBusy={
+              setDomain.isPending ||
+              removeDomain.isPending ||
+              verifyDomain.isPending
+            }
+          />
 
           {isWorking ? (
             <Surface padded style={{ marginTop: 16, gap: 10 }}>
@@ -627,5 +655,351 @@ function BlurOverlay({
         )}
       </View>
     </View>
+  );
+}
+
+function DomainSection({
+  site,
+  onSet,
+  onVerify,
+  onRemove,
+  isBusy,
+}: {
+  site: Site;
+  onSet: (domain: string) => Promise<void>;
+  onVerify: () => Promise<void>;
+  onRemove: () => Promise<void>;
+  isBusy: boolean;
+}) {
+  const colors = useColors();
+  const [input, setInput] = React.useState("");
+  const status = site.customDomainStatus;
+
+  const onAttach = async () => {
+    const cleaned = input.trim().toLowerCase().replace(/^https?:\/\//, "");
+    if (cleaned.length < 3) {
+      Alert.alert("Invalid domain", "Enter something like mysite.com");
+      return;
+    }
+    try {
+      await onSet(cleaned);
+      setInput("");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to attach domain";
+      Alert.alert("Couldn't attach", msg);
+    }
+  };
+
+  const onVerifyPress = async () => {
+    try {
+      await onVerify();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Verification failed";
+      Alert.alert("Verification failed", msg);
+    }
+  };
+
+  const onCopyValue = async (value: string) => {
+    await Clipboard.setStringAsync(value);
+    void Haptics.selectionAsync();
+  };
+
+  const statusColor =
+    status === "verified"
+      ? colors.success
+      : status === "failed"
+        ? colors.destructive
+        : colors.primary;
+
+  return (
+    <Surface padded style={{ marginTop: 16, gap: 12 }}>
+      <View
+        style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+      >
+        <Feather name="globe" size={14} color={colors.mutedForeground} />
+        <MonoText
+          style={{
+            color: colors.mutedForeground,
+            fontSize: 11,
+            letterSpacing: 1.4,
+            textTransform: "uppercase",
+          }}
+        >
+          Custom domain
+        </MonoText>
+      </View>
+
+      {site.customDomain ? (
+        <>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            <Text
+              style={{
+                color: colors.foreground,
+                fontFamily: "Inter_700Bold",
+                fontSize: 18,
+                letterSpacing: -0.4,
+              }}
+            >
+              {site.customDomain}
+            </Text>
+            <View
+              style={{
+                paddingHorizontal: 8,
+                paddingVertical: 3,
+                borderRadius: 999,
+                borderWidth: 1,
+                borderColor: `${statusColor}77`,
+              }}
+            >
+              <MonoText
+                style={{
+                  color: statusColor,
+                  fontSize: 10,
+                  letterSpacing: 1.4,
+                  fontWeight: "700",
+                }}
+              >
+                ● {(status ?? "pending").toUpperCase()}
+              </MonoText>
+            </View>
+          </View>
+
+          {status !== "verified" ? (
+            <View style={{ gap: 10 }}>
+              <Text
+                style={{
+                  color: colors.mutedForeground,
+                  fontSize: 13,
+                  lineHeight: 19,
+                }}
+              >
+                Add these DNS records at your registrar, then tap{" "}
+                <Text style={{ color: colors.foreground, fontWeight: "700" }}>
+                  Verify
+                </Text>
+                .
+              </Text>
+
+              <DnsRow
+                label="CNAME"
+                name={site.customDomain}
+                value={site.customDomainTarget ?? ""}
+                onCopy={() => onCopyValue(site.customDomainTarget ?? "")}
+              />
+              <DnsRow
+                label="TXT"
+                name={site.customDomainTxtName ?? ""}
+                value={site.customDomainTxtValue ?? ""}
+                onCopy={() => onCopyValue(site.customDomainTxtValue ?? "")}
+              />
+
+              {site.customDomainError ? (
+                <MonoText
+                  style={{
+                    color: colors.destructive,
+                    fontSize: 12,
+                  }}
+                >
+                  {site.customDomainError}
+                </MonoText>
+              ) : null}
+            </View>
+          ) : (
+            <Text
+              style={{
+                color: colors.mutedForeground,
+                fontSize: 13,
+                lineHeight: 19,
+              }}
+            >
+              Live at{" "}
+              <Text style={{ color: colors.primary, fontWeight: "700" }}>
+                https://{site.customDomain}
+              </Text>
+            </Text>
+          )}
+
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
+            {status !== "verified" ? (
+              <NeonButton
+                title={isBusy ? "Verifying…" : "Verify domain"}
+                onPress={onVerifyPress}
+                icon={
+                  <Feather name="check" size={16} color={colors.primaryForeground} />
+                }
+              />
+            ) : null}
+            <Pressable
+              onPress={() => {
+                Alert.alert("Remove domain?", `Detach ${site.customDomain}?`, [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Remove",
+                    style: "destructive",
+                    onPress: () => {
+                      void onRemove();
+                    },
+                  },
+                ]);
+              }}
+              style={({ pressed }) => ({
+                paddingHorizontal: 14,
+                paddingVertical: 10,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: colors.border,
+                backgroundColor: colors.cardElevated,
+                opacity: pressed ? 0.7 : 1,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+              })}
+            >
+              <Feather name="x" size={14} color={colors.mutedForeground} />
+              <Text
+                style={{
+                  color: colors.mutedForeground,
+                  fontSize: 13,
+                  fontWeight: "600",
+                }}
+              >
+                Remove
+              </Text>
+            </Pressable>
+          </View>
+        </>
+      ) : (
+        <>
+          <Text
+            style={{
+              color: colors.mutedForeground,
+              fontSize: 13,
+              lineHeight: 19,
+            }}
+          >
+            Host this site on your own domain. Point a CNAME at our edge and add
+            a TXT record to prove ownership.
+          </Text>
+          <View
+            style={{
+              flexDirection: "row",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            <View
+              style={{
+                flex: 1,
+                borderWidth: 1,
+                borderColor: colors.border,
+                borderRadius: 10,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                backgroundColor: colors.cardElevated,
+              }}
+            >
+              <MonoTextInput
+                value={input}
+                onChangeText={setInput}
+                placeholder="mysite.com"
+              />
+            </View>
+            <NeonButton
+              title={isBusy ? "Adding…" : "Attach"}
+              onPress={onAttach}
+              icon={<Feather name="link" size={16} color={colors.primaryForeground} />}
+            />
+          </View>
+        </>
+      )}
+    </Surface>
+  );
+}
+
+function DnsRow({
+  label,
+  name,
+  value,
+  onCopy,
+}: {
+  label: string;
+  name: string;
+  value: string;
+  onCopy: () => void;
+}) {
+  const colors = useColors();
+  return (
+    <View
+      style={{
+        borderWidth: 1,
+        borderColor: colors.border,
+        borderRadius: 10,
+        padding: 10,
+        backgroundColor: colors.cardElevated,
+        gap: 4,
+      }}
+    >
+      <View
+        style={{ flexDirection: "row", justifyContent: "space-between" }}
+      >
+        <MonoText
+          style={{
+            color: colors.primary,
+            fontSize: 10,
+            letterSpacing: 1.6,
+            fontWeight: "700",
+          }}
+        >
+          {label}
+        </MonoText>
+        <Pressable onPress={onCopy} hitSlop={8}>
+          <Feather name="copy" size={12} color={colors.mutedForeground} />
+        </Pressable>
+      </View>
+      <MonoText
+        numberOfLines={1}
+        style={{ color: colors.mutedForeground, fontSize: 11 }}
+      >
+        Name: <Text style={{ color: colors.foreground }}>{name}</Text>
+      </MonoText>
+      <MonoText
+        numberOfLines={1}
+        style={{ color: colors.mutedForeground, fontSize: 11 }}
+      >
+        Value: <Text style={{ color: colors.foreground }}>{value}</Text>
+      </MonoText>
+    </View>
+  );
+}
+
+function MonoTextInput(props: {
+  value: string;
+  onChangeText: (s: string) => void;
+  placeholder?: string;
+}) {
+  const colors = useColors();
+  return (
+    <TextInput
+      value={props.value}
+      onChangeText={props.onChangeText}
+      placeholder={props.placeholder}
+      placeholderTextColor={colors.mutedForeground}
+      autoCapitalize="none"
+      autoCorrect={false}
+      keyboardType="url"
+      style={{
+        color: colors.foreground,
+        fontFamily: "JetBrainsMono_400Regular",
+        fontSize: 14,
+        padding: 0,
+      }}
+    />
   );
 }

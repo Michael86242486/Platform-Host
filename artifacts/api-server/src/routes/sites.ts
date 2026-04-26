@@ -1,3 +1,6 @@
+import crypto from "node:crypto";
+import dns from "node:dns/promises";
+
 import { Router, type IRouter } from "express";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -6,7 +9,7 @@ import { requireAuth } from "../middlewares/auth";
 import { db, jobsTable, sitesTable, type Site } from "../lib/db";
 import { jobQueue } from "../lib/queue";
 import { inferSiteName, uniqueSlug } from "../lib/slug";
-import { publicBaseUrl } from "../lib/telegram";
+import { publicBaseUrl, publicHost } from "../lib/telegram";
 
 const router: IRouter = Router();
 
@@ -19,9 +22,25 @@ const editSchema = z.object({
   prompt: z.string().min(4).max(1000),
 });
 
+const DOMAIN_RE = /^(?!-)[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})+$/i;
+
+const setDomainSchema = z.object({
+  domain: z
+    .string()
+    .min(3)
+    .max(253)
+    .transform((s) => s.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, ""))
+    .refine((s) => DOMAIN_RE.test(s), { message: "invalid_domain" }),
+});
+
 function siteToDto(site: Site) {
   const baseUrl = publicBaseUrl();
-  const url = baseUrl ? `${baseUrl}/api/hosted/${site.slug}` : null;
+  const slugUrl = baseUrl ? `${baseUrl}/api/hosted/${site.slug}` : null;
+  const customDomainVerified =
+    site.customDomain && site.customDomainStatus === "verified";
+  const publicUrl = customDomainVerified
+    ? `https://${site.customDomain}`
+    : slugUrl;
   return {
     id: site.id,
     name: site.name,
@@ -32,8 +51,18 @@ function siteToDto(site: Site) {
     message: site.message,
     error: site.error,
     coverColor: site.coverColor,
-    previewUrl: url,
-    publicUrl: url,
+    previewUrl: slugUrl,
+    publicUrl,
+    customDomain: site.customDomain,
+    customDomainStatus: site.customDomainStatus,
+    customDomainError: site.customDomainError,
+    customDomainTxtName: site.customDomain
+      ? `_webforge.${site.customDomain}`
+      : null,
+    customDomainTxtValue: site.customDomainToken
+      ? `webforge-verify=${site.customDomainToken}`
+      : null,
+    customDomainTarget: publicHost(),
     createdAt: site.createdAt.toISOString(),
     updatedAt: site.updatedAt.toISOString(),
   };
@@ -201,6 +230,138 @@ router.post("/sites/:id/retry", requireAuth, async (req, res) => {
     .from(sitesTable)
     .where(eq(sitesTable.id, site.id))
     .limit(1);
+  res.json(siteToDto(updated));
+});
+
+router.post("/sites/:id/domain", requireAuth, async (req, res) => {
+  const parsed = setDomainSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res
+      .status(400)
+      .json({ error: "invalid_input", issues: parsed.error.issues });
+    return;
+  }
+  const domain = parsed.data.domain;
+  const targetHost = publicHost();
+  if (
+    targetHost &&
+    (domain === targetHost ||
+      domain.endsWith(".replit.dev") ||
+      domain.endsWith(".replit.app") ||
+      domain.endsWith(".picard.replit.dev"))
+  ) {
+    res.status(400).json({ error: "domain_not_allowed" });
+    return;
+  }
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  const conflict = await db
+    .select({ id: sitesTable.id })
+    .from(sitesTable)
+    .where(eq(sitesTable.customDomain, domain))
+    .limit(1);
+  if (conflict.length > 0 && conflict[0].id !== site.id) {
+    res.status(409).json({ error: "domain_in_use" });
+    return;
+  }
+  const token = crypto.randomBytes(16).toString("hex");
+  const [updated] = await db
+    .update(sitesTable)
+    .set({
+      customDomain: domain,
+      customDomainStatus: "pending",
+      customDomainToken: token,
+      customDomainError: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(sitesTable.id, site.id))
+    .returning();
+  res.json(siteToDto(updated));
+});
+
+router.delete("/sites/:id/domain", requireAuth, async (req, res) => {
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  const [updated] = await db
+    .update(sitesTable)
+    .set({
+      customDomain: null,
+      customDomainStatus: null,
+      customDomainToken: null,
+      customDomainError: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(sitesTable.id, site.id))
+    .returning();
+  res.json(siteToDto(updated));
+});
+
+router.post("/sites/:id/domain/verify", requireAuth, async (req, res) => {
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  if (!site.customDomain || !site.customDomainToken) {
+    res.status(400).json({ error: "no_domain" });
+    return;
+  }
+  const txtName = `_webforge.${site.customDomain}`;
+  const expected = `webforge-verify=${site.customDomainToken}`;
+  let verified = false;
+  let lastError: string | null = null;
+  try {
+    const records = await dns.resolveTxt(txtName);
+    const flat = records.map((chunks) => chunks.join(""));
+    verified = flat.includes(expected);
+    if (!verified) {
+      lastError = `TXT record not found at ${txtName}. Expected "${expected}".`;
+    }
+  } catch (err) {
+    lastError = err instanceof Error ? err.message : "DNS lookup failed";
+  }
+  const [updated] = await db
+    .update(sitesTable)
+    .set({
+      customDomainStatus: verified ? "verified" : "failed",
+      customDomainError: verified ? null : lastError,
+      updatedAt: new Date(),
+    })
+    .where(eq(sitesTable.id, site.id))
+    .returning();
   res.json(siteToDto(updated));
 });
 

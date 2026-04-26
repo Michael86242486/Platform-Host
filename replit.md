@@ -57,6 +57,16 @@ Other routes:
 - `GET /api/sites` / `GET /api/sites/:id` / `DELETE /api/sites/:id`.
 - `POST /api/sites/:id/edit` — re-runs generation with new instructions.
 - `POST /api/sites/:id/retry` — retries a failed build.
+- `POST /api/sites/:id/domain { domain }` — attach a custom domain (CNAME +
+  TXT verification). Issues a verification token.
+- `POST /api/sites/:id/domain/verify` — looks up `_webforge.{domain}` TXT and
+  flips the site to `verified` if `webforge-verify=<token>` is present.
+- `DELETE /api/sites/:id/domain` — detach the domain.
+
+When a request hits the api-server with a `Host` that matches a verified
+custom domain (see `middlewares/customDomain.ts`), the request bypasses Clerk
+and is served the site's HTML directly. Unverified domains get a friendly
+"verify in the app" page.
 - `GET /api/jobs` — recent build jobs across the user's sites.
 - `GET/POST/DELETE /api/bots` — host, list, stop hosted Telegram bots.
 

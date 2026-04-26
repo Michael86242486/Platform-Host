@@ -24,6 +24,7 @@ import type {
   HostBotInput,
   Job,
   Me,
+  SetDomainInput,
   Site,
 } from "./api.schemas";
 
@@ -655,6 +656,261 @@ export const useRetrySite = <
   TContext
 > => {
   return useMutation(getRetrySiteMutationOptions(options));
+};
+
+/**
+ * @summary Attach a custom domain to a site
+ */
+export const getSetSiteDomainUrl = (id: string) => {
+  return `/api/sites/${id}/domain`;
+};
+
+export const setSiteDomain = async (
+  id: string,
+  setDomainInput: SetDomainInput,
+  options?: RequestInit,
+): Promise<Site> => {
+  return customFetch<Site>(getSetSiteDomainUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(setDomainInput),
+  });
+};
+
+export const getSetSiteDomainMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setSiteDomain>>,
+    TError,
+    { id: string; data: BodyType<SetDomainInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof setSiteDomain>>,
+  TError,
+  { id: string; data: BodyType<SetDomainInput> },
+  TContext
+> => {
+  const mutationKey = ["setSiteDomain"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof setSiteDomain>>,
+    { id: string; data: BodyType<SetDomainInput> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return setSiteDomain(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SetSiteDomainMutationResult = NonNullable<
+  Awaited<ReturnType<typeof setSiteDomain>>
+>;
+export type SetSiteDomainMutationBody = BodyType<SetDomainInput>;
+export type SetSiteDomainMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Attach a custom domain to a site
+ */
+export const useSetSiteDomain = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setSiteDomain>>,
+    TError,
+    { id: string; data: BodyType<SetDomainInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof setSiteDomain>>,
+  TError,
+  { id: string; data: BodyType<SetDomainInput> },
+  TContext
+> => {
+  return useMutation(getSetSiteDomainMutationOptions(options));
+};
+
+/**
+ * @summary Detach the custom domain from a site
+ */
+export const getRemoveSiteDomainUrl = (id: string) => {
+  return `/api/sites/${id}/domain`;
+};
+
+export const removeSiteDomain = async (
+  id: string,
+  options?: RequestInit,
+): Promise<Site> => {
+  return customFetch<Site>(getRemoveSiteDomainUrl(id), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getRemoveSiteDomainMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removeSiteDomain>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof removeSiteDomain>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  const mutationKey = ["removeSiteDomain"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof removeSiteDomain>>,
+    { id: string }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return removeSiteDomain(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RemoveSiteDomainMutationResult = NonNullable<
+  Awaited<ReturnType<typeof removeSiteDomain>>
+>;
+
+export type RemoveSiteDomainMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Detach the custom domain from a site
+ */
+export const useRemoveSiteDomain = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removeSiteDomain>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof removeSiteDomain>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  return useMutation(getRemoveSiteDomainMutationOptions(options));
+};
+
+/**
+ * @summary Verify the custom domain by checking DNS records
+ */
+export const getVerifySiteDomainUrl = (id: string) => {
+  return `/api/sites/${id}/domain/verify`;
+};
+
+export const verifySiteDomain = async (
+  id: string,
+  options?: RequestInit,
+): Promise<Site> => {
+  return customFetch<Site>(getVerifySiteDomainUrl(id), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getVerifySiteDomainMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof verifySiteDomain>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof verifySiteDomain>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  const mutationKey = ["verifySiteDomain"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof verifySiteDomain>>,
+    { id: string }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return verifySiteDomain(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type VerifySiteDomainMutationResult = NonNullable<
+  Awaited<ReturnType<typeof verifySiteDomain>>
+>;
+
+export type VerifySiteDomainMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Verify the custom domain by checking DNS records
+ */
+export const useVerifySiteDomain = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof verifySiteDomain>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof verifySiteDomain>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  return useMutation(getVerifySiteDomainMutationOptions(options));
 };
 
 /**
