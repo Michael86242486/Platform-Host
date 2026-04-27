@@ -607,8 +607,9 @@ router.get("/hosted/:slug/", async (req, res) => {
   await serveSiteFile(req.params.slug, "index.html", res);
 });
 
-router.get("/hosted/:slug/*", async (req, res) => {
-  const wildcard = (req.params as unknown as { 0?: string | string[] })[0];
+router.get("/hosted/:slug/*splat", async (req, res) => {
+  const wildcard = (req.params as unknown as { splat?: string | string[] })
+    .splat;
   const sub = Array.isArray(wildcard)
     ? wildcard.join("/")
     : (wildcard ?? "index.html");
