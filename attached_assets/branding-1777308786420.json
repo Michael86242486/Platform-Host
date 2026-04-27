@@ -1,0 +1,158 @@
+{
+  "colorScheme": "light",
+  "fonts": [
+    {
+      "family": "Manrope",
+      "role": "body"
+    },
+    {
+      "family": "Arial",
+      "role": "body"
+    },
+    {
+      "family": "Helvetica",
+      "role": "body"
+    },
+    {
+      "family": "Open Sans",
+      "role": "body"
+    },
+    {
+      "family": "Roboto",
+      "role": "body"
+    }
+  ],
+  "colors": {
+    "primary": "#0C29AB",
+    "secondary": "#0000EA",
+    "accent": "#0C29AB",
+    "background": "#FFFFFF",
+    "textPrimary": "#000000",
+    "link": "#051043"
+  },
+  "typography": {
+    "fontFamilies": {
+      "primary": "Manrope",
+      "heading": "Manrope"
+    },
+    "fontStacks": {
+      "heading": [
+        "Manrope"
+      ],
+      "body": [
+        "Helvetica",
+        "Arial",
+        "sans-serif"
+      ],
+      "paragraph": [
+        "Helvetica",
+        "Arial",
+        "sans-serif"
+      ]
+    },
+    "fontSizes": {
+      "h1": "16px",
+      "h2": "51px",
+      "body": "16px"
+    }
+  },
+  "spacing": {
+    "baseUnit": 4,
+    "borderRadius": "8px"
+  },
+  "components": {
+    "input": {
+      "background": "transparent",
+      "textColor": "#1A1A1A",
+      "borderColor": null,
+      "borderRadius": "0px",
+      "borderRadiusCorners": {
+        "topLeft": "0px",
+        "topRight": "0px",
+        "bottomRight": "0px",
+        "bottomLeft": "0px"
+      },
+      "shadow": "none"
+    },
+    "buttonPrimary": {
+      "background": "#0C29AB",
+      "textColor": "#FFFFFF",
+      "borderRadius": "100px",
+      "borderRadiusCorners": {
+        "topLeft": "100px",
+        "topRight": "100px",
+        "bottomRight": "100px",
+        "bottomLeft": "100px"
+      },
+      "shadow": "none"
+    },
+    "buttonSecondary": {
+      "background": "transparent",
+      "textColor": "#0C29AB",
+      "borderColor": "#0C29AB",
+      "borderRadius": "100px",
+      "borderRadiusCorners": {
+        "topLeft": "100px",
+        "topRight": "100px",
+        "bottomRight": "100px",
+        "bottomLeft": "100px"
+      },
+      "shadow": "none"
+    }
+  },
+  "images": {
+    "logo": "File saved at: attached_assets/logo.png",
+    "favicon": "File saved at: attached_assets/favicon.png",
+    "ogImage": "File saved at: attached_assets/ogImage.png",
+    "logoAlt": "Bubble logo"
+  },
+  "__llm_logo_reasoning": {
+    "selectedIndex": 15,
+    "reasoning": "Selected #15 because it is the only candidate with 'Bubble logo' in the alt text, matching the brand name, and is visible with a medium size.",
+    "confidence": 0.85,
+    "source": "llm"
+  },
+  "__llm_button_reasoning": {
+    "primary": {
+      "index": 2,
+      "text": "Get started for free",
+      "reasoning": "Button #1 ('Get started for free') uses the brand's vibrant blue color (#0C29AB) and has strong CTA text, making it the primary call-to-action."
+    },
+    "secondary": {
+      "index": 6,
+      "text": "Explore design",
+      "reasoning": "Button #4 ('Explore design') has a transparent background with a blue border, making it a suitable secondary button as it contrasts with the primary button's filled background."
+    },
+    "confidence": 0.95
+  },
+  "personality": {
+    "tone": "modern",
+    "energy": "high",
+    "targetAudience": "entrepreneurs and developers"
+  },
+  "designSystem": {
+    "framework": "custom",
+    "componentLibrary": ""
+  },
+  "confidence": {
+    "buttons": 0.95,
+    "colors": 0.9,
+    "overall": 0.925
+  },
+  "__llm_metadata": {
+    "logoSelection": {
+      "llmCalled": true,
+      "llmSucceeded": true,
+      "finalSource": "llm",
+      "rawLogoSelection": {
+        "selectedLogoIndex": 15,
+        "selectedLogoReasoning": "Selected #15 because it is the only candidate with 'Bubble logo' in the alt text, matching the brand name, and is visible with a medium size.",
+        "confidence": 0.85
+      }
+    },
+    "buttonClassification": {
+      "llmCalled": true,
+      "llmSucceeded": true
+    }
+  }
+}

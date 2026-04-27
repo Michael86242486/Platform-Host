@@ -8,22 +8,28 @@ import {
   type Job,
   type SitePlan,
 } from "./db";
+import { buildPlan, analyzeProject } from "./generator";
 import {
-  BUILD_STAGES,
-  analyzeProject,
-  buildPlan,
-  buildProject,
-} from "./generator";
+  analyzeProjectAI,
+  buildProjectAI,
+  editProjectAI,
+} from "./llm-generator";
 import { logger } from "./logger";
 
 const MAX_CONCURRENCY = 3;
+
 const ANALYSIS_STAGES: { progress: number; label: string; ms: number }[] = [
-  { progress: 8, label: "Reading prompt", ms: 700 },
-  { progress: 22, label: "Classifying project type", ms: 900 },
-  { progress: 40, label: "Extracting features", ms: 900 },
-  { progress: 58, label: "Outlining pages", ms: 900 },
-  { progress: 78, label: "Choosing palette & mood", ms: 800 },
-  { progress: 95, label: "Drafting plan", ms: 700 },
+  { progress: 12, label: "Reading your prompt", ms: 250 },
+  { progress: 28, label: "Classifying project", ms: 250 },
+  { progress: 50, label: "Drafting structure", ms: 250 },
+  { progress: 75, label: "Choosing palette + mood", ms: 250 },
+];
+
+const BUILD_STAGES: { progress: number; label: string; ms: number }[] = [
+  { progress: 8, label: "Planning architecture", ms: 250 },
+  { progress: 22, label: "Wireframing pages", ms: 250 },
+  { progress: 38, label: "Composing layouts", ms: 250 },
+  { progress: 55, label: "Writing components", ms: 250 },
 ];
 
 class JobQueue {
@@ -133,6 +139,9 @@ class JobQueue {
       { stage: 0 },
     );
 
+    // Kick off the AI call in parallel with cosmetic progress stages.
+    const analysisPromise = analyzeProjectAI(prompt, name);
+
     for (const stage of ANALYSIS_STAGES) {
       await sleep(stage.ms);
       await db
@@ -152,7 +161,7 @@ class JobQueue {
       });
     }
 
-    const analysis = analyzeProject(prompt, name);
+    const analysis = await analysisPromise;
     const plan = buildPlan(analysis);
 
     await db
@@ -210,7 +219,8 @@ class JobQueue {
 
     let plan = site.plan;
     if (!plan) {
-      const analysis = site.analysis ?? analyzeProject(site.prompt, site.name);
+      const analysis =
+        site.analysis ?? (await analyzeProjectAI(site.prompt, site.name));
       plan = buildPlan(analysis);
       await db
         .update(sitesTable)
@@ -242,6 +252,17 @@ class JobQueue {
       null,
     );
 
+    const isEdit = job.kind === "edit" && !!job.instructions;
+
+    // Start the AI build in parallel with the cosmetic progress stages.
+    const buildPromise: Promise<{
+      files: Record<string, string>;
+      coverColor: string;
+      name: string;
+    }> = isEdit && site.files
+      ? editProjectAI(site.files, site.name, job.instructions!)
+      : buildProjectAI(plan, site.name, site.prompt);
+
     for (const stage of BUILD_STAGES) {
       await sleep(stage.ms);
       await db
@@ -265,11 +286,21 @@ class JobQueue {
       );
     }
 
-    const planForBuild: SitePlan =
-      job.kind === "edit" && job.instructions
-        ? applyEditToPlan(plan, job.instructions)
-        : plan;
-    const out = buildProject(planForBuild, site.name);
+    let out;
+    try {
+      out = await buildPromise;
+    } catch (err) {
+      // edit failures fall back to nothing - rethrow so failJob handles it
+      throw err;
+    }
+
+    const planForBuild: SitePlan = isEdit
+      ? {
+          ...plan,
+          notes: [...plan.notes, `Edit applied: ${job.instructions}`],
+          summary: `${plan.summary} Edit: ${job.instructions}`,
+        }
+      : plan;
 
     await db
       .update(sitesTable)
@@ -325,14 +356,6 @@ class JobQueue {
   }
 }
 
-function applyEditToPlan(plan: SitePlan, instructions: string): SitePlan {
-  return {
-    ...plan,
-    notes: [...plan.notes, `Edit applied: ${instructions}`],
-    summary: `${plan.summary} Edit: ${instructions}`,
-  };
-}
-
 function planSummary(plan: SitePlan): string {
   const lines: string[] = [];
   lines.push(`Plan: ${plan.summary}`);
@@ -379,4 +402,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Re-export so callers (telegram.ts) that imported BUILD_STAGES still work.
+export { BUILD_STAGES };
+// Keep the legacy synchronous fallback exported for any consumer.
+export { analyzeProject };
 export const jobQueue = new JobQueue();

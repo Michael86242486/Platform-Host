@@ -1,6 +1,8 @@
 import TelegramBot from "node-telegram-bot-api";
 import { and, desc, eq } from "drizzle-orm";
 
+import { openai } from "@workspace/integrations-openai-ai-server";
+
 import {
   db,
   jobsTable,
@@ -9,6 +11,7 @@ import {
   telegramBotsTable,
   usersTable,
   type TelegramBot as DbBot,
+  type Site,
 } from "./db";
 import { jobQueue } from "./queue";
 import { logger } from "./logger";
@@ -228,7 +231,15 @@ class TelegramBotManager {
       const text = msg.text?.trim();
       if (!text || text.startsWith("/")) return;
       const state = this.state.get(String(msg.chat.id));
-      if (!state?.awaiting) return;
+      if (!state?.awaiting) {
+        // No pending state — interpret with LLM and route.
+        await this.handleFreeText(ownerUserId, bot, msg.chat.id, text).catch(
+          (err) => {
+            logger.warn({ err }, "free-text route failed");
+          },
+        );
+        return;
+      }
 
       switch (state.awaiting.kind) {
         case "create":
@@ -332,6 +343,155 @@ class TelegramBotManager {
   }
   private clearState(chatId: number | string): void {
     this.state.delete(String(chatId));
+  }
+
+  /**
+   * Free-text router — used when the user sends a non-command message and
+   * has no pending state. We ask the LLM to classify intent against the
+   * user's existing sites and dispatch.
+   */
+  private async handleFreeText(
+    userId: string,
+    bot: TelegramBot,
+    chatId: number,
+    text: string,
+  ): Promise<void> {
+    const sites = await db
+      .select()
+      .from(sitesTable)
+      .where(eq(sitesTable.userId, userId))
+      .orderBy(desc(sitesTable.updatedAt))
+      .limit(10);
+
+    const intent = await this.classifyIntent(text, sites);
+    logger.info({ intent, text }, "telegram free-text intent");
+
+    if (intent.action === "create") {
+      await bot.sendMessage(
+        chatId,
+        intent.reply ?? "🔨 Let's forge something. Starting analysis…",
+      );
+      await this.runCreate(userId, bot, chatId, intent.prompt ?? text);
+      return;
+    }
+
+    if (intent.action === "edit" && intent.siteId) {
+      const site = sites.find((s) => s.id === intent.siteId);
+      if (site) {
+        await bot.sendMessage(
+          chatId,
+          intent.reply ?? `✏️ Updating *${site.name}*…`,
+          { parse_mode: "Markdown" },
+        );
+        await this.runEdit(
+          userId,
+          bot,
+          chatId,
+          site.id,
+          intent.instructions ?? text,
+        );
+        return;
+      }
+    }
+
+    if (intent.action === "status" && intent.siteId) {
+      await this.sendStatus(userId, bot, chatId, intent.siteId);
+      return;
+    }
+
+    if (intent.action === "preview" && intent.siteId) {
+      await this.sendPreview(userId, bot, chatId, intent.siteId);
+      return;
+    }
+
+    if (intent.action === "list_sites") {
+      await this.listSites(userId, bot, chatId);
+      return;
+    }
+
+    // Fallback: just chat back.
+    await bot.sendMessage(
+      chatId,
+      intent.reply ??
+        "Hey! Tell me what to build (e.g. \"a coffee shop landing page\") or /help for commands.",
+    );
+  }
+
+  private async classifyIntent(
+    text: string,
+    sites: Site[],
+  ): Promise<{
+    action:
+      | "create"
+      | "edit"
+      | "status"
+      | "preview"
+      | "list_sites"
+      | "chat";
+    siteId?: string;
+    prompt?: string;
+    instructions?: string;
+    reply?: string;
+  }> {
+    const sitesContext = sites.map((s) => ({
+      id: s.id,
+      name: s.name,
+      slug: s.slug,
+      status: s.status,
+      prompt: s.prompt.slice(0, 200),
+    }));
+    const sys = `You are WebForge, a conversational AI co-builder for websites (like Bolt.new but in Telegram).
+The user just sent a free-text message. Classify their intent against their existing sites and respond with JSON.
+
+Possible actions:
+- "create": user wants a NEW site. Provide "prompt" (cleaned up version of what they want) and a friendly "reply".
+- "edit": user wants to change an EXISTING site. Provide "siteId" (must match one in context) and "instructions".
+- "status": user is asking about progress on a site. Provide "siteId".
+- "preview": user wants the live link to a site. Provide "siteId".
+- "list_sites": user wants to see all their sites.
+- "chat": small talk, greeting, or ambiguous. Provide "reply" (warm, helpful, short, suggest what they could do).
+
+Schema:
+{
+  "action": "create"|"edit"|"status"|"preview"|"list_sites"|"chat",
+  "siteId"?: string,
+  "prompt"?: string,
+  "instructions"?: string,
+  "reply"?: string
+}
+
+Rules:
+- Only set "siteId" to an id from the user's sites context.
+- If unsure between create and edit, prefer "chat" with a clarifying reply.
+- Replies should be ≤ 2 sentences, warm, lowercase-ish like a friend who builds.`;
+
+    try {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: sys },
+          {
+            role: "user",
+            content: `User's sites:\n${JSON.stringify(sitesContext, null, 2)}\n\nUser message: ${text}`,
+          },
+        ],
+      });
+      const body = completion.choices[0]?.message?.content?.trim() ?? "{}";
+      const parsed = JSON.parse(body);
+      return parsed;
+    } catch (err) {
+      logger.warn({ err: String(err) }, "intent classify failed");
+      // Heuristic fallback — treat as create if it looks like a site description.
+      if (text.length > 12) {
+        return { action: "create", prompt: text };
+      }
+      return {
+        action: "chat",
+        reply:
+          "I didn't catch that. Tell me what to build — e.g. \"a portfolio for a wedding photographer\".",
+      };
+    }
   }
 
   private helpText(): string {
