@@ -111,6 +111,12 @@ export const CreateSiteBody = zod.object({
     .min(createSiteBodyPromptMin)
     .max(createSiteBodyPromptMax),
   name: zod.string().max(createSiteBodyNameMax).nullish(),
+  autoBuild: zod
+    .boolean()
+    .optional()
+    .describe(
+      "If true (default), the server automatically chains the build phase after analysis instead of waiting for an explicit \/confirm.",
+    ),
 });
 
 /**

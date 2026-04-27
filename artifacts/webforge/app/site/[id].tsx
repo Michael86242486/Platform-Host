@@ -112,7 +112,11 @@ export default function SiteDetailScreen() {
     );
   }
 
-  const isWorking = site.status === "queued" || site.status === "generating";
+  const isWorking =
+    site.status === "queued" ||
+    site.status === "analyzing" ||
+    site.status === "building" ||
+    site.status === "awaiting_confirmation";
   const accent = site.coverColor || colors.primary;
 
   return (

@@ -14,4 +14,6 @@ export interface CreateSiteInput {
   prompt: string;
   /** @maxLength 80 */
   name?: string | null;
+  /** If true (default), the server automatically chains the build phase after analysis instead of waiting for an explicit /confirm. */
+  autoBuild?: boolean;
 }

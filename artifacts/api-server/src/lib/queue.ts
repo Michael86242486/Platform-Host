@@ -18,6 +18,10 @@ import { logger } from "./logger";
 
 const MAX_CONCURRENCY = 3;
 
+/** Sentinel stored in jobs.instructions for analyze jobs that should
+ *  auto-chain straight into a build job once analysis completes. */
+const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
+
 const ANALYSIS_STAGES: { progress: number; label: string; ms: number }[] = [
   { progress: 12, label: "Reading your prompt", ms: 250 },
   { progress: 28, label: "Classifying project", ms: 250 },
@@ -163,13 +167,16 @@ class JobQueue {
 
     const analysis = await analysisPromise;
     const plan = buildPlan(analysis);
+    const autoBuild = job.instructions === AUTO_BUILD_SENTINEL;
 
     await db
       .update(sitesTable)
       .set({
-        status: "awaiting_confirmation",
-        progress: 100,
-        message: "Awaiting your confirmation",
+        status: autoBuild ? "queued" : "awaiting_confirmation",
+        progress: autoBuild ? 100 : 100,
+        message: autoBuild
+          ? "Plan ready — starting build"
+          : "Awaiting your confirmation",
         analysis,
         plan,
         updatedAt: new Date(),
@@ -190,13 +197,16 @@ class JobQueue {
       planSummary(plan),
       { plan },
     );
-    await insertAgentMessage(
-      job.userId,
-      siteId,
-      "awaiting_confirmation",
-      "Looks good? Reply 'build' (or tap Confirm) to start the build. I'll wait.",
-      null,
-    );
+
+    if (!autoBuild) {
+      await insertAgentMessage(
+        job.userId,
+        siteId,
+        "awaiting_confirmation",
+        "Looks good? Reply 'build' (or tap Confirm) to start the build. I'll wait.",
+        null,
+      );
+    }
 
     await db
       .update(jobsTable)
@@ -207,6 +217,22 @@ class JobQueue {
         finishedAt: new Date(),
       })
       .where(eq(jobsTable.id, job.id));
+
+    // Auto-chain straight into a build job (mobile app flow).
+    if (autoBuild) {
+      const [next] = await db
+        .insert(jobsTable)
+        .values({
+          userId: job.userId,
+          siteId,
+          kind: "create",
+          status: "queued",
+          progress: 0,
+          message: "Queued",
+        })
+        .returning();
+      await jobQueue.enqueue(next.id);
+    }
   }
 
   private async runBuild(job: Job, siteId: string): Promise<void> {
@@ -301,6 +327,52 @@ class JobQueue {
           summary: `${plan.summary} Edit: ${job.instructions}`,
         }
       : plan;
+
+    // Set the cover color now so the preview iframe in the app picks it up,
+    // then reveal files one at a time (Bolt.new-style streaming reveal).
+    await db
+      .update(sitesTable)
+      .set({
+        status: "building",
+        progress: 60,
+        message: "Materializing files…",
+        coverColor: out.coverColor,
+        files: {},
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, siteId));
+
+    // Reveal files in a deterministic order: shared assets first (so when
+    // pages land they render correctly), then index.html, then the rest.
+    const orderedPaths = orderRevealPaths(Object.keys(out.files));
+    const partial: Record<string, string> = {};
+    for (let i = 0; i < orderedPaths.length; i++) {
+      const p = orderedPaths[i];
+      partial[p] = out.files[p];
+      const pct = 60 + Math.round(((i + 1) / orderedPaths.length) * 38);
+      const label = revealLabel(p);
+      await db
+        .update(sitesTable)
+        .set({
+          files: { ...partial },
+          progress: pct,
+          message: label,
+          updatedAt: new Date(),
+        })
+        .where(eq(sitesTable.id, siteId));
+      await db
+        .update(jobsTable)
+        .set({ progress: pct, message: label })
+        .where(eq(jobsTable.id, job.id));
+      await insertAgentMessage(
+        job.userId,
+        siteId,
+        "build_progress",
+        label,
+        { progress: pct, file: p },
+      );
+      await sleep(380);
+    }
 
     await db
       .update(sitesTable)
@@ -400,6 +472,30 @@ async function insertAgentMessage(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Order files for the reveal animation: shared assets first, then home,
+ *  then remaining pages, then anything else. */
+function orderRevealPaths(paths: string[]): string[] {
+  const css = paths.filter((p) => p.endsWith(".css"));
+  const js = paths.filter((p) => p.endsWith(".js"));
+  const home = paths.filter((p) => p === "index.html");
+  const otherPages = paths.filter(
+    (p) => p.endsWith(".html") && p !== "index.html",
+  );
+  const rest = paths.filter(
+    (p) => !css.includes(p) && !js.includes(p) && !p.endsWith(".html"),
+  );
+  return [...css, ...js, ...home, ...otherPages, ...rest];
+}
+
+function revealLabel(path: string): string {
+  if (path.endsWith(".css")) return `Painting styles — ${path}`;
+  if (path.endsWith(".js")) return `Wiring interactions — ${path}`;
+  if (path === "index.html") return "Materializing home page";
+  if (path.endsWith(".html"))
+    return `Materializing ${path.replace(/\.html$/, "")} page`;
+  return `Adding ${path}`;
 }
 
 // Re-export so callers (telegram.ts) that imported BUILD_STAGES still work.

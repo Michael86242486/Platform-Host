@@ -474,6 +474,9 @@ components:
           type: string
           maxLength: 80
           nullable: true
+        autoBuild:
+          type: boolean
+          description: If true (default), the server automatically chains the build phase after analysis instead of waiting for an explicit /confirm.
       required: [prompt]
 
     EditSiteInput:

@@ -24,7 +24,10 @@ const router: IRouter = Router();
 const createSchema = z.object({
   prompt: z.string().min(4).max(1000),
   name: z.string().max(80).optional().nullable(),
+  autoBuild: z.boolean().optional(),
 });
+
+const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
 
 const editSchema = z.object({
   prompt: z.string().min(4).max(1000),
@@ -102,9 +105,10 @@ router.post("/sites", requireAuth, async (req, res) => {
     res.status(400).json({ error: "invalid_input", issues: parsed.error.issues });
     return;
   }
-  const { prompt, name } = parsed.data;
+  const { prompt, name, autoBuild } = parsed.data;
   const finalName = (name?.trim() || inferSiteName(prompt)).slice(0, 80);
   const slug = await uniqueSlug(finalName);
+  const autoBuildOn = autoBuild !== false; // default true
 
   const [site] = await db
     .insert(sitesTable)
@@ -115,7 +119,9 @@ router.post("/sites", requireAuth, async (req, res) => {
       prompt,
       status: "queued",
       progress: 0,
-      message: "Queued for analysis",
+      message: autoBuildOn
+        ? "Queued — analyzing then building"
+        : "Queued for analysis",
     })
     .returning();
   await db.insert(messagesTable).values({
@@ -135,6 +141,7 @@ router.post("/sites", requireAuth, async (req, res) => {
       status: "queued",
       progress: 0,
       message: "Queued",
+      instructions: autoBuildOn ? AUTO_BUILD_SENTINEL : null,
     })
     .returning();
   await jobQueue.enqueue(job.id);
