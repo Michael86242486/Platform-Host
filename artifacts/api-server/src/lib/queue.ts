@@ -1,44 +1,64 @@
 import { eq } from "drizzle-orm";
 
-import { db, jobsTable, sitesTable, type Job } from "./db";
-import { generateSite } from "./generator";
+import {
+  db,
+  jobsTable,
+  messagesTable,
+  sitesTable,
+  type Job,
+  type SitePlan,
+} from "./db";
+import {
+  BUILD_STAGES,
+  analyzeProject,
+  buildPlan,
+  buildProject,
+} from "./generator";
 import { logger } from "./logger";
 
-const STAGES: { progress: number; message: string; ms: number }[] = [
-  { progress: 8, message: "Reading prompt", ms: 350 },
-  { progress: 22, message: "Choosing palette", ms: 450 },
-  { progress: 38, message: "Sketching layout", ms: 500 },
-  { progress: 55, message: "Writing HTML", ms: 600 },
-  { progress: 72, message: "Styling components", ms: 600 },
-  { progress: 88, message: "Wiring interactions", ms: 500 },
-  { progress: 96, message: "Publishing", ms: 400 },
+const MAX_CONCURRENCY = 3;
+const ANALYSIS_STAGES: { progress: number; label: string; ms: number }[] = [
+  { progress: 8, label: "Reading prompt", ms: 700 },
+  { progress: 22, label: "Classifying project type", ms: 900 },
+  { progress: 40, label: "Extracting features", ms: 900 },
+  { progress: 58, label: "Outlining pages", ms: 900 },
+  { progress: 78, label: "Choosing palette & mood", ms: 800 },
+  { progress: 95, label: "Drafting plan", ms: 700 },
 ];
 
 class JobQueue {
-  private running = new Set<string>();
+  private active = new Set<string>();
+  private waiting: string[] = [];
 
   async enqueue(jobId: string): Promise<void> {
-    if (this.running.has(jobId)) return;
-    this.running.add(jobId);
-    // Fire and forget — don't block the request
-    void this.run(jobId).finally(() => this.running.delete(jobId));
+    if (this.active.has(jobId) || this.waiting.includes(jobId)) return;
+    this.waiting.push(jobId);
+    this.pump();
   }
 
-  /** Pick up any orphaned (queued/running) jobs after a server restart. */
+  private pump(): void {
+    while (this.active.size < MAX_CONCURRENCY && this.waiting.length > 0) {
+      const next = this.waiting.shift()!;
+      this.active.add(next);
+      void this.run(next).finally(() => {
+        this.active.delete(next);
+        this.pump();
+      });
+    }
+  }
+
+  /** Re-enqueue any jobs left in queued/running after a server restart. */
   async resumeOrphans(): Promise<void> {
-    const orphans = await db
+    const queued = await db
       .select()
       .from(jobsTable)
       .where(eq(jobsTable.status, "queued"));
-    for (const j of orphans) {
-      void this.enqueue(j.id);
-    }
+    for (const j of queued) void this.enqueue(j.id);
     const stuck = await db
       .select()
       .from(jobsTable)
       .where(eq(jobsTable.status, "running"));
     for (const j of stuck) {
-      // Reset to queued and re-run
       await db
         .update(jobsTable)
         .set({ status: "queued", progress: 0 })
@@ -54,7 +74,6 @@ class JobQueue {
       .where(eq(jobsTable.id, jobId))
       .limit(1);
     if (!job) return;
-
     const [site] = await db
       .select()
       .from(sitesTable)
@@ -66,82 +85,226 @@ class JobQueue {
     }
 
     try {
-      await db
-        .update(jobsTable)
-        .set({ status: "running", message: STAGES[0].message, progress: 1 })
-        .where(eq(jobsTable.id, job.id));
-      await db
-        .update(sitesTable)
-        .set({
-          status: "generating",
-          progress: 1,
-          message: STAGES[0].message,
-          error: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(sitesTable.id, site.id));
-
-      for (const stage of STAGES) {
-        await sleep(stage.ms);
-        await db
-          .update(jobsTable)
-          .set({ progress: stage.progress, message: stage.message })
-          .where(eq(jobsTable.id, job.id));
-        await db
-          .update(sitesTable)
-          .set({
-            progress: stage.progress,
-            message: stage.message,
-            updatedAt: new Date(),
-          })
-          .where(eq(sitesTable.id, site.id));
+      if (job.kind === "analyze") {
+        await this.runAnalysis(job, site.prompt, site.id, site.name);
+      } else if (
+        job.kind === "create" ||
+        job.kind === "edit" ||
+        job.kind === "retry"
+      ) {
+        await this.runBuild(job, site.id);
+      } else {
+        await this.failJob(job, `Unknown job kind: ${job.kind}`);
       }
-
-      const promptForGeneration =
-        job.kind === "edit" && job.instructions
-          ? `${site.prompt}\n\nEdits: ${job.instructions}`
-          : site.prompt;
-
-      const generated = generateSite(promptForGeneration, site.name);
-
-      await db
-        .update(sitesTable)
-        .set({
-          status: "ready",
-          progress: 100,
-          message: "Ready",
-          html: generated.html,
-          css: generated.css,
-          js: generated.js,
-          coverColor: generated.coverColor,
-          name: generated.name,
-          updatedAt: new Date(),
-        })
-        .where(eq(sitesTable.id, site.id));
-
-      await db
-        .update(jobsTable)
-        .set({
-          status: "done",
-          progress: 100,
-          message: "Done",
-          finishedAt: new Date(),
-        })
-        .where(eq(jobsTable.id, job.id));
     } catch (err) {
       logger.error({ err, jobId: job.id }, "Job failed");
-      await this.failJob(job, err instanceof Error ? err.message : "Unknown error");
+      await this.failJob(
+        job,
+        err instanceof Error ? err.message : "Unknown error",
+      );
     }
+  }
+
+  private async runAnalysis(
+    job: Job,
+    prompt: string,
+    siteId: string,
+    name: string,
+  ): Promise<void> {
+    await db
+      .update(jobsTable)
+      .set({ status: "running", message: ANALYSIS_STAGES[0].label, progress: 1 })
+      .where(eq(jobsTable.id, job.id));
+    await db
+      .update(sitesTable)
+      .set({
+        status: "analyzing",
+        progress: 1,
+        message: ANALYSIS_STAGES[0].label,
+        error: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, siteId));
+    await insertAgentMessage(
+      job.userId,
+      siteId,
+      "log",
+      "Starting analysis…",
+      { stage: 0 },
+    );
+
+    for (const stage of ANALYSIS_STAGES) {
+      await sleep(stage.ms);
+      await db
+        .update(jobsTable)
+        .set({ progress: stage.progress, message: stage.label })
+        .where(eq(jobsTable.id, job.id));
+      await db
+        .update(sitesTable)
+        .set({
+          progress: stage.progress,
+          message: stage.label,
+          updatedAt: new Date(),
+        })
+        .where(eq(sitesTable.id, siteId));
+      await insertAgentMessage(job.userId, siteId, "log", stage.label, {
+        progress: stage.progress,
+      });
+    }
+
+    const analysis = analyzeProject(prompt, name);
+    const plan = buildPlan(analysis);
+
+    await db
+      .update(sitesTable)
+      .set({
+        status: "awaiting_confirmation",
+        progress: 100,
+        message: "Awaiting your confirmation",
+        analysis,
+        plan,
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, siteId));
+
+    await insertAgentMessage(
+      job.userId,
+      siteId,
+      "analysis",
+      `Detected: ${analysis.type} — "${analysis.intent}". ${analysis.features.length} features, ${analysis.pages.length} pages.`,
+      { analysis },
+    );
+    await insertAgentMessage(
+      job.userId,
+      siteId,
+      "plan",
+      planSummary(plan),
+      { plan },
+    );
+    await insertAgentMessage(
+      job.userId,
+      siteId,
+      "awaiting_confirmation",
+      "Looks good? Reply 'build' (or tap Confirm) to start the build. I'll wait.",
+      null,
+    );
+
+    await db
+      .update(jobsTable)
+      .set({
+        status: "done",
+        progress: 100,
+        message: "Plan ready",
+        finishedAt: new Date(),
+      })
+      .where(eq(jobsTable.id, job.id));
+  }
+
+  private async runBuild(job: Job, siteId: string): Promise<void> {
+    const [site] = await db
+      .select()
+      .from(sitesTable)
+      .where(eq(sitesTable.id, siteId))
+      .limit(1);
+    if (!site) throw new Error("Site missing");
+
+    let plan = site.plan;
+    if (!plan) {
+      const analysis = site.analysis ?? analyzeProject(site.prompt, site.name);
+      plan = buildPlan(analysis);
+      await db
+        .update(sitesTable)
+        .set({ analysis, plan })
+        .where(eq(sitesTable.id, siteId));
+    }
+
+    await db
+      .update(jobsTable)
+      .set({ status: "running", message: BUILD_STAGES[0].label, progress: 1 })
+      .where(eq(jobsTable.id, job.id));
+    await db
+      .update(sitesTable)
+      .set({
+        status: "building",
+        progress: 1,
+        message: BUILD_STAGES[0].label,
+        error: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, siteId));
+    await insertAgentMessage(
+      job.userId,
+      siteId,
+      "build_started",
+      job.kind === "edit"
+        ? "Applying your edits…"
+        : "Confirmed. Forging your project now.",
+      null,
+    );
+
+    for (const stage of BUILD_STAGES) {
+      await sleep(stage.ms);
+      await db
+        .update(jobsTable)
+        .set({ progress: stage.progress, message: stage.label })
+        .where(eq(jobsTable.id, job.id));
+      await db
+        .update(sitesTable)
+        .set({
+          progress: stage.progress,
+          message: stage.label,
+          updatedAt: new Date(),
+        })
+        .where(eq(sitesTable.id, siteId));
+      await insertAgentMessage(
+        job.userId,
+        siteId,
+        "build_progress",
+        stage.label,
+        { progress: stage.progress },
+      );
+    }
+
+    const planForBuild: SitePlan =
+      job.kind === "edit" && job.instructions
+        ? applyEditToPlan(plan, job.instructions)
+        : plan;
+    const out = buildProject(planForBuild, site.name);
+
+    await db
+      .update(sitesTable)
+      .set({
+        status: "ready",
+        progress: 100,
+        message: "Ready",
+        files: out.files,
+        coverColor: out.coverColor,
+        plan: planForBuild,
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, siteId));
+    await db
+      .update(jobsTable)
+      .set({
+        status: "done",
+        progress: 100,
+        message: "Done",
+        finishedAt: new Date(),
+      })
+      .where(eq(jobsTable.id, job.id));
+    await insertAgentMessage(
+      job.userId,
+      siteId,
+      "build_done",
+      `Built ${Object.keys(out.files).length} files. Tap Preview to see it live.`,
+      { files: Object.keys(out.files) },
+    );
   }
 
   private async failJob(job: Job, message: string): Promise<void> {
     await db
       .update(jobsTable)
-      .set({
-        status: "failed",
-        message,
-        finishedAt: new Date(),
-      })
+      .set({ status: "failed", message, finishedAt: new Date() })
       .where(eq(jobsTable.id, job.id));
     await db
       .update(sitesTable)
@@ -152,7 +315,64 @@ class JobQueue {
         updatedAt: new Date(),
       })
       .where(eq(sitesTable.id, job.siteId));
+    await insertAgentMessage(
+      job.userId,
+      job.siteId,
+      "build_failed",
+      `Build failed: ${message}`,
+      null,
+    );
   }
+}
+
+function applyEditToPlan(plan: SitePlan, instructions: string): SitePlan {
+  return {
+    ...plan,
+    notes: [...plan.notes, `Edit applied: ${instructions}`],
+    summary: `${plan.summary} Edit: ${instructions}`,
+  };
+}
+
+function planSummary(plan: SitePlan): string {
+  const lines: string[] = [];
+  lines.push(`Plan: ${plan.summary}`);
+  lines.push("");
+  lines.push("Pages:");
+  for (const p of plan.pages) {
+    lines.push(`  • ${p.title} — ${p.purpose}`);
+  }
+  lines.push("");
+  lines.push(`Style: ${plan.styles.palette} (${plan.styles.mood})`);
+  if (plan.features.length > 0) {
+    lines.push(`Features: ${plan.features.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+async function insertAgentMessage(
+  userId: string,
+  siteId: string,
+  kind:
+    | "text"
+    | "analysis"
+    | "plan"
+    | "awaiting_confirmation"
+    | "log"
+    | "build_started"
+    | "build_progress"
+    | "build_done"
+    | "build_failed",
+  content: string,
+  data: Record<string, unknown> | null,
+): Promise<void> {
+  await db.insert(messagesTable).values({
+    userId,
+    siteId,
+    role: "agent",
+    kind,
+    content,
+    data,
+  });
 }
 
 function sleep(ms: number): Promise<void> {

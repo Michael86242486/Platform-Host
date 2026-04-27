@@ -4,6 +4,7 @@ export {
   usersTable,
   sitesTable,
   jobsTable,
+  messagesTable,
   telegramBotsTable,
 } from "@workspace/db";
 export type {
@@ -11,8 +12,14 @@ export type {
   InsertUser,
   Site,
   InsertSite,
+  SiteAnalysis,
+  SitePlan,
+  SitePlanPage,
+  SiteFiles,
   Job,
   InsertJob,
+  Message,
+  InsertMessage,
   TelegramBot,
   InsertTelegramBot,
 } from "@workspace/db";

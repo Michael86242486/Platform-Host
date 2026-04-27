@@ -10,7 +10,9 @@ export type SiteStatus = (typeof SiteStatus)[keyof typeof SiteStatus];
 
 export const SiteStatus = {
   queued: "queued",
-  generating: "generating",
+  analyzing: "analyzing",
+  awaiting_confirmation: "awaiting_confirmation",
+  building: "building",
   ready: "ready",
   failed: "failed",
 } as const;

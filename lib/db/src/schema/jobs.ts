@@ -20,7 +20,9 @@ export const jobsTable = pgTable(
     siteId: uuid("site_id")
       .notNull()
       .references(() => sitesTable.id, { onDelete: "cascade" }),
-    kind: text("kind", { enum: ["create", "edit", "retry"] }).notNull(),
+    kind: text("kind", {
+      enum: ["analyze", "create", "edit", "retry"],
+    }).notNull(),
     status: text("status", {
       enum: ["queued", "running", "done", "failed"],
     })

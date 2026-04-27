@@ -24,6 +24,9 @@ import type {
   HostBotInput,
   Job,
   Me,
+  Message,
+  Ok,
+  SendMessageInput,
   SetDomainInput,
   Site,
 } from "./api.schemas";
@@ -241,7 +244,7 @@ export function useListSites<
 }
 
 /**
- * @summary Create a new site (queues generation)
+ * @summary Create a site (queues analysis)
  */
 export const getCreateSiteUrl = () => {
   return `/api/sites`;
@@ -304,7 +307,7 @@ export type CreateSiteMutationBody = BodyType<CreateSiteInput>;
 export type CreateSiteMutationError = ErrorType<unknown>;
 
 /**
- * @summary Create a new site (queues generation)
+ * @summary Create a site (queues analysis)
  */
 export const useCreateSite = <
   TError = ErrorType<unknown>,
@@ -488,6 +491,90 @@ export const useDeleteSite = <
 };
 
 /**
+ * @summary Confirm the analysis/plan and start the build
+ */
+export const getConfirmSiteUrl = (id: string) => {
+  return `/api/sites/${id}/confirm`;
+};
+
+export const confirmSite = async (
+  id: string,
+  options?: RequestInit,
+): Promise<Site> => {
+  return customFetch<Site>(getConfirmSiteUrl(id), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getConfirmSiteMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof confirmSite>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof confirmSite>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  const mutationKey = ["confirmSite"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof confirmSite>>,
+    { id: string }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return confirmSite(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ConfirmSiteMutationResult = NonNullable<
+  Awaited<ReturnType<typeof confirmSite>>
+>;
+
+export type ConfirmSiteMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Confirm the analysis/plan and start the build
+ */
+export const useConfirmSite = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof confirmSite>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof confirmSite>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  return useMutation(getConfirmSiteMutationOptions(options));
+};
+
+/**
  * @summary Edit site with a new prompt
  */
 export const getEditSiteUrl = (id: string) => {
@@ -575,7 +662,7 @@ export const useEditSite = <
 };
 
 /**
- * @summary Retry failed site generation
+ * @summary Retry the last failed step
  */
 export const getRetrySiteUrl = (id: string) => {
   return `/api/sites/${id}/retry`;
@@ -636,7 +723,7 @@ export type RetrySiteMutationResult = NonNullable<
 export type RetrySiteMutationError = ErrorType<unknown>;
 
 /**
- * @summary Retry failed site generation
+ * @summary Retry the last failed step
  */
 export const useRetrySite = <
   TError = ErrorType<unknown>,
@@ -656,6 +743,180 @@ export const useRetrySite = <
   TContext
 > => {
   return useMutation(getRetrySiteMutationOptions(options));
+};
+
+/**
+ * @summary List the chat between the user and the agent for a site
+ */
+export const getListSiteMessagesUrl = (id: string) => {
+  return `/api/sites/${id}/messages`;
+};
+
+export const listSiteMessages = async (
+  id: string,
+  options?: RequestInit,
+): Promise<Message[]> => {
+  return customFetch<Message[]>(getListSiteMessagesUrl(id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListSiteMessagesQueryKey = (id: string) => {
+  return [`/api/sites/${id}/messages`] as const;
+};
+
+export const getListSiteMessagesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listSiteMessages>>,
+  TError = ErrorType<unknown>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listSiteMessages>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListSiteMessagesQueryKey(id);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listSiteMessages>>
+  > = ({ signal }) => listSiteMessages(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listSiteMessages>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListSiteMessagesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listSiteMessages>>
+>;
+export type ListSiteMessagesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List the chat between the user and the agent for a site
+ */
+
+export function useListSiteMessages<
+  TData = Awaited<ReturnType<typeof listSiteMessages>>,
+  TError = ErrorType<unknown>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listSiteMessages>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListSiteMessagesQueryOptions(id, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Send a message in the agent chat for a site
+ */
+export const getSendSiteMessageUrl = (id: string) => {
+  return `/api/sites/${id}/messages`;
+};
+
+export const sendSiteMessage = async (
+  id: string,
+  sendMessageInput: SendMessageInput,
+  options?: RequestInit,
+): Promise<Ok> => {
+  return customFetch<Ok>(getSendSiteMessageUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(sendMessageInput),
+  });
+};
+
+export const getSendSiteMessageMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof sendSiteMessage>>,
+    TError,
+    { id: string; data: BodyType<SendMessageInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof sendSiteMessage>>,
+  TError,
+  { id: string; data: BodyType<SendMessageInput> },
+  TContext
+> => {
+  const mutationKey = ["sendSiteMessage"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof sendSiteMessage>>,
+    { id: string; data: BodyType<SendMessageInput> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return sendSiteMessage(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SendSiteMessageMutationResult = NonNullable<
+  Awaited<ReturnType<typeof sendSiteMessage>>
+>;
+export type SendSiteMessageMutationBody = BodyType<SendMessageInput>;
+export type SendSiteMessageMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Send a message in the agent chat for a site
+ */
+export const useSendSiteMessage = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof sendSiteMessage>>,
+    TError,
+    { id: string; data: BodyType<SendMessageInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof sendSiteMessage>>,
+  TError,
+  { id: string; data: BodyType<SendMessageInput> },
+  TContext
+> => {
+  return useMutation(getSendSiteMessageMutationOptions(options));
 };
 
 /**

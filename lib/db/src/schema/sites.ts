@@ -1,6 +1,7 @@
 import {
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -8,6 +9,34 @@ import {
 } from "drizzle-orm/pg-core";
 
 import { usersTable } from "./users";
+
+export interface SiteAnalysis {
+  type: "website" | "bot" | "backend" | "tool";
+  intent: string;
+  audience: string | null;
+  features: string[];
+  pages: string[];
+  styleHints: string[];
+}
+
+export interface SitePlanPage {
+  path: string;
+  title: string;
+  purpose: string;
+  sections: string[];
+}
+
+export interface SitePlan {
+  type: SiteAnalysis["type"];
+  summary: string;
+  pages: SitePlanPage[];
+  styles: { palette: string; mood: string };
+  features: string[];
+  notes: string[];
+}
+
+/** Map of relative file path -> file content (text). */
+export type SiteFiles = Record<string, string>;
 
 export const sitesTable = pgTable(
   "sites",
@@ -20,7 +49,14 @@ export const sitesTable = pgTable(
     slug: text("slug").notNull().unique(),
     prompt: text("prompt").notNull(),
     status: text("status", {
-      enum: ["queued", "generating", "ready", "failed"],
+      enum: [
+        "queued",
+        "analyzing",
+        "awaiting_confirmation",
+        "building",
+        "ready",
+        "failed",
+      ],
     })
       .notNull()
       .default("queued"),
@@ -28,9 +64,12 @@ export const sitesTable = pgTable(
     message: text("message"),
     error: text("error"),
     coverColor: text("cover_color"),
-    html: text("html"),
-    css: text("css"),
-    js: text("js"),
+    /** Structured project analysis (set in the analyze phase). */
+    analysis: jsonb("analysis").$type<SiteAnalysis | null>(),
+    /** Build plan returned to the user before construction starts. */
+    plan: jsonb("plan").$type<SitePlan | null>(),
+    /** Map of file path -> file content. Replaces single html/css/js columns. */
+    files: jsonb("files").$type<SiteFiles | null>(),
     customDomain: text("custom_domain").unique(),
     customDomainStatus: text("custom_domain_status", {
       enum: ["pending", "verified", "failed"],

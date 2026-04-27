@@ -9,6 +9,10 @@ export interface HealthStatus {
   status: string;
 }
 
+export interface Ok {
+  ok: boolean;
+}
+
 export interface Me {
   id: string;
   clerkUserId: string;
@@ -19,11 +23,62 @@ export interface Me {
   createdAt: string;
 }
 
+export type SiteAnalysisType =
+  (typeof SiteAnalysisType)[keyof typeof SiteAnalysisType];
+
+export const SiteAnalysisType = {
+  website: "website",
+  bot: "bot",
+  backend: "backend",
+  tool: "tool",
+} as const;
+
+export interface SiteAnalysis {
+  type: SiteAnalysisType;
+  intent: string;
+  audience?: string | null;
+  features: string[];
+  pages: string[];
+  styleHints: string[];
+}
+
+export interface SitePlanPage {
+  path: string;
+  title: string;
+  purpose: string;
+  sections: string[];
+}
+
+export type SitePlanType = (typeof SitePlanType)[keyof typeof SitePlanType];
+
+export const SitePlanType = {
+  website: "website",
+  bot: "bot",
+  backend: "backend",
+  tool: "tool",
+} as const;
+
+export type SitePlanStyles = {
+  palette: string;
+  mood: string;
+};
+
+export interface SitePlan {
+  type: SitePlanType;
+  summary: string;
+  pages: SitePlanPage[];
+  styles: SitePlanStyles;
+  features: string[];
+  notes: string[];
+}
+
 export type SiteStatus = (typeof SiteStatus)[keyof typeof SiteStatus];
 
 export const SiteStatus = {
   queued: "queued",
-  generating: "generating",
+  analyzing: "analyzing",
+  awaiting_confirmation: "awaiting_confirmation",
+  building: "building",
   ready: "ready",
   failed: "failed",
 } as const;
@@ -54,6 +109,9 @@ export interface Site {
   previewUrl?: string | null;
   publicUrl?: string | null;
   coverColor?: string | null;
+  files: string[];
+  analysis?: SiteAnalysis | null;
+  plan?: SitePlan | null;
   customDomain?: string | null;
   customDomainStatus?: SiteCustomDomainStatus;
   customDomainError?: string | null;
@@ -90,9 +148,52 @@ export interface SetDomainInput {
   domain: string;
 }
 
+export interface SendMessageInput {
+  /**
+   * @minLength 1
+   * @maxLength 2000
+   */
+  content: string;
+}
+
+export type MessageRole = (typeof MessageRole)[keyof typeof MessageRole];
+
+export const MessageRole = {
+  user: "user",
+  agent: "agent",
+  system: "system",
+} as const;
+
+export type MessageKind = (typeof MessageKind)[keyof typeof MessageKind];
+
+export const MessageKind = {
+  text: "text",
+  analysis: "analysis",
+  plan: "plan",
+  awaiting_confirmation: "awaiting_confirmation",
+  log: "log",
+  build_started: "build_started",
+  build_progress: "build_progress",
+  build_done: "build_done",
+  build_failed: "build_failed",
+} as const;
+
+export type MessageData = { [key: string]: unknown } | null;
+
+export interface Message {
+  id: string;
+  siteId: string;
+  role: MessageRole;
+  kind: MessageKind;
+  content: string;
+  data?: MessageData;
+  createdAt: string;
+}
+
 export type JobKind = (typeof JobKind)[keyof typeof JobKind];
 
 export const JobKind = {
+  analyze: "analyze",
   create: "create",
   edit: "edit",
   retry: "retry",

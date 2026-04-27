@@ -38,7 +38,14 @@ export const ListSitesResponseItem = zod.object({
   name: zod.string(),
   slug: zod.string(),
   prompt: zod.string(),
-  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
   progress: zod
     .number()
     .min(listSitesResponseProgressMin)
@@ -48,6 +55,37 @@ export const ListSitesResponseItem = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
   customDomain: zod.string().nullish(),
   customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
   customDomainError: zod.string().nullish(),
@@ -60,7 +98,7 @@ export const ListSitesResponseItem = zod.object({
 export const ListSitesResponse = zod.array(ListSitesResponseItem);
 
 /**
- * @summary Create a new site (queues generation)
+ * @summary Create a site (queues analysis)
  */
 export const createSiteBodyPromptMin = 4;
 export const createSiteBodyPromptMax = 1000;
@@ -90,7 +128,14 @@ export const GetSiteResponse = zod.object({
   name: zod.string(),
   slug: zod.string(),
   prompt: zod.string(),
-  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
   progress: zod
     .number()
     .min(getSiteResponseProgressMin)
@@ -100,6 +145,37 @@ export const GetSiteResponse = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
   customDomain: zod.string().nullish(),
   customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
   customDomainError: zod.string().nullish(),
@@ -115,6 +191,79 @@ export const GetSiteResponse = zod.object({
  */
 export const DeleteSiteParams = zod.object({
   id: zod.coerce.string(),
+});
+
+/**
+ * @summary Confirm the analysis/plan and start the build
+ */
+export const ConfirmSiteParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const confirmSiteResponseProgressMin = 0;
+export const confirmSiteResponseProgressMax = 100;
+
+export const ConfirmSiteResponse = zod.object({
+  id: zod.string(),
+  name: zod.string(),
+  slug: zod.string(),
+  prompt: zod.string(),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
+  progress: zod
+    .number()
+    .min(confirmSiteResponseProgressMin)
+    .max(confirmSiteResponseProgressMax),
+  message: zod.string().nullish(),
+  error: zod.string().nullish(),
+  previewUrl: zod.string().nullish(),
+  publicUrl: zod.string().nullish(),
+  coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
 });
 
 /**
@@ -139,7 +288,14 @@ export const EditSiteResponse = zod.object({
   name: zod.string(),
   slug: zod.string(),
   prompt: zod.string(),
-  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
   progress: zod
     .number()
     .min(editSiteResponseProgressMin)
@@ -149,6 +305,37 @@ export const EditSiteResponse = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
   customDomain: zod.string().nullish(),
   customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
   customDomainError: zod.string().nullish(),
@@ -160,7 +347,7 @@ export const EditSiteResponse = zod.object({
 });
 
 /**
- * @summary Retry failed site generation
+ * @summary Retry the last failed step
  */
 export const RetrySiteParams = zod.object({
   id: zod.coerce.string(),
@@ -174,7 +361,14 @@ export const RetrySiteResponse = zod.object({
   name: zod.string(),
   slug: zod.string(),
   prompt: zod.string(),
-  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
   progress: zod
     .number()
     .min(retrySiteResponseProgressMin)
@@ -184,6 +378,37 @@ export const RetrySiteResponse = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
   customDomain: zod.string().nullish(),
   customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
   customDomainError: zod.string().nullish(),
@@ -192,6 +417,47 @@ export const RetrySiteResponse = zod.object({
   customDomainTarget: zod.string().nullish(),
   createdAt: zod.coerce.date(),
   updatedAt: zod.coerce.date(),
+});
+
+/**
+ * @summary List the chat between the user and the agent for a site
+ */
+export const ListSiteMessagesParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const ListSiteMessagesResponseItem = zod.object({
+  id: zod.string(),
+  siteId: zod.string(),
+  role: zod.enum(["user", "agent", "system"]),
+  kind: zod.enum([
+    "text",
+    "analysis",
+    "plan",
+    "awaiting_confirmation",
+    "log",
+    "build_started",
+    "build_progress",
+    "build_done",
+    "build_failed",
+  ]),
+  content: zod.string(),
+  data: zod.record(zod.string(), zod.unknown()).nullish(),
+  createdAt: zod.coerce.date(),
+});
+export const ListSiteMessagesResponse = zod.array(ListSiteMessagesResponseItem);
+
+/**
+ * @summary Send a message in the agent chat for a site
+ */
+export const SendSiteMessageParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const sendSiteMessageBodyContentMax = 2000;
+
+export const SendSiteMessageBody = zod.object({
+  content: zod.string().min(1).max(sendSiteMessageBodyContentMax),
 });
 
 /**
@@ -219,7 +485,14 @@ export const SetSiteDomainResponse = zod.object({
   name: zod.string(),
   slug: zod.string(),
   prompt: zod.string(),
-  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
   progress: zod
     .number()
     .min(setSiteDomainResponseProgressMin)
@@ -229,6 +502,37 @@ export const SetSiteDomainResponse = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
   customDomain: zod.string().nullish(),
   customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
   customDomainError: zod.string().nullish(),
@@ -254,7 +558,14 @@ export const RemoveSiteDomainResponse = zod.object({
   name: zod.string(),
   slug: zod.string(),
   prompt: zod.string(),
-  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
   progress: zod
     .number()
     .min(removeSiteDomainResponseProgressMin)
@@ -264,6 +575,37 @@ export const RemoveSiteDomainResponse = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
   customDomain: zod.string().nullish(),
   customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
   customDomainError: zod.string().nullish(),
@@ -289,7 +631,14 @@ export const VerifySiteDomainResponse = zod.object({
   name: zod.string(),
   slug: zod.string(),
   prompt: zod.string(),
-  status: zod.enum(["queued", "generating", "ready", "failed"]),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
   progress: zod
     .number()
     .min(verifySiteDomainResponseProgressMin)
@@ -299,6 +648,37 @@ export const VerifySiteDomainResponse = zod.object({
   previewUrl: zod.string().nullish(),
   publicUrl: zod.string().nullish(),
   coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
   customDomain: zod.string().nullish(),
   customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
   customDomainError: zod.string().nullish(),
@@ -319,7 +699,7 @@ export const ListJobsResponseItem = zod.object({
   id: zod.string(),
   siteId: zod.string(),
   siteName: zod.string(),
-  kind: zod.enum(["create", "edit", "retry"]),
+  kind: zod.enum(["analyze", "create", "edit", "retry"]),
   status: zod.enum(["queued", "running", "done", "failed"]),
   progress: zod
     .number()

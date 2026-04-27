@@ -9,6 +9,7 @@
 export type JobKind = (typeof JobKind)[keyof typeof JobKind];
 
 export const JobKind = {
+  analyze: "analyze",
   create: "create",
   edit: "edit",
   retry: "retry",

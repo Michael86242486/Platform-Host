@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>WebForge AI Mobile</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<style>
+body {
+  background: #0D1117;
+  color: #C9D1D9;
+  font-family: ui-monospace, monospace;
+}
+.tab-active {
+  color: #00FFC2;
+  border-bottom: 2px solid #00FFC2;
+}
+</style>
+</head>
+
+<body class="flex flex-col h-screen">
+
+<!-- HEADER -->
+<header class="p-3 border-b border-gray-800 flex justify-between items-center">
+  <h1 class="text-cyan-400 font-bold text-sm">⚡ WebForge AI</h1>
+  <span class="text-xs text-gray-400">Agent</span>
+</header>
+
+<!-- TABS -->
+<div class="flex text-xs text-gray-400 border-b border-gray-800">
+  <button class="flex-1 py-2 tab-active" onclick="switchTab('chat')">Chat</button>
+  <button class="flex-1 py-2" onclick="switchTab('logs')">Logs</button>
+  <button class="flex-1 py-2" onclick="switchTab('preview')">Preview</button>
+</div>
+
+<!-- CONTENT -->
+<div class="flex-1 overflow-hidden">
+
+  <!-- CHAT -->
+  <div id="chatTab" class="h-full flex flex-col">
+    <div id="chat" class="flex-1 overflow-y-auto p-3 space-y-3 text-sm"></div>
+
+    <div class="p-2 border-t border-gray-800">
+      <input id="prompt"
+        class="w-full p-3 rounded bg-[#161B22] border border-gray-700"
+        placeholder="Describe your project..." />
+    </div>
+  </div>
+
+  <!-- LOGS -->
+  <div id="logsTab" class="hidden h-full flex flex-col">
+    <div class="p-3 text-cyan-400 text-xs font-bold">🧠 Analysis & Build</div>
+    <div id="logs" class="flex-1 overflow-y-auto p-3 text-xs space-y-2"></div>
+
+    <div class="p-3 border-t border-gray-800">
+      <div class="w-full bg-gray-800 rounded h-2">
+        <div id="progressBar" class="bg-cyan-400 h-2 rounded" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PREVIEW -->
+  <div id="previewTab" class="hidden h-full flex flex-col">
+    <div class="p-3 text-green-400 text-xs font-bold">🔍 Live Preview</div>
+    <iframe id="previewFrame"
+      class="flex-1 bg-white"
+      srcdoc="<h2 style='text-align:center;margin-top:40px;'>Preview will appear here</h2>">
+    </iframe>
+  </div>
+
+</div>
+
+<!-- BOTTOM ACTIONS -->
+<div class="flex border-t border-gray-800 text-xs">
+  <button class="flex-1 py-2 text-cyan-400">Preview</button>
+  <button class="flex-1 py-2 text-green-400">Deploy</button>
+  <button class="flex-1 py-2 text-yellow-400">Secrets</button>
+  <button class="flex-1 py-2 text-purple-400">Database</button>
+</div>
+
+<script>
+const chat = document.getElementById("chat");
+const logs = document.getElementById("logs");
+const progressBar = document.getElementById("progressBar");
+const previewFrame = document.getElementById("previewFrame");
+const input = document.getElementById("prompt");
+
+// SWITCH TABS
+function switchTab(tab) {
+  document.getElementById("chatTab").classList.add("hidden");
+  document.getElementById("logsTab").classList.add("hidden");
+  document.getElementById("previewTab").classList.add("hidden");
+
+  document.querySelectorAll("button").forEach(b => b.classList.remove("tab-active"));
+
+  if (tab === "chat") {
+    document.getElementById("chatTab").classList.remove("hidden");
+    document.querySelectorAll("button")[0].classList.add("tab-active");
+  }
+  if (tab === "logs") {
+    document.getElementById("logsTab").classList.remove("hidden");
+    document.querySelectorAll("button")[1].classList.add("tab-active");
+  }
+  if (tab === "preview") {
+    document.getElementById("previewTab").classList.remove("hidden");
+    document.querySelectorAll("button")[2].classList.add("tab-active");
+  }
+}
+
+// CHAT
+function addChat(text, type="user") {
+  const div = document.createElement("div");
+  div.className = type === "user" ? "text-right" : "text-cyan-400";
+  div.innerText = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+// LOGS
+function addLog(text) {
+  const div = document.createElement("div");
+  div.innerText = "• " + text;
+  logs.appendChild(div);
+  logs.scrollTop = logs.scrollHeight;
+}
+
+// PROGRESS
+function setProgress(val) {
+  progressBar.style.width = val + "%";
+}
+
+// SIMULATED AGENT
+async function runAgent(prompt) {
+
+  addChat(prompt, "user");
+
+  // ANALYSIS
+  addChat("Analyzing your request...", "ai");
+  addLog("Detecting project type...");
+  setProgress(10);
+  await delay(800);
+
+  addLog("Multi-page website detected");
+  addLog("Features: auth, responsive UI");
+  setProgress(25);
+
+  // PREVIEW
+  addChat("Preview ready. Switching to preview tab...", "ai");
+  switchTab("preview");
+
+  await delay(1000);
+
+  // BUILD
+  switchTab("logs");
+  addChat("Building project...", "ai");
+
+  const steps = [
+    "Planning architecture",
+    "Generating pages",
+    "Adding styles",
+    "Adding JS logic",
+    "Validating structure",
+    "Deploying"
+  ];
+
+  for (let i = 0; i < steps.length; i++) {
+    addLog(steps[i]);
+    setProgress(30 + i * 10);
+    await delay(700);
+  }
+
+  // RESULT
+  previewFrame.srcdoc = `
+    <html>
+    <body style="font-family:sans-serif;text-align:center;">
+      <h1>🚀 Your App Ready</h1>
+      <p>This is your generated project preview.</p>
+    </body>
+    </html>
+  `;
+
+  switchTab("preview");
+  setProgress(100);
+}
+
+// INPUT
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter") {
+    runAgent(input.value);
+    input.value = "";
+  }
+});
+
+function delay(ms) {
+  return new Promise(res => setTimeout(res, ms));
+}
+</script>
+
+</body>
+</html>

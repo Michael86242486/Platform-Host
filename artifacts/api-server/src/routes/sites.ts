@@ -1,12 +1,20 @@
 import crypto from "node:crypto";
 import dns from "node:dns/promises";
+import path from "node:path";
 
 import { Router, type IRouter } from "express";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { requireAuth } from "../middlewares/auth";
-import { db, jobsTable, sitesTable, type Site } from "../lib/db";
+import {
+  db,
+  jobsTable,
+  messagesTable,
+  sitesTable,
+  type Site,
+  type SiteFiles,
+} from "../lib/db";
 import { jobQueue } from "../lib/queue";
 import { inferSiteName, uniqueSlug } from "../lib/slug";
 import { publicBaseUrl, publicHost } from "../lib/telegram";
@@ -22,6 +30,10 @@ const editSchema = z.object({
   prompt: z.string().min(4).max(1000),
 });
 
+const messageSchema = z.object({
+  content: z.string().min(1).max(2000),
+});
+
 const DOMAIN_RE = /^(?!-)[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})+$/i;
 
 const setDomainSchema = z.object({
@@ -29,13 +41,15 @@ const setDomainSchema = z.object({
     .string()
     .min(3)
     .max(253)
-    .transform((s) => s.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, ""))
+    .transform((s) =>
+      s.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, ""),
+    )
     .refine((s) => DOMAIN_RE.test(s), { message: "invalid_domain" }),
 });
 
 function siteToDto(site: Site) {
   const baseUrl = publicBaseUrl();
-  const slugUrl = baseUrl ? `${baseUrl}/api/hosted/${site.slug}` : null;
+  const slugUrl = baseUrl ? `${baseUrl}/api/hosted/${site.slug}/` : null;
   const customDomainVerified =
     site.customDomain && site.customDomainStatus === "verified";
   const publicUrl = customDomainVerified
@@ -53,6 +67,9 @@ function siteToDto(site: Site) {
     coverColor: site.coverColor,
     previewUrl: slugUrl,
     publicUrl,
+    files: site.files ? Object.keys(site.files) : [],
+    analysis: site.analysis,
+    plan: site.plan,
     customDomain: site.customDomain,
     customDomainStatus: site.customDomainStatus,
     customDomainError: site.customDomainError,
@@ -77,6 +94,8 @@ router.get("/sites", requireAuth, async (req, res) => {
   res.json(rows.map(siteToDto));
 });
 
+// POST /sites — kicks off ANALYSIS only. The user must call /confirm to
+// actually build the project.
 router.post("/sites", requireAuth, async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -96,15 +115,23 @@ router.post("/sites", requireAuth, async (req, res) => {
       prompt,
       status: "queued",
       progress: 0,
-      message: "Queued",
+      message: "Queued for analysis",
     })
     .returning();
+  await db.insert(messagesTable).values({
+    userId: req.user!.id,
+    siteId: site.id,
+    role: "user",
+    kind: "text",
+    content: prompt,
+    data: null,
+  });
   const [job] = await db
     .insert(jobsTable)
     .values({
       userId: req.user!.id,
       siteId: site.id,
-      kind: "create",
+      kind: "analyze",
       status: "queued",
       progress: 0,
       message: "Queued",
@@ -143,6 +170,64 @@ router.delete("/sites/:id", requireAuth, async (req, res) => {
   res.status(204).send();
 });
 
+// POST /sites/:id/confirm — user accepts the analysis/plan. Starts the build.
+router.post("/sites/:id/confirm", requireAuth, async (req, res) => {
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  if (site.status !== "awaiting_confirmation" && site.status !== "ready") {
+    res.status(409).json({ error: "not_ready_for_confirmation", status: site.status });
+    return;
+  }
+  await db.insert(messagesTable).values({
+    userId: req.user!.id,
+    siteId: site.id,
+    role: "user",
+    kind: "text",
+    content: "Confirmed — please build it.",
+    data: null,
+  });
+  const [job] = await db
+    .insert(jobsTable)
+    .values({
+      userId: req.user!.id,
+      siteId: site.id,
+      kind: "create",
+      status: "queued",
+      progress: 0,
+      message: "Queued",
+    })
+    .returning();
+  await db
+    .update(sitesTable)
+    .set({
+      status: "queued",
+      progress: 0,
+      message: "Queued for build",
+      error: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(sitesTable.id, site.id));
+  await jobQueue.enqueue(job.id);
+  const [updated] = await db
+    .select()
+    .from(sitesTable)
+    .where(eq(sitesTable.id, site.id))
+    .limit(1);
+  res.json(siteToDto(updated));
+});
+
 router.post("/sites/:id/edit", requireAuth, async (req, res) => {
   const parsed = editSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -160,6 +245,14 @@ router.post("/sites/:id/edit", requireAuth, async (req, res) => {
     res.status(404).json({ error: "not_found" });
     return;
   }
+  await db.insert(messagesTable).values({
+    userId: req.user!.id,
+    siteId: site.id,
+    role: "user",
+    kind: "text",
+    content: parsed.data.prompt,
+    data: null,
+  });
   const [job] = await db
     .insert(jobsTable)
     .values({
@@ -177,7 +270,7 @@ router.post("/sites/:id/edit", requireAuth, async (req, res) => {
     .set({
       status: "queued",
       progress: 0,
-      message: "Queued",
+      message: "Queued for edit",
       error: null,
       updatedAt: new Date(),
     })
@@ -203,12 +296,14 @@ router.post("/sites/:id/retry", requireAuth, async (req, res) => {
     res.status(404).json({ error: "not_found" });
     return;
   }
+  // Re-run analysis if there is no plan yet, otherwise re-build.
+  const kind = site.plan ? "retry" : "analyze";
   const [job] = await db
     .insert(jobsTable)
     .values({
       userId: req.user!.id,
       siteId: site.id,
-      kind: "retry",
+      kind,
       status: "queued",
       progress: 0,
       message: "Queued",
@@ -219,7 +314,7 @@ router.post("/sites/:id/retry", requireAuth, async (req, res) => {
     .set({
       status: "queued",
       progress: 0,
-      message: "Queued",
+      message: "Queued for retry",
       error: null,
       updatedAt: new Date(),
     })
@@ -232,6 +327,142 @@ router.post("/sites/:id/retry", requireAuth, async (req, res) => {
     .limit(1);
   res.json(siteToDto(updated));
 });
+
+// --- Messages ---------------------------------------------------------------
+
+router.get("/sites/:id/messages", requireAuth, async (req, res) => {
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  const rows = await db
+    .select()
+    .from(messagesTable)
+    .where(eq(messagesTable.siteId, site.id))
+    .orderBy(asc(messagesTable.createdAt));
+  res.json(
+    rows.map((m) => ({
+      id: m.id,
+      siteId: m.siteId,
+      role: m.role,
+      kind: m.kind,
+      content: m.content,
+      data: m.data,
+      createdAt: m.createdAt.toISOString(),
+    })),
+  );
+});
+
+router.post("/sites/:id/messages", requireAuth, async (req, res) => {
+  const parsed = messageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_input" });
+    return;
+  }
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  const content = parsed.data.content.trim();
+  await db.insert(messagesTable).values({
+    userId: req.user!.id,
+    siteId: site.id,
+    role: "user",
+    kind: "text",
+    content,
+    data: null,
+  });
+
+  // Treat "build" / "yes" / "go" / "ship it" as a confirmation when the site
+  // is awaiting one. This makes the chat feel like a real agent.
+  const lc = content.toLowerCase();
+  const wantsBuild =
+    /^(build|yes|go|ship it|do it|confirm|approve|let'?s go|sounds good)\b/.test(
+      lc,
+    );
+
+  if (site.status === "awaiting_confirmation" && wantsBuild) {
+    const [job] = await db
+      .insert(jobsTable)
+      .values({
+        userId: req.user!.id,
+        siteId: site.id,
+        kind: "create",
+        status: "queued",
+        progress: 0,
+        message: "Queued",
+      })
+      .returning();
+    await db
+      .update(sitesTable)
+      .set({
+        status: "queued",
+        progress: 0,
+        message: "Queued for build",
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, site.id));
+    await jobQueue.enqueue(job.id);
+  } else if (site.status === "ready") {
+    // Treat any chat after ready state as an edit request.
+    const [job] = await db
+      .insert(jobsTable)
+      .values({
+        userId: req.user!.id,
+        siteId: site.id,
+        kind: "edit",
+        status: "queued",
+        progress: 0,
+        instructions: content,
+        message: "Queued",
+      })
+      .returning();
+    await db
+      .update(sitesTable)
+      .set({
+        status: "queued",
+        progress: 0,
+        message: "Queued for edit",
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, site.id));
+    await jobQueue.enqueue(job.id);
+  } else {
+    await db.insert(messagesTable).values({
+      userId: req.user!.id,
+      siteId: site.id,
+      role: "agent",
+      kind: "text",
+      content:
+        "I'll get to that as soon as the current step finishes. You can also tap the buttons below the chat.",
+      data: null,
+    });
+  }
+
+  res.status(202).json({ ok: true });
+});
+
+// --- Domain endpoints (unchanged behavior) ---------------------------------
 
 router.post("/sites/:id/domain", requireAuth, async (req, res) => {
   const parsed = setDomainSchema.safeParse(req.body);
@@ -365,33 +596,106 @@ router.post("/sites/:id/domain/verify", requireAuth, async (req, res) => {
   res.json(siteToDto(updated));
 });
 
-// Public hosted route — serves rendered HTML for a site by slug.
-router.get("/hosted/:slug", async (req, res) => {
+// --- Public hosted route ---------------------------------------------------
+
+// /api/hosted/:slug → redirect to /api/hosted/:slug/index.html
+router.get("/hosted/:slug", (req, res) => {
+  res.redirect(302, `/api/hosted/${req.params.slug}/`);
+});
+
+router.get("/hosted/:slug/", async (req, res) => {
+  await serveSiteFile(req.params.slug, "index.html", res);
+});
+
+router.get("/hosted/:slug/*", async (req, res) => {
+  const wildcard = (req.params as unknown as { 0?: string | string[] })[0];
+  const sub = Array.isArray(wildcard)
+    ? wildcard.join("/")
+    : (wildcard ?? "index.html");
+  await serveSiteFile(req.params.slug, sub || "index.html", res);
+});
+
+async function serveSiteFile(
+  slug: string,
+  rel: string,
+  res: import("express").Response,
+): Promise<void> {
   const [site] = await db
     .select()
     .from(sitesTable)
-    .where(eq(sitesTable.slug, String(req.params.slug)))
+    .where(eq(sitesTable.slug, slug))
     .limit(1);
   if (!site) {
     res.status(404).type("html").send(notFoundPage());
     return;
   }
-  if (site.status !== "ready" || !site.html) {
+  if (site.status !== "ready" || !site.files) {
     res.status(202).type("html").send(generatingPage(site));
     return;
   }
-  res.type("html").send(site.html);
-});
+  const safeRel = normalizeRel(rel) ?? "index.html";
+  const content = pickFile(site.files, safeRel);
+  if (content == null) {
+    res.status(404).type("html").send(notFoundPage());
+    return;
+  }
+  res.type(contentType(safeRel)).send(content);
+}
+
+export function pickFile(files: SiteFiles, rel: string): string | null {
+  if (Object.prototype.hasOwnProperty.call(files, rel)) return files[rel];
+  if (rel === "" || rel === "/") return files["index.html"] ?? null;
+  return null;
+}
+
+export function normalizeRel(rel: string): string | null {
+  const cleaned = decodeURIComponent(rel)
+    .replace(/^\/+/, "")
+    .replace(/\.\.\//g, "");
+  if (cleaned.includes("..") || path.isAbsolute(cleaned)) return null;
+  return cleaned || "index.html";
+}
+
+function contentType(rel: string): string {
+  const ext = path.extname(rel).toLowerCase();
+  switch (ext) {
+    case ".html":
+    case ".htm":
+      return "text/html; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".js":
+      return "application/javascript; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    case ".txt":
+      return "text/plain; charset=utf-8";
+    default:
+      return "application/octet-stream";
+  }
+}
 
 function notFoundPage(): string {
   return `<!doctype html><html><head><meta charset="utf-8"/><title>Not found</title>
   <style>body{background:#0A0E14;color:#E6EDF3;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}</style>
-  </head><body><div><h1>404</h1><p>This site doesn't exist or was deleted.</p></div></body></html>`;
+  </head><body><div><h1>404</h1><p>This page doesn't exist.</p></div></body></html>`;
 }
 
 function generatingPage(site: Site): string {
+  const stage = site.status === "awaiting_confirmation"
+    ? "Waiting for your confirmation"
+    : site.message ?? "Working";
   return `<!doctype html><html><head><meta charset="utf-8"/><meta http-equiv="refresh" content="2"/>
-  <title>${site.name} — generating</title>
+  <title>${site.name} — building</title>
   <style>
   body{background:#0A0E14;color:#E6EDF3;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}
   .bar{width:280px;height:4px;background:#1F2937;border-radius:999px;overflow:hidden;margin:16px auto}
@@ -400,9 +704,9 @@ function generatingPage(site: Site): string {
   h1{font-weight:800;letter-spacing:-0.02em}
   </style></head>
   <body><div>
-  <h1>Forging ${site.name}…</h1>
+  <h1>${site.status === "awaiting_confirmation" ? "Waiting on you" : `Forging ${site.name}…`}</h1>
   <div class="bar"><div></div></div>
-  <div class="msg">${site.message ?? "Working"} — ${site.progress}%</div>
+  <div class="msg">${stage} — ${site.progress}%</div>
   </div></body></html>`;
 }
 

@@ -4,6 +4,7 @@ import { and, desc, eq } from "drizzle-orm";
 import {
   db,
   jobsTable,
+  messagesTable,
   sitesTable,
   telegramBotsTable,
   usersTable,
@@ -18,16 +19,24 @@ interface ChatState {
     | { kind: "create" }
     | { kind: "edit"; siteId: string }
     | { kind: "host_token" }
+    | { kind: "host_purpose"; pendingId: string; username: string }
+    | { kind: "host_ai"; pendingId: string; username: string; purpose: string }
     | { kind: "stop_bot" }
     | { kind: "delete_site" }
     | { kind: "preview_site" }
     | { kind: "retry_site" }
-    | { kind: "status_site" };
+    | { kind: "status_site" }
+    | { kind: "confirm_build"; siteId: string };
 }
 
 class TelegramBotManager {
   private active = new Map<string, TelegramBot>();
   private state = new Map<string, ChatState>();
+  /** pendingId -> in-memory record before we commit it to DB. */
+  private pendingHosted = new Map<
+    string,
+    { token: string; username: string; displayName: string | null }
+  >();
 
   async startAll(): Promise<void> {
     const bots = await db
@@ -44,7 +53,6 @@ class TelegramBotManager {
 
   async startBot(record: DbBot): Promise<TelegramBot> {
     if (this.active.has(record.id)) return this.active.get(record.id)!;
-
     const bot = new TelegramBot(record.token, { polling: true });
     this.active.set(record.id, bot);
 
@@ -91,12 +99,16 @@ class TelegramBotManager {
     return this.active.has(botId);
   }
 
+  // -------------------------------------------------------------------------
+  // Command handlers
+  // -------------------------------------------------------------------------
+
   private wireHandlers(
     ownerUserId: string,
     botId: string,
     bot: TelegramBot,
   ): void {
-    const cmd = (re: RegExp) => bot.onText(re, async (msg) => {});
+    void botId;
 
     bot.onText(/^\/(start|help)\b/i, async (msg) => {
       await bot.sendMessage(msg.chat.id, this.helpText(), {
@@ -127,10 +139,7 @@ class TelegramBotManager {
         await this.sendStatus(ownerUserId, bot, msg.chat.id, arg);
       } else {
         this.setState(msg.chat.id, { awaiting: { kind: "status_site" } });
-        await bot.sendMessage(
-          msg.chat.id,
-          "Which site? Send me its name or id.",
-        );
+        await bot.sendMessage(msg.chat.id, "Which site? Send name or id.");
       }
     });
 
@@ -140,10 +149,7 @@ class TelegramBotManager {
         await this.sendPreview(ownerUserId, bot, msg.chat.id, arg);
       } else {
         this.setState(msg.chat.id, { awaiting: { kind: "preview_site" } });
-        await bot.sendMessage(
-          msg.chat.id,
-          "Which site to preview? Send me its name or id.",
-        );
+        await bot.sendMessage(msg.chat.id, "Which site? Send name or id.");
       }
     });
 
@@ -152,7 +158,7 @@ class TelegramBotManager {
       if (arg) {
         const site = await this.findSite(ownerUserId, arg);
         if (!site) {
-          await bot.sendMessage(msg.chat.id, "❌ No site matched that.");
+          await bot.sendMessage(msg.chat.id, "❌ No site matched.");
           return;
         }
         this.setState(msg.chat.id, {
@@ -174,27 +180,19 @@ class TelegramBotManager {
 
     bot.onText(/^\/retry\b\s*(.*)$/i, async (msg, match) => {
       const arg = (match?.[1] ?? "").trim();
-      if (arg) {
-        await this.retrySite(ownerUserId, bot, msg.chat.id, arg);
-      } else {
+      if (arg) await this.retrySite(ownerUserId, bot, msg.chat.id, arg);
+      else {
         this.setState(msg.chat.id, { awaiting: { kind: "retry_site" } });
-        await bot.sendMessage(
-          msg.chat.id,
-          "Which site to retry? Send name or id.",
-        );
+        await bot.sendMessage(msg.chat.id, "Which site to retry?");
       }
     });
 
     bot.onText(/^\/delete\b\s*(.*)$/i, async (msg, match) => {
       const arg = (match?.[1] ?? "").trim();
-      if (arg) {
-        await this.deleteSite(ownerUserId, bot, msg.chat.id, arg);
-      } else {
+      if (arg) await this.deleteSite(ownerUserId, bot, msg.chat.id, arg);
+      else {
         this.setState(msg.chat.id, { awaiting: { kind: "delete_site" } });
-        await bot.sendMessage(
-          msg.chat.id,
-          "Which site to delete? Send name or id.",
-        );
+        await bot.sendMessage(msg.chat.id, "Which site to delete?");
       }
     });
 
@@ -202,17 +200,14 @@ class TelegramBotManager {
       await this.listJobs(ownerUserId, bot, msg.chat.id);
     });
 
-    bot.onText(/^\/hostbot\b\s*(.*)$/i, async (msg, match) => {
-      const arg = (match?.[1] ?? "").trim();
-      if (arg) {
-        await this.hostBot(ownerUserId, bot, msg.chat.id, arg);
-      } else {
-        this.setState(msg.chat.id, { awaiting: { kind: "host_token" } });
-        await bot.sendMessage(
-          msg.chat.id,
-          "🤖 Send me a Telegram bot token from @BotFather to host it.",
-        );
-      }
+    bot.onText(/^\/hostbot\b/i, async (msg) => {
+      this.setState(msg.chat.id, { awaiting: { kind: "host_token" } });
+      await bot.sendMessage(
+        msg.chat.id,
+        "🤖 Send me a Telegram bot token from @BotFather.\n\n" +
+          "I'll delete your message immediately for safety, validate the token, " +
+          "and then ask a couple of quick questions.",
+      );
     });
 
     bot.onText(/^\/mybots\b/i, async (msg) => {
@@ -221,62 +216,116 @@ class TelegramBotManager {
 
     bot.onText(/^\/stopbot\b\s*(.*)$/i, async (msg, match) => {
       const arg = (match?.[1] ?? "").trim();
-      if (arg) {
-        await this.stopBotByArg(ownerUserId, bot, msg.chat.id, arg);
-      } else {
+      if (arg) await this.stopBotByArg(ownerUserId, bot, msg.chat.id, arg);
+      else {
         this.setState(msg.chat.id, { awaiting: { kind: "stop_bot" } });
-        await bot.sendMessage(
-          msg.chat.id,
-          "Send me the bot username (without @) or id to stop.",
-        );
+        await bot.sendMessage(msg.chat.id, "Send the bot username or id.");
       }
     });
 
+    // Free-text message router
     bot.on("message", async (msg) => {
       const text = msg.text?.trim();
       if (!text || text.startsWith("/")) return;
       const state = this.state.get(String(msg.chat.id));
       if (!state?.awaiting) return;
-      this.clearState(msg.chat.id);
 
       switch (state.awaiting.kind) {
         case "create":
+          this.clearState(msg.chat.id);
           await this.runCreate(ownerUserId, bot, msg.chat.id, text);
           return;
-        case "edit":
-          await this.runEdit(
+        case "edit": {
+          const siteId = state.awaiting.siteId;
+          this.clearState(msg.chat.id);
+          await this.runEdit(ownerUserId, bot, msg.chat.id, siteId, text);
+          return;
+        }
+        case "host_token":
+          // Delete the message that contains the token immediately.
+          await bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+          await this.handleHostToken(ownerUserId, bot, msg.chat.id, text);
+          return;
+        case "host_purpose": {
+          const next = state.awaiting;
+          this.setState(msg.chat.id, {
+            awaiting: {
+              kind: "host_ai",
+              pendingId: next.pendingId,
+              username: next.username,
+              purpose: text,
+            },
+          });
+          await bot.sendMessage(
+            msg.chat.id,
+            "🤖 Should this bot be powered by AI? (yes / no)",
+          );
+          return;
+        }
+        case "host_ai": {
+          const lc = text.toLowerCase();
+          const useAi = /^(y|yes|true|1|sure|please|ai)/.test(lc);
+          const stash = state.awaiting;
+          this.clearState(msg.chat.id);
+          await this.finalizeHostedBot(
             ownerUserId,
             bot,
             msg.chat.id,
-            state.awaiting.siteId,
-            text,
+            stash.pendingId,
+            stash.username,
+            stash.purpose,
+            useAi,
           );
           return;
-        case "host_token":
-          await this.hostBot(ownerUserId, bot, msg.chat.id, text);
-          return;
+        }
         case "stop_bot":
+          this.clearState(msg.chat.id);
           await this.stopBotByArg(ownerUserId, bot, msg.chat.id, text);
           return;
         case "delete_site":
+          this.clearState(msg.chat.id);
           await this.deleteSite(ownerUserId, bot, msg.chat.id, text);
           return;
         case "preview_site":
+          this.clearState(msg.chat.id);
           await this.sendPreview(ownerUserId, bot, msg.chat.id, text);
           return;
         case "retry_site":
+          this.clearState(msg.chat.id);
           await this.retrySite(ownerUserId, bot, msg.chat.id, text);
           return;
         case "status_site":
+          this.clearState(msg.chat.id);
           await this.sendStatus(ownerUserId, bot, msg.chat.id, text);
           return;
+        case "confirm_build": {
+          const siteId = state.awaiting.siteId;
+          const lc = text.toLowerCase();
+          if (
+            /^(build|yes|go|ship it|do it|confirm|approve|let'?s go|sounds good)\b/.test(
+              lc,
+            )
+          ) {
+            this.clearState(msg.chat.id);
+            await this.confirmBuild(ownerUserId, bot, msg.chat.id, siteId);
+          } else {
+            // treat as edit instructions on the plan
+            this.clearState(msg.chat.id);
+            await bot.sendMessage(
+              msg.chat.id,
+              "👌 Got it. I'll incorporate that. Re-send `/preview` after I rebuild.",
+              { parse_mode: "Markdown" },
+            );
+          }
+          return;
+        }
       }
     });
-
-    void cmd; // keep linter quiet
   }
 
-  // ---------- helpers ----------
+  // -------------------------------------------------------------------------
+  // helpers
+  // -------------------------------------------------------------------------
 
   private setState(chatId: number | string, s: ChatState): void {
     this.state.set(String(chatId), s);
@@ -289,15 +338,15 @@ class TelegramBotManager {
     return [
       "*WebForge bot* — forge sites from chat.",
       "",
-      "`/create <prompt>` — build a new site",
+      "`/create <prompt>` — analyze + build a new site",
       "`/edit <name>` — edit an existing site",
       "`/status <name>` — check progress",
       "`/preview <name>` — get a live link",
       "`/mysites` — list your sites",
-      "`/retry <name>` — retry a failed build",
+      "`/retry <name>` — retry a failed step",
       "`/delete <name>` — delete a site",
       "`/tasks` or `/queue` — see what's running",
-      "`/hostbot <token>` — host another bot here",
+      "`/hostbot` — host another Telegram bot",
       "`/mybots` — list your hosted bots",
       "`/stopbot <username>` — stop a hosted bot",
     ].join("\n");
@@ -322,12 +371,19 @@ class TelegramBotManager {
         status: "queued",
       })
       .returning();
+    await db.insert(messagesTable).values({
+      userId,
+      siteId: site.id,
+      role: "user",
+      kind: "text",
+      content: prompt,
+    });
     const [job] = await db
       .insert(jobsTable)
       .values({
         userId,
         siteId: site.id,
-        kind: "create",
+        kind: "analyze",
         status: "queued",
         progress: 0,
         message: "Queued",
@@ -336,10 +392,10 @@ class TelegramBotManager {
     await jobQueue.enqueue(job.id);
     await bot.sendMessage(
       chatId,
-      `🛠️ Forging *${site.name}*…\nLive link will be:\n${baseUrl}/api/hosted/${site.slug}`,
+      `🔍 Analyzing *${site.name}*…\nFuture link: ${baseUrl}/api/hosted/${site.slug}/`,
       { parse_mode: "Markdown" },
     );
-    void this.pollAndNotify(bot, chatId, site.id);
+    void this.pollAnalysisAndAskConfirmation(bot, chatId, site.id);
   }
 
   private async runEdit(
@@ -358,6 +414,13 @@ class TelegramBotManager {
       await bot.sendMessage(chatId, "❌ Site not found.");
       return;
     }
+    await db.insert(messagesTable).values({
+      userId,
+      siteId: site.id,
+      role: "user",
+      kind: "text",
+      content: instructions,
+    });
     const [job] = await db
       .insert(jobsTable)
       .values({
@@ -378,16 +441,98 @@ class TelegramBotManager {
     await bot.sendMessage(chatId, `✏️ Updating *${site.name}*…`, {
       parse_mode: "Markdown",
     });
-    void this.pollAndNotify(bot, chatId, site.id);
+    void this.pollBuildAndNotify(bot, chatId, site.id);
   }
 
-  private async pollAndNotify(
+  private async confirmBuild(
+    userId: string,
+    bot: TelegramBot,
+    chatId: number,
+    siteId: string,
+  ): Promise<void> {
+    const [site] = await db
+      .select()
+      .from(sitesTable)
+      .where(and(eq(sitesTable.id, siteId), eq(sitesTable.userId, userId)))
+      .limit(1);
+    if (!site) return;
+    await db.insert(messagesTable).values({
+      userId,
+      siteId,
+      role: "user",
+      kind: "text",
+      content: "Confirmed via Telegram",
+    });
+    const [job] = await db
+      .insert(jobsTable)
+      .values({
+        userId,
+        siteId,
+        kind: "create",
+        status: "queued",
+        progress: 0,
+        message: "Queued",
+      })
+      .returning();
+    await db
+      .update(sitesTable)
+      .set({ status: "queued", progress: 0, message: "Queued" })
+      .where(eq(sitesTable.id, siteId));
+    await jobQueue.enqueue(job.id);
+    await bot.sendMessage(chatId, `🛠️ Building *${site.name}*…`, {
+      parse_mode: "Markdown",
+    });
+    void this.pollBuildAndNotify(bot, chatId, siteId);
+  }
+
+  private async pollAnalysisAndAskConfirmation(
+    bot: TelegramBot,
+    chatId: number,
+    siteId: string,
+  ): Promise<void> {
+    for (let i = 0; i < 80; i++) {
+      await sleep(1500);
+      const [s] = await db
+        .select()
+        .from(sitesTable)
+        .where(eq(sitesTable.id, siteId))
+        .limit(1);
+      if (!s) return;
+      if (s.status === "awaiting_confirmation" && s.plan) {
+        const lines: string[] = [];
+        lines.push(`📋 *Plan for ${s.name}*`);
+        lines.push("");
+        lines.push(s.plan.summary);
+        lines.push("");
+        lines.push("*Pages:*");
+        for (const p of s.plan.pages) lines.push(`  • ${p.title}`);
+        lines.push("");
+        lines.push(`Style: ${s.plan.styles.palette} (${s.plan.styles.mood})`);
+        lines.push("");
+        lines.push("Reply `build` to confirm, or describe changes.");
+        this.setState(chatId, { awaiting: { kind: "confirm_build", siteId } });
+        await bot.sendMessage(chatId, lines.join("\n"), {
+          parse_mode: "Markdown",
+        });
+        return;
+      }
+      if (s.status === "failed") {
+        await bot.sendMessage(
+          chatId,
+          `❌ Analysis failed: ${s.error ?? "unknown"}`,
+        );
+        return;
+      }
+    }
+  }
+
+  private async pollBuildAndNotify(
     bot: TelegramBot,
     chatId: number,
     siteId: string,
   ): Promise<void> {
     const baseUrl = publicBaseUrl();
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 80; i++) {
       await sleep(1500);
       const [s] = await db
         .select()
@@ -398,7 +543,7 @@ class TelegramBotManager {
       if (s.status === "ready") {
         await bot.sendMessage(
           chatId,
-          `✅ *${s.name}* is live\n${baseUrl}/api/hosted/${s.slug}`,
+          `✅ *${s.name}* is live\n${baseUrl}/api/hosted/${s.slug}/`,
           { parse_mode: "Markdown" },
         );
         return;
@@ -452,10 +597,12 @@ class TelegramBotManager {
           ? "✅"
           : s.status === "failed"
             ? "❌"
-            : s.status === "generating"
+            : s.status === "building" || s.status === "analyzing"
               ? "🛠️"
-              : "⏳";
-      return `${emoji} *${s.name}* — ${s.status}\n${baseUrl}/api/hosted/${s.slug}`;
+              : s.status === "awaiting_confirmation"
+                ? "⏸️"
+                : "⏳";
+      return `${emoji} *${s.name}* — ${s.status}\n${baseUrl}/api/hosted/${s.slug}/`;
     });
     await bot.sendMessage(chatId, lines.join("\n\n"), {
       parse_mode: "Markdown",
@@ -500,10 +647,7 @@ class TelegramBotManager {
       );
       return;
     }
-    await bot.sendMessage(
-      chatId,
-      `🔗 ${baseUrl}/api/hosted/${site.slug}`,
-    );
+    await bot.sendMessage(chatId, `🔗 ${baseUrl}/api/hosted/${site.slug}/`);
   }
 
   private async retrySite(
@@ -517,12 +661,13 @@ class TelegramBotManager {
       await bot.sendMessage(chatId, "❌ No site matched.");
       return;
     }
+    const kind = site.plan ? "retry" : "analyze";
     const [job] = await db
       .insert(jobsTable)
       .values({
         userId,
         siteId: site.id,
-        kind: "retry",
+        kind,
         status: "queued",
         progress: 0,
         message: "Queued",
@@ -536,7 +681,7 @@ class TelegramBotManager {
     await bot.sendMessage(chatId, `🔁 Retrying *${site.name}*…`, {
       parse_mode: "Markdown",
     });
-    void this.pollAndNotify(bot, chatId, site.id);
+    void this.pollBuildAndNotify(bot, chatId, site.id);
   }
 
   private async deleteSite(
@@ -595,7 +740,9 @@ class TelegramBotManager {
     });
   }
 
-  private async hostBot(
+  // ---- Bot hosting conversation flow --------------------------------------
+
+  private async handleHostToken(
     userId: string,
     bot: TelegramBot,
     chatId: number,
@@ -606,24 +753,80 @@ class TelegramBotManager {
         chatId,
         "❌ That doesn't look like a valid bot token. Get one from @BotFather.",
       );
+      this.clearState(chatId);
       return;
     }
-    const preview = `${token.slice(0, 6)}…${token.slice(-4)}`;
+    // Test the token via getMe before storing it.
+    let me: { username?: string; first_name?: string };
+    try {
+      const probe = new TelegramBot(token, { polling: false });
+      me = await probe.getMe();
+    } catch (err) {
+      await bot.sendMessage(
+        chatId,
+        `❌ Telegram rejected that token: ${err instanceof Error ? err.message : "invalid"}`,
+      );
+      this.clearState(chatId);
+      return;
+    }
+    const username = me.username ?? "unknown";
+    // Stash in memory and ask for the bot's purpose.
+    const pendingId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.pendingHosted.set(pendingId, {
+      token,
+      username,
+      displayName: me.first_name ?? null,
+    });
+    this.setState(chatId, {
+      awaiting: { kind: "host_purpose", pendingId, username },
+    });
+    await bot.sendMessage(
+      chatId,
+      `✅ Token validated for @${username}.\n\nWhat is this bot for? (one or two sentences)`,
+    );
+  }
+
+  private async finalizeHostedBot(
+    userId: string,
+    bot: TelegramBot,
+    chatId: number,
+    pendingId: string,
+    username: string,
+    purpose: string,
+    useAi: boolean,
+  ): Promise<void> {
+    const stash = this.pendingHosted.get(pendingId);
+    this.pendingHosted.delete(pendingId);
+    if (!stash) {
+      await bot.sendMessage(chatId, "❌ That request expired. Try `/hostbot` again.");
+      return;
+    }
+    const preview = `${stash.token.slice(0, 6)}…${stash.token.slice(-4)}`;
     const [record] = await db
       .insert(telegramBotsTable)
       .values({
         userId,
-        token,
+        token: stash.token,
         tokenPreview: preview,
+        username: stash.username,
+        displayName: stash.displayName,
         status: "active",
       })
       .returning();
     try {
-      const started = await this.startBot(record);
-      const me = await started.getMe();
+      await this.startBot(record);
+      const aiNote = useAi
+        ? "AI replies are *enabled*."
+        : "AI replies are *disabled* — only commands work.";
       await bot.sendMessage(
         chatId,
-        `✅ Hosting @${me.username}. Try /create over there.`,
+        [
+          `✅ Hosting @${username}.`,
+          `Purpose: _${escapeMd(purpose)}_`,
+          aiNote,
+          "Try `/start` over there.",
+        ].join("\n"),
+        { parse_mode: "Markdown" },
       );
     } catch (err) {
       await db
@@ -692,6 +895,10 @@ class TelegramBotManager {
       `🛑 Stopped @${target.username ?? target.tokenPreview}.`,
     );
   }
+}
+
+function escapeMd(s: string): string {
+  return s.replace(/([_*`[\]()])/g, "\\$1");
 }
 
 function sleep(ms: number): Promise<void> {
