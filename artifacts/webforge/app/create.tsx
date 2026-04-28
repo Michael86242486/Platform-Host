@@ -3,7 +3,7 @@ import { useAuth } from "@clerk/expo";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Haptics from "expo-haptics";
 import * as Linking from "expo-linking";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -70,11 +70,16 @@ const apiBase =
 export default function CreateScreen() {
   const colors = useColors();
   const router = useRouter();
+  const params = useLocalSearchParams<{ prompt?: string; siteId?: string }>();
   const { getToken } = useAuth();
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(
+    typeof params.prompt === "string" ? params.prompt : "",
+  );
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [activeSiteId, setActiveSiteId] = useState<string | null>(null);
+  const [activeSiteId, setActiveSiteId] = useState<string | null>(
+    typeof params.siteId === "string" ? params.siteId : null,
+  );
   const create = useCreateSite();
 
   const pulse = useRef(new Animated.Value(1)).current;

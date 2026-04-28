@@ -52,6 +52,55 @@ class TelegramBotManager {
       });
     }
     logger.info({ count: this.active.size }, "Telegram bots resumed");
+    await this.ensureSystemBot().catch((err) => {
+      logger.warn({ err }, "ensureSystemBot failed");
+    });
+  }
+
+  /**
+   * Ensure the global WebForge Telegram bot (configured via the
+   * WEBFORGE_TELEGRAM_BOT_TOKEN env var) is registered and polling.
+   * The DB row requires a userId, so we tie it to the earliest-created
+   * user (a single token can only be polled by one process).
+   */
+  async ensureSystemBot(): Promise<void> {
+    const token = process.env["WEBFORGE_TELEGRAM_BOT_TOKEN"];
+    if (!token) return;
+    const existing = await db
+      .select()
+      .from(telegramBotsTable)
+      .where(eq(telegramBotsTable.token, token))
+      .limit(1);
+    if (existing.length > 0) {
+      const row = existing[0];
+      if (!this.active.has(row.id)) {
+        await this.startBot(row).catch((err) => {
+          logger.warn({ err, botId: row.id }, "Failed to start system bot");
+        });
+      }
+      return;
+    }
+    const [user] = await db.select().from(usersTable).limit(1);
+    if (!user) {
+      logger.info(
+        "WEBFORGE_TELEGRAM_BOT_TOKEN set but no users yet — system bot deferred",
+      );
+      return;
+    }
+    const preview = `${token.slice(0, 6)}…${token.slice(-4)}`;
+    const [record] = await db
+      .insert(telegramBotsTable)
+      .values({
+        userId: user.id,
+        token,
+        tokenPreview: preview,
+        status: "active",
+      })
+      .returning();
+    await this.startBot(record).catch((err) => {
+      logger.warn({ err, botId: record.id }, "Failed to start system bot");
+    });
+    logger.info({ botId: record.id }, "System bot registered + started");
   }
 
   async startBot(record: DbBot): Promise<TelegramBot> {

@@ -29,10 +29,13 @@ function botToDto(bot: TelegramBot) {
 }
 
 router.get("/bots", requireAuth, async (req, res) => {
+  // Ensure the global system bot (WEBFORGE_TELEGRAM_BOT_TOKEN) is registered
+  // and polling. Tied to the first webforge user — runs on demand here in
+  // case the env var was set after server boot, or no users existed at boot.
+  await telegramBots.ensureSystemBot().catch(() => undefined);
   const rows = await db
     .select()
     .from(telegramBotsTable)
-    .where(eq(telegramBotsTable.userId, req.user!.id))
     .orderBy(desc(telegramBotsTable.createdAt));
   res.json(rows.map(botToDto));
 });

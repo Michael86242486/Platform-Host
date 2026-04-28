@@ -11,7 +11,7 @@ import {
 import { buildPlan, analyzeProject } from "./generator";
 import {
   analyzeProjectAI,
-  buildProjectAI,
+  buildProjectAIStream,
   editProjectAI,
 } from "./llm-generator";
 import { logger } from "./logger";
@@ -280,44 +280,105 @@ class JobQueue {
 
     const isEdit = job.kind === "edit" && !!job.instructions;
 
-    // Start the AI build in parallel with the cosmetic progress stages.
-    const buildPromise: Promise<{
+    let out: {
       files: Record<string, string>;
       coverColor: string;
       name: string;
-    }> = isEdit && site.files
-      ? editProjectAI(site.files, site.name, job.instructions!)
-      : buildProjectAI(plan, site.name, site.prompt);
+    };
 
-    for (const stage of BUILD_STAGES) {
-      await sleep(stage.ms);
-      await db
-        .update(jobsTable)
-        .set({ progress: stage.progress, message: stage.label })
-        .where(eq(jobsTable.id, job.id));
+    if (isEdit && site.files) {
+      // Edits still go through the JSON path (full-rewrite semantics).
+      for (const stage of BUILD_STAGES) {
+        await sleep(stage.ms);
+        await db
+          .update(jobsTable)
+          .set({ progress: stage.progress, message: stage.label })
+          .where(eq(jobsTable.id, job.id));
+        await db
+          .update(sitesTable)
+          .set({
+            progress: stage.progress,
+            message: stage.label,
+            updatedAt: new Date(),
+          })
+          .where(eq(sitesTable.id, siteId));
+        await insertAgentMessage(
+          job.userId,
+          siteId,
+          "build_progress",
+          stage.label,
+          { progress: stage.progress },
+        );
+      }
+      out = await editProjectAI(site.files, site.name, job.instructions!);
+    } else {
+      // Quick cosmetic ramp before the model starts streaming.
       await db
         .update(sitesTable)
         .set({
-          progress: stage.progress,
-          message: stage.label,
+          status: "building",
+          progress: 8,
+          message: BUILD_STAGES[0].label,
+          files: {},
           updatedAt: new Date(),
         })
         .where(eq(sitesTable.id, siteId));
-      await insertAgentMessage(
-        job.userId,
-        siteId,
-        "build_progress",
-        stage.label,
-        { progress: stage.progress },
-      );
-    }
+      await db
+        .update(jobsTable)
+        .set({ progress: 8, message: BUILD_STAGES[0].label })
+        .where(eq(jobsTable.id, job.id));
 
-    let out;
-    try {
-      out = await buildPromise;
-    } catch (err) {
-      // edit failures fall back to nothing - rethrow so failJob handles it
-      throw err;
+      // Stream the build token-by-token. We update site.files in real time so
+      // the iframe in the mobile app shows partial HTML as the model writes.
+      let lastReportedFile: string | null = null;
+      let revealedCount = 0;
+      const seenFiles = new Set<string>();
+      out = await buildProjectAIStream(
+        plan,
+        site.name,
+        site.prompt,
+        async ({ coverColor, files, currentFile, bytes }) => {
+          const fileCount = Object.keys(files).length;
+          // Estimate progress: 10% start + grows with bytes streamed (capped 90%)
+          const byteProgress = Math.min(Math.round(bytes / 250), 80);
+          const pct = Math.min(10 + byteProgress, 90);
+          const label = currentFile
+            ? streamLabel(currentFile)
+            : "Streaming bytes…";
+          await db
+            .update(sitesTable)
+            .set({
+              status: "building",
+              files: files as Record<string, string>,
+              coverColor,
+              progress: pct,
+              message: label,
+              updatedAt: new Date(),
+            })
+            .where(eq(sitesTable.id, siteId));
+          await db
+            .update(jobsTable)
+            .set({ progress: pct, message: label })
+            .where(eq(jobsTable.id, job.id));
+
+          // Emit a chat log line whenever a new file appears or we cross 50%.
+          if (currentFile && currentFile !== lastReportedFile) {
+            lastReportedFile = currentFile;
+            if (!seenFiles.has(currentFile)) {
+              seenFiles.add(currentFile);
+              revealedCount = fileCount;
+              await insertAgentMessage(
+                job.userId,
+                siteId,
+                "build_progress",
+                streamLabel(currentFile),
+                { progress: pct, file: currentFile },
+              );
+            }
+          }
+          void revealedCount;
+        },
+      );
     }
 
     const planForBuild: SitePlan = isEdit
@@ -327,52 +388,6 @@ class JobQueue {
           summary: `${plan.summary} Edit: ${job.instructions}`,
         }
       : plan;
-
-    // Set the cover color now so the preview iframe in the app picks it up,
-    // then reveal files one at a time (Bolt.new-style streaming reveal).
-    await db
-      .update(sitesTable)
-      .set({
-        status: "building",
-        progress: 60,
-        message: "Materializing files…",
-        coverColor: out.coverColor,
-        files: {},
-        updatedAt: new Date(),
-      })
-      .where(eq(sitesTable.id, siteId));
-
-    // Reveal files in a deterministic order: shared assets first (so when
-    // pages land they render correctly), then index.html, then the rest.
-    const orderedPaths = orderRevealPaths(Object.keys(out.files));
-    const partial: Record<string, string> = {};
-    for (let i = 0; i < orderedPaths.length; i++) {
-      const p = orderedPaths[i];
-      partial[p] = out.files[p];
-      const pct = 60 + Math.round(((i + 1) / orderedPaths.length) * 38);
-      const label = revealLabel(p);
-      await db
-        .update(sitesTable)
-        .set({
-          files: { ...partial },
-          progress: pct,
-          message: label,
-          updatedAt: new Date(),
-        })
-        .where(eq(sitesTable.id, siteId));
-      await db
-        .update(jobsTable)
-        .set({ progress: pct, message: label })
-        .where(eq(jobsTable.id, job.id));
-      await insertAgentMessage(
-        job.userId,
-        siteId,
-        "build_progress",
-        label,
-        { progress: pct, file: p },
-      );
-      await sleep(380);
-    }
 
     await db
       .update(sitesTable)
@@ -474,28 +489,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Order files for the reveal animation: shared assets first, then home,
- *  then remaining pages, then anything else. */
-function orderRevealPaths(paths: string[]): string[] {
-  const css = paths.filter((p) => p.endsWith(".css"));
-  const js = paths.filter((p) => p.endsWith(".js"));
-  const home = paths.filter((p) => p === "index.html");
-  const otherPages = paths.filter(
-    (p) => p.endsWith(".html") && p !== "index.html",
-  );
-  const rest = paths.filter(
-    (p) => !css.includes(p) && !js.includes(p) && !p.endsWith(".html"),
-  );
-  return [...css, ...js, ...home, ...otherPages, ...rest];
-}
-
-function revealLabel(path: string): string {
+function streamLabel(path: string): string {
   if (path.endsWith(".css")) return `Painting styles — ${path}`;
   if (path.endsWith(".js")) return `Wiring interactions — ${path}`;
-  if (path === "index.html") return "Materializing home page";
+  if (path === "index.html") return "Streaming home page";
   if (path.endsWith(".html"))
-    return `Materializing ${path.replace(/\.html$/, "")} page`;
-  return `Adding ${path}`;
+    return `Streaming ${path.replace(/\.html$/, "")} page`;
+  return `Streaming ${path}`;
 }
 
 // Re-export so callers (telegram.ts) that imported BUILD_STAGES still work.

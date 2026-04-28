@@ -149,8 +149,213 @@ Hard requirements:
 8. coverColor is a single hex (the dominant accent for the brand card).
 9. NO external CDN scripts/fonts/images. Use system fonts and CSS-only visuals (gradients, SVG inlined sparingly). Emojis as accents are OK.
 10. Output must be valid JSON. Escape strings properly.
+11. Add a footer to every HTML page with EXACTLY this snippet just before </body>: <footer class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:48px">made with <strong style="color:inherit">(kidderboy)</strong></footer>
 
 Aim for a polished, modern aesthetic — think Linear, Vercel, Stripe, Bolt.new, Apple. Dark or light is fine; pick what fits the prompt.`;
+
+// ---------------------------------------------------------------------------
+// PHASE 2-STREAM — Build with token-by-token streaming using a simple
+// delimiter format so the client can render partial HTML in real time.
+// ---------------------------------------------------------------------------
+
+const BUILD_STREAM_SYSTEM = `You are WebForge, a top-tier frontend engineer + designer. Stream a complete static website using a simple delimiter format. NO JSON. NO markdown code fences.
+
+OUTPUT FORMAT (each marker on its OWN line, NO extra text):
+===COLOR: #RRGGBB===
+===FILE: assets/styles.css===
+<raw file contents>
+===FILE: assets/app.js===
+<raw file contents>
+===FILE: index.html===
+<!doctype html>
+<raw file contents>
+===FILE: <other-page>.html===
+...
+===END===
+
+Rules:
+1. Start with ONE ===COLOR: #XXXXXX=== line — a single hex (the dominant brand accent).
+2. For each file, emit ===FILE: <relative-path>=== on its own line then the raw file contents until the next ===FILE: or ===END=== marker.
+3. STREAM FILES IN THIS ORDER: assets/styles.css FIRST, then assets/app.js, then index.html, then other pages alphabetically.
+4. Each HTML file is a complete <!doctype html> document.
+5. Pages link to "assets/styles.css" and "assets/app.js" via RELATIVE paths (no leading slash).
+6. Inter-page links use relative paths (e.g. href="about.html"), NEVER root-relative.
+7. Shared <header> nav on every page links every page in the plan.
+8. Mobile-responsive. Modern CSS (flex, grid, clamp). Beautiful gradients, generous spacing, large headings.
+9. Real, specific copy that matches the prompt — no Lorem Ipsum, no placeholder names.
+10. Subtle interactivity in assets/app.js (form handling, smooth scroll, fade-in via IntersectionObserver). Dependency-free.
+11. NO external CDN scripts/fonts/images. System fonts and CSS-only visuals. Emojis as accents are OK.
+12. End with ===END=== on its OWN line.
+13. Add a footer to every HTML page with EXACTLY this snippet just before </body>: <footer class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:48px">made with <strong style="color:inherit">(kidderboy)</strong></footer>
+
+Aim for polished, modern aesthetic — Linear, Vercel, Stripe, Apple. Pick a palette that fits the prompt.`;
+
+export type StreamUpdate = {
+  coverColor: string;
+  files: SiteFiles;
+  currentFile: string | null;
+  bytes: number;
+};
+
+export async function buildProjectAIStream(
+  plan: SitePlan,
+  intentName: string,
+  originalPrompt: string,
+  onUpdate: (u: StreamUpdate) => Promise<void> | void,
+): Promise<BuildResult> {
+  try {
+    const planSummary = {
+      name: intentName,
+      type: plan.type,
+      summary: plan.summary,
+      pages: plan.pages.map((p) => ({
+        path: p.path,
+        title: p.title,
+        purpose: p.purpose,
+        sections: p.sections,
+      })),
+      features: plan.features,
+      palette: plan.styles.palette,
+      mood: plan.styles.mood,
+    };
+
+    const stream = await openai.chat.completions.create({
+      model: TEXT_MODEL,
+      max_tokens: MAX_TOKENS,
+      stream: true,
+      messages: [
+        { role: "system", content: BUILD_STREAM_SYSTEM },
+        {
+          role: "user",
+          content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}`,
+        },
+      ],
+    });
+
+    let buffer = "";
+    let coverColor = "#7CC7FF";
+    let currentFile: string | null = null;
+    let bytes = 0;
+    const files: Record<string, string> = {};
+    let lastFlush = 0;
+    let pendingFlush = false;
+
+    const flush = async (force: boolean) => {
+      if (pendingFlush && !force) return;
+      const now = Date.now();
+      if (!force && now - lastFlush < 220) return;
+      pendingFlush = true;
+      try {
+        // Snapshot files (drop fences/markdown if model misbehaved)
+        const snapshot: SiteFiles = {};
+        for (const [k, v] of Object.entries(files)) snapshot[k] = v;
+        await onUpdate({
+          coverColor,
+          files: snapshot,
+          currentFile,
+          bytes,
+        });
+        lastFlush = now;
+      } finally {
+        pendingFlush = false;
+      }
+    };
+
+    const consumeLine = (rawLine: string): void => {
+      const line = rawLine;
+      const colorMatch = line.match(/^===COLOR:\s*(#[0-9a-fA-F]{6})\s*===\s*$/);
+      const fileMatch = line.match(/^===FILE:\s*(.+?)\s*===\s*$/);
+      const endMatch = line.match(/^===END===\s*$/);
+      if (colorMatch) {
+        coverColor = colorMatch[1];
+        return;
+      }
+      if (fileMatch) {
+        const sanitized = sanitizeOnePath(fileMatch[1]);
+        currentFile = sanitized;
+        if (sanitized && !(sanitized in files)) files[sanitized] = "";
+        return;
+      }
+      if (endMatch) {
+        currentFile = null;
+        return;
+      }
+      if (currentFile) {
+        files[currentFile] = (files[currentFile] ?? "") + line + "\n";
+        bytes += line.length + 1;
+      }
+    };
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content ?? "";
+      if (!delta) continue;
+      buffer += delta;
+
+      // Process all completed lines.
+      let nl = buffer.indexOf("\n");
+      while (nl !== -1) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        consumeLine(line);
+        nl = buffer.indexOf("\n");
+      }
+
+      // Also append the in-flight (pre-newline) buffer as a transient tail
+      // to the current file so the iframe shows live partial HTML. We undo
+      // it on the next iteration by re-overwriting the same key.
+      if (currentFile) {
+        const stable = files[currentFile] ?? "";
+        const transient = stable + buffer;
+        // Don't permanently store the transient tail in `files` (would
+        // double-count when we later consume the line). Instead temporarily
+        // patch a snapshot for the flush.
+        const now = Date.now();
+        if (now - lastFlush > 220 && !pendingFlush) {
+          pendingFlush = true;
+          try {
+            const snapshot: SiteFiles = { ...files, [currentFile]: transient };
+            await onUpdate({
+              coverColor,
+              files: snapshot,
+              currentFile,
+              bytes: bytes + buffer.length,
+            });
+            lastFlush = now;
+          } finally {
+            pendingFlush = false;
+          }
+        }
+      } else {
+        await flush(false);
+      }
+    }
+
+    // Final newline-less remainder
+    if (buffer.length > 0) {
+      consumeLine(buffer);
+      buffer = "";
+    }
+    await flush(true);
+
+    const cleaned = sanitizeFiles(files, plan);
+    if (Object.keys(cleaned).length === 0) throw new Error("no files produced");
+    return { files: cleaned, coverColor, name: intentName };
+  } catch (err) {
+    logger.warn(
+      { err: String(err) },
+      "buildProjectAIStream failed; using fallback",
+    );
+    return buildProjectFallback(plan, intentName);
+  }
+}
+
+function sanitizeOnePath(raw: string): string | null {
+  const p = raw.trim().replace(/^\/+/, "");
+  if (!p || p.length > 200) return null;
+  if (p.includes("..")) return null;
+  if (!/^[a-zA-Z0-9._\-/]+$/.test(p)) return null;
+  return p;
+}
 
 export async function buildProjectAI(
   plan: SitePlan,

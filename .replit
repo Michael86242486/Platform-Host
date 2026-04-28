@@ -22,6 +22,7 @@ timeoutMs = 20000
 
 [userenv.shared]
 VITE_CLERK_PUBLISHABLE_KEY = "pk_test_d2FudGVkLWJvYmNhdC03Ni5jbGVyay5hY2NvdW50cy5kZXYk"
+WEBFORGE_TELEGRAM_BOT_TOKEN = "8600399102:AAFX18MYCRLbRhCkikeLe9gGlSgyIj1ex_A"
 
 [[ports]]
 localPort = 8080
