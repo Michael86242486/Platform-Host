@@ -1,5 +1,6 @@
 import { Feather } from "@expo/vector-icons";
-import { useAuth } from "@clerk/expo";
+
+import { useAuth } from "@/lib/auth";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Haptics from "expo-haptics";
 import * as Linking from "expo-linking";

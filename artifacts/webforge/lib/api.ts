@@ -1,7 +1,8 @@
-import { useAuth } from "@clerk/expo";
 import { useEffect, useRef } from "react";
 
 import { setAuthTokenGetter, setBaseUrl } from "@workspace/api-client-react";
+
+import { useAuth } from "./auth";
 
 const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 
@@ -10,7 +11,7 @@ if (API_URL) {
 }
 
 /**
- * Wires up the API client with a Clerk token getter.
+ * Wires up the API client with our magic-link session token.
  * Mount this once near the root of the authed tree.
  */
 export function useApiAuth(): void {

@@ -1,7 +1,7 @@
-import { useAuth } from "@clerk/expo";
 import { Redirect } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 
+import { useAuth } from "@/lib/auth";
 import { useColors } from "@/hooks/useColors";
 
 export default function Index() {

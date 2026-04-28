@@ -6,7 +6,7 @@ import {
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { eq } from "drizzle-orm";
 
-import { db, usersTable, type User } from "../lib/db";
+import { db, sessionsTable, usersTable, type User } from "../lib/db";
 import { logger } from "../lib/logger";
 
 declare global {
@@ -59,11 +59,49 @@ export const requireAuth: RequestHandler = async (
   res: Response,
   next: NextFunction,
 ) => {
+  // 1) Magic-link / session-token auth (Authorization: Bearer wf_...)
+  //    This works without any external auth provider configured, so the
+  //    mobile app's "generate" button works out of the box.
+  const authHeader = req.headers.authorization;
+  const bearer = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : null;
+  if (bearer && bearer.startsWith("wf_")) {
+    try {
+      const [session] = await db
+        .select()
+        .from(sessionsTable)
+        .where(eq(sessionsTable.token, bearer))
+        .limit(1);
+      if (!session || session.expiresAt < new Date()) {
+        res.status(401).json({ error: "expired" });
+        return;
+      }
+      const [user] = await db
+        .select()
+        .from(usersTable)
+        .where(eq(usersTable.id, session.userId))
+        .limit(1);
+      if (!user) {
+        res.status(401).json({ error: "no_user" });
+        return;
+      }
+      req.user = user;
+      next();
+      return;
+    } catch (err) {
+      logger.error({ err }, "Bearer auth failed");
+      res.status(500).json({ error: "auth_error" });
+      return;
+    }
+  }
+
+  // 2) Clerk auth — only if a secret key is configured.
   if (!realClerk) {
     res.status(401).json({
       error: "auth_not_configured",
       message:
-        "CLERK_SECRET_KEY is not set on the server. The Telegram bot still works.",
+        "Send a Bearer token from POST /api/auth/email-link, or set CLERK_SECRET_KEY.",
     });
     return;
   }

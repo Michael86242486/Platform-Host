@@ -1,5 +1,3 @@
-import { ClerkProvider } from "@clerk/expo";
-import { tokenCache } from "@clerk/expo/token-cache";
 import {
   Inter_400Regular,
   Inter_500Medium,
@@ -18,6 +16,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { WebBadgeRemover } from "@/components/WebBadgeRemover";
+import { AuthProvider } from "@/lib/auth";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -29,8 +28,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-
-const PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
 function RootLayoutNav() {
   return (
@@ -72,27 +69,21 @@ export default function RootLayout() {
 
   if (!fontsLoaded && !fontError) return null;
 
-  if (!PUBLISHABLE_KEY) {
-    throw new Error(
-      "Missing EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY — Clerk auth cannot start.",
-    );
-  }
-
   return (
-    <ClerkProvider publishableKey={PUBLISHABLE_KEY} tokenCache={tokenCache}>
+    <ErrorBoundary>
       <SafeAreaProvider>
-        <ErrorBoundary>
-          <QueryClientProvider client={queryClient}>
-            <GestureHandlerRootView style={{ flex: 1 }}>
-              <KeyboardProvider>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+          <KeyboardProvider>
+            <AuthProvider>
+              <QueryClientProvider client={queryClient}>
                 <StatusBar style="light" />
                 <WebBadgeRemover />
                 <RootLayoutNav />
-              </KeyboardProvider>
-            </GestureHandlerRootView>
-          </QueryClientProvider>
-        </ErrorBoundary>
+              </QueryClientProvider>
+            </AuthProvider>
+          </KeyboardProvider>
+        </GestureHandlerRootView>
       </SafeAreaProvider>
-    </ClerkProvider>
+    </ErrorBoundary>
   );
 }

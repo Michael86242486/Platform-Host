@@ -2,6 +2,7 @@ export {
   db,
   pool,
   usersTable,
+  sessionsTable,
   sitesTable,
   jobsTable,
   messagesTable,
@@ -10,6 +11,8 @@ export {
 export type {
   User,
   InsertUser,
+  Session,
+  InsertSession,
   Site,
   InsertSite,
   SiteAnalysis,

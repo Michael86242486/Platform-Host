@@ -1,5 +1,6 @@
-import { useAuth } from "@clerk/expo";
 import { Redirect, Stack } from "expo-router";
+
+import { useAuth } from "@/lib/auth";
 
 export default function AuthLayout() {
   const { isLoaded, isSignedIn } = useAuth();

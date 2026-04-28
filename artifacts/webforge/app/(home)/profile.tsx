@@ -1,5 +1,6 @@
-import { useAuth, useUser } from "@clerk/expo";
 import { Feather } from "@expo/vector-icons";
+
+import { useAuth, useUser } from "@/lib/auth";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import React from "react";
@@ -23,7 +24,7 @@ export default function ProfileScreen() {
     router.replace("/(auth)/sign-in");
   };
 
-  const email = user?.primaryEmailAddress?.emailAddress;
+  const email = user?.email ?? undefined;
   const name =
     [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
     email ||

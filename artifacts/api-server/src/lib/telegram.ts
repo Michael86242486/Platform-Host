@@ -22,6 +22,63 @@ import { inferSiteName, uniqueSlug } from "./slug";
  * straight into the build job. */
 const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
 
+const TEMPLATES: ReadonlyArray<{
+  key: string;
+  title: string;
+  tagline: string;
+  prompt: string;
+}> = [
+  {
+    key: "portfolio",
+    title: "Portfolio",
+    tagline: "Personal showcase with hero, projects, about, contact",
+    prompt:
+      "A dark-mode minimal personal portfolio with a hero, projects grid, about section and a contact form. Modern typography, plenty of whitespace.",
+  },
+  {
+    key: "business",
+    title: "Business",
+    tagline: "Services, team, case studies, contact",
+    prompt:
+      "A professional small-business landing page with services, team, case studies, testimonials and a contact section. Confident, trustworthy palette.",
+  },
+  {
+    key: "saas",
+    title: "SaaS",
+    tagline: "Hero, features, pricing, FAQ, signup",
+    prompt:
+      "A modern SaaS landing page with a hero, value prop, feature grid, pricing tiers, FAQ and a signup CTA. Tech-forward gradient accents.",
+  },
+  {
+    key: "blog",
+    title: "Blog",
+    tagline: "Editorial layout with featured post + archive",
+    prompt:
+      "A clean editorial-style blog with a featured post hero, recent posts grid, sidebar with tags, and an about page. Serif headlines, comfortable line-length.",
+  },
+  {
+    key: "store",
+    title: "Store",
+    tagline: "E-commerce landing for a fashion brand",
+    prompt:
+      "A streetwear ecommerce landing page with a fullscreen hero, featured products grid, lookbook gallery and a newsletter signup. Bold, high-contrast.",
+  },
+  {
+    key: "fintech",
+    title: "Fintech",
+    tagline: "Bank/finance app marketing site",
+    prompt:
+      "A fintech app landing page with a hero, app screenshots, features, security/trust badges, pricing and download CTAs. Calm blues and deep navys.",
+  },
+  {
+    key: "restaurant",
+    title: "Restaurant",
+    tagline: "Menu, reservations, story, gallery",
+    prompt:
+      "A warm restaurant website with a hero, story, menu, reservations CTA and a photo gallery. Terracotta + cream Italian palette.",
+  },
+];
+
 interface ChatState {
   awaiting?:
     | { kind: "create" }
@@ -45,6 +102,9 @@ class TelegramBotManager {
     string,
     { token: string; username: string; displayName: string | null }
   >();
+  /** ownerUserId -> { name -> value } secrets stored in memory for this
+   *  process (will be persisted to DB once the secrets vault lands). */
+  private userSecrets = new Map<string, Map<string, string>>();
 
   async startAll(): Promise<void> {
     const bots = await db
@@ -219,8 +279,256 @@ class TelegramBotManager {
       }
     });
 
-    bot.onText(/^\/mysites\b/i, async (msg) => {
+    bot.onText(/^\/(mysites|mysite)\b/i, async (msg) => {
       await this.listSites(ownerUserId, bot, msg.chat.id);
+    });
+
+    bot.onText(/^\/cancel\b/i, async (msg) => {
+      const had = this.state.has(msg.chat.id);
+      this.clearState(msg.chat.id);
+      await bot.sendMessage(
+        msg.chat.id,
+        had
+          ? "✅ Cancelled. Send `/create <idea>` when you're ready."
+          : "Nothing to cancel — you're not in the middle of anything.",
+        { parse_mode: "Markdown" },
+      );
+    });
+
+    bot.onText(/^\/credits\b/i, async (msg) => {
+      await bot.sendMessage(
+        msg.chat.id,
+        [
+          "💳 *Credits*",
+          "",
+          "Tier: *Free*",
+          "Builds remaining today: *unlimited* (during beta)",
+          "",
+          "_Pro / VIP tiers coming soon — see /boosts._",
+        ].join("\n"),
+        { parse_mode: "Markdown" },
+      );
+    });
+
+    bot.onText(/^\/boosts\b/i, async (msg) => {
+      await bot.sendMessage(
+        msg.chat.id,
+        [
+          "⚡ *Power-up tiers*",
+          "",
+          "🟢 *Free* — current",
+          "  • Unlimited sites during beta",
+          "  • Live token-by-token streaming",
+          "  • Telegram + mobile + web",
+          "",
+          "🔵 *Pro* — _coming soon_",
+          "  • Custom domains, real deployments, persistent runtimes",
+          "  • Priority build queue",
+          "  • Image generation included",
+          "",
+          "🟣 *VIP* — _coming soon_",
+          "  • Team workspaces, CMS editor, secrets vault",
+          "  • Multi-region autoscale hosting",
+        ].join("\n"),
+        { parse_mode: "Markdown" },
+      );
+    });
+
+    bot.onText(/^\/debug\b/i, async (msg) => {
+      const lines = [
+        "🩺 *Self-diagnostic*",
+        "",
+        `Bot: ${botId.slice(0, 8)}…`,
+        `Chat: ${msg.chat.id}`,
+        `User: ${msg.from?.id ?? "?"} (${escapeMd(msg.from?.username ?? "")})`,
+        `Server time: ${new Date().toISOString()}`,
+        `Public base: ${publicBaseUrl() || "(none)"}`,
+        `OpenAI key: ${process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ? "✅" : "❌"}`,
+        `Polling: ✅`,
+      ];
+      await bot.sendMessage(msg.chat.id, lines.join("\n"), {
+        parse_mode: "Markdown",
+      });
+    });
+
+    bot.onText(/^\/templates\b/i, async (msg) => {
+      const lines = [
+        "🧩 *Templates*",
+        "",
+        ...TEMPLATES.map(
+          (t) =>
+            `  • \`${t.key}\` — ${escapeMd(t.title)}\n    _${escapeMd(t.tagline)}_`,
+        ),
+        "",
+        "Use `/template <key>` to build one instantly.",
+      ];
+      await bot.sendMessage(msg.chat.id, lines.join("\n"), {
+        parse_mode: "Markdown",
+      });
+    });
+
+    bot.onText(/^\/template\b\s*(.*)$/i, async (msg, match) => {
+      const key = (match?.[1] ?? "").trim().toLowerCase();
+      if (!key) {
+        await bot.sendMessage(
+          msg.chat.id,
+          "Pick one: " + TEMPLATES.map((t) => `\`${t.key}\``).join(", ") +
+            "\n\ne.g. `/template portfolio`",
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      const t = TEMPLATES.find((x) => x.key === key);
+      if (!t) {
+        await bot.sendMessage(
+          msg.chat.id,
+          `Unknown template *${escapeMd(key)}*. Try /templates.`,
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      await this.runCreate(ownerUserId, bot, msg.chat.id, t.prompt);
+    });
+
+    bot.onText(/^\/image\b\s*(.*)$/i, async (msg, match) => {
+      const prompt = (match?.[1] ?? "").trim();
+      if (!prompt) {
+        await bot.sendMessage(
+          msg.chat.id,
+          "🎨 Send a prompt: `/image neon cyberpunk skyline at dusk`",
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      await this.runImage(bot, msg.chat.id, prompt);
+    });
+
+    bot.onText(/^\/code\b\s*(.*)$/i, async (msg, match) => {
+      const arg = (match?.[1] ?? "").trim();
+      await bot.sendMessage(
+        msg.chat.id,
+        arg
+          ? `🛠️ \`/code\` is being wired up — for now use \`/create\` for HTML/CSS/JS sites.\n\nYour request: _${escapeMd(arg)}_ — saved.`
+          : "Usage: `/code <language> <what to build>`\nExample: `/code python a CLI todo app`",
+        { parse_mode: "Markdown" },
+      );
+    });
+
+    bot.onText(/^\/secrets\b/i, async (msg) => {
+      const list = this.userSecrets.get(ownerUserId) ?? new Map();
+      if (list.size === 0) {
+        await bot.sendMessage(
+          msg.chat.id,
+          "🔒 No secrets stored. Use `/setsecret NAME=value`.",
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      const lines = ["🔒 *Your secrets* (values are hidden)"];
+      for (const name of list.keys()) lines.push(`  • \`${name}\``);
+      await bot.sendMessage(msg.chat.id, lines.join("\n"), {
+        parse_mode: "Markdown",
+      });
+    });
+
+    bot.onText(/^\/setsecret\b\s*(.*)$/i, async (msg, match) => {
+      const arg = (match?.[1] ?? "").trim();
+      const m = arg.match(/^([A-Z][A-Z0-9_]*)\s*=\s*(.+)$/);
+      if (!m) {
+        await bot.sendMessage(
+          msg.chat.id,
+          "Usage: `/setsecret NAME=value`\nName must be uppercase letters, digits and underscores.",
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      const list = this.userSecrets.get(ownerUserId) ?? new Map();
+      list.set(m[1], m[2].trim());
+      this.userSecrets.set(ownerUserId, list);
+      // Delete the original message so the secret doesn't sit in chat history.
+      try {
+        await bot.deleteMessage(msg.chat.id, msg.message_id);
+      } catch {
+        /* noop */
+      }
+      await bot.sendMessage(
+        msg.chat.id,
+        `✅ Stored secret \`${m[1]}\` (in-memory for this session).`,
+        { parse_mode: "Markdown" },
+      );
+    });
+
+    bot.onText(/^\/delsecret\b\s*(.*)$/i, async (msg, match) => {
+      const name = (match?.[1] ?? "").trim();
+      const list = this.userSecrets.get(ownerUserId);
+      if (!name || !list || !list.has(name)) {
+        await bot.sendMessage(
+          msg.chat.id,
+          `No secret named \`${escapeMd(name || "?")}\`.`,
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      list.delete(name);
+      await bot.sendMessage(msg.chat.id, `🗑️ Deleted \`${name}\`.`, {
+        parse_mode: "Markdown",
+      });
+    });
+
+    // ---- Real-deployment family — coming soon, but recognised so the bot
+    //      doesn't fall through to the "I don't understand" path. ----
+    const comingSoon = (label: string, hint: string) =>
+      [
+        `🚧 *${label}* is on the roadmap — it needs real container hosting.`,
+        ``,
+        hint,
+        ``,
+        `_For now: \`/create\` builds + hosts websites instantly with live URLs._`,
+      ].join("\n");
+
+    bot.onText(/^\/deploy\b/i, async (msg) => {
+      await bot.sendMessage(
+        msg.chat.id,
+        comingSoon(
+          "Deploy",
+          "It will let you push Node/Python/Bun/Deno/Bash/Static apps with a real start command and an autoscale URL.",
+        ),
+        { parse_mode: "Markdown" },
+      );
+    });
+    bot.onText(/^\/apps\b/i, async (msg) => {
+      await bot.sendMessage(
+        msg.chat.id,
+        comingSoon("Apps", "It will list your deployed apps with status, URLs, logs and scale-mode."),
+        { parse_mode: "Markdown" },
+      );
+    });
+    bot.onText(/^\/(appstart|appstop|applogs|appscale)\b/i, async (msg) => {
+      await bot.sendMessage(
+        msg.chat.id,
+        comingSoon("App control", "Start / stop / tail logs / scale a deployed app."),
+        { parse_mode: "Markdown" },
+      );
+    });
+    bot.onText(/^\/cms\b/i, async (msg) => {
+      await bot.sendMessage(
+        msg.chat.id,
+        comingSoon(
+          "CMS",
+          "A live visual editor for any page of any site you own. (You can already use `/edit <id> <change>` for AI edits today.)",
+        ),
+        { parse_mode: "Markdown" },
+      );
+    });
+    bot.onText(/^\/host\b/i, async (msg) => {
+      await bot.sendMessage(
+        msg.chat.id,
+        comingSoon(
+          "Host",
+          "Upload a `.zip` of your own static or runtime code and serve it from a WebForge URL.",
+        ),
+        { parse_mode: "Markdown" },
+      );
     });
 
     bot.onText(/^\/status\b\s*(.*)$/i, async (msg, match) => {
@@ -583,20 +891,127 @@ Rules:
 
   private helpText(): string {
     return [
-      "*WebForge bot* — forge sites from chat.",
+      "🤖 *WebForge AI — Help*",
       "",
-      "`/create <prompt>` — analyze + build a new site",
-      "`/edit <name>` — edit an existing site",
-      "`/status <name>` — check progress",
-      "`/preview <name>` — get a live link",
-      "`/mysites` — list your sites",
-      "`/retry <name>` — retry a failed step",
-      "`/delete <name>` — delete a site",
-      "`/tasks` or `/queue` — see what's running",
-      "`/hostbot` — host another Telegram bot",
-      "`/mybots` — list your hosted bots",
-      "`/stopbot <username>` — stop a hosted bot",
+      "*Commands:*",
+      "`/create <type> style notes` — Plan + preview + build",
+      "`/deploy <name> <runtime> <start-cmd>` — Deploy a real app: Node/Python/Bun/Deno/Bash/Static. Live URL with autoscale.",
+      "`/apps` — List your deployed apps (status, URLs, logs, scale-mode)",
+      "`/appstart <name>`, `/appstop <name>`, `/applogs <name>`, `/appscale <name> persistent|autoscale`",
+      "`/cms` — Open the visual CMS editor (edit any page of any site, live)",
+      "`/code <language> <what to build>` — Generate code in any language (Python, Go, Rust, etc.) — sent as a .zip",
+      "`/edit <id> <change>` — Modify an existing site (e.g. /edit 12 add pricing section)",
+      "`/tasks` — List your background builds",
+      "`/mysite` — View your live websites",
+      "`/host` — Upload a .zip of your own code and host it instantly",
+      "`/hostbot <token>` — Host your own Telegram bot (powered by AI)",
+      "`/mybots` — List your hosted bots · `/stopbot @username` — stop one",
+      "`/template` — Build instantly from a curated template (portfolio, business, saas, blog, store, fintech, restaurant)",
+      "`/templates` — List all available templates",
+      "`/status <id>` — Check a build's progress",
+      "`/cancel` — Cancel current planning step",
+      "`/secrets` — List your stored API keys (encrypted)",
+      "`/setsecret NAME=value` — Store an API key / secret",
+      "`/delsecret NAME` — Delete a stored secret",
+      "`/credits` — Show your credit balance & tier",
+      "`/boosts` — See Pro / VIP power-up tiers",
+      "`/image <prompt>` — Generate an image from text (or send a photo to remix it)",
+      "`/debug` — Self-diagnostic report",
+      "`/help` — This guide",
+      "",
+      "🎙 *Voice notes:* Just send me a voice message describing your site — I'll transcribe and build it!",
+      "",
+      "*Build modes (after preview):*",
+      "🚀 Simple — fastest path, ~2 min",
+      "🤖 Autonomous — self-review + auto-fix, ~3-4 min",
+      "📋 Background — runs in parallel, free chat",
+      "",
+      "*Website types:*",
+      "portfolio · business · saas · startup · agency",
+      "blog · ecommerce · restaurant · fintech · consulting · landing",
+      "",
+      "*Examples:*",
+      "`/create portfolio dark minimal photography`",
+      "`/create saas purple, project management`",
+      "`/create restaurant warm terracotta Italian`",
+      "`/create ecommerce streetwear fashion brand`",
+      "",
+      "⏱ Build time: 2–4 minutes",
     ].join("\n");
+  }
+
+  private async runImage(
+    bot: TelegramBot,
+    chatId: number,
+    prompt: string,
+  ): Promise<void> {
+    const baseUrl = process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"];
+    const apiKey = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+    if (!baseUrl || !apiKey) {
+      await bot.sendMessage(
+        chatId,
+        "🎨 Image generation needs an OpenAI key. Ask the operator to set it up.",
+      );
+      return;
+    }
+    const placeholder = await bot.sendMessage(
+      chatId,
+      `🎨 Painting _${escapeMd(prompt)}_…`,
+      { parse_mode: "Markdown" },
+    );
+    try {
+      const r = await fetch(`${baseUrl.replace(/\/$/, "")}/images/generations`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-image-1",
+          prompt,
+          size: "1024x1024",
+          n: 1,
+        }),
+      });
+      if (!r.ok) {
+        throw new Error(`image api ${r.status}: ${await r.text()}`);
+      }
+      const data = (await r.json()) as {
+        data?: Array<{ b64_json?: string; url?: string }>;
+      };
+      const item = data.data?.[0];
+      if (!item) throw new Error("no image returned");
+      let buffer: Buffer | null = null;
+      if (item.b64_json) {
+        buffer = Buffer.from(item.b64_json, "base64");
+      } else if (item.url) {
+        const ir = await fetch(item.url);
+        buffer = Buffer.from(await ir.arrayBuffer());
+      }
+      if (!buffer) throw new Error("no image bytes");
+      try {
+        await bot.deleteMessage(chatId, placeholder.message_id);
+      } catch {
+        /* noop */
+      }
+      await bot.sendPhoto(
+        chatId,
+        buffer,
+        { caption: `🎨 ${prompt}` },
+        { filename: "image.png", contentType: "image/png" },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: msg }, "runImage failed");
+      try {
+        await bot.editMessageText(
+          `❌ Image generation failed: ${escapeMd(msg.slice(0, 200))}`,
+          { chat_id: chatId, message_id: placeholder.message_id },
+        );
+      } catch {
+        /* noop */
+      }
+    }
   }
 
   private async runCreate(

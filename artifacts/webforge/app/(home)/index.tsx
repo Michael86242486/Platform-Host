@@ -1,5 +1,6 @@
-import { useUser } from "@clerk/expo";
 import { Feather } from "@expo/vector-icons";
+
+import { useUser } from "@/lib/auth";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useMemo } from "react";
@@ -71,7 +72,7 @@ export default function Dashboard() {
 
   const greeting =
     user?.firstName ||
-    (user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "developer");
+    (user?.email?.split("@")[0] ?? "developer");
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>

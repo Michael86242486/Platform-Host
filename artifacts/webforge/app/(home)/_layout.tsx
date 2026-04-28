@@ -1,5 +1,6 @@
-import { useAuth } from "@clerk/expo";
 import { Feather } from "@expo/vector-icons";
+
+import { useAuth } from "@/lib/auth";
 import { Redirect, Tabs } from "expo-router";
 import React from "react";
 import { Platform, View } from "react-native";
