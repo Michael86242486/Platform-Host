@@ -25,7 +25,30 @@ const clerkOptions: ClerkMiddlewareOptions = {
     process.env.VITE_CLERK_PUBLISHABLE_KEY,
 };
 
-export const clerk: RequestHandler = clerkMiddleware(clerkOptions);
+const realClerk: RequestHandler | null = (() => {
+  if (!process.env.CLERK_SECRET_KEY) return null;
+  try {
+    return clerkMiddleware(clerkOptions);
+  } catch (err) {
+    logger.warn({ err }, "Failed to initialize Clerk middleware");
+    return null;
+  }
+})();
+
+/**
+ * If CLERK_SECRET_KEY is missing we still want unauthenticated, public
+ * routes (the home page, /api/hosted/*, the Telegram webhook, etc.) to
+ * work — only the routes wrapped in `requireAuth` should reject.
+ * The real Clerk middleware throws synchronously when the secret is
+ * missing, so we short-circuit here.
+ */
+export const clerk: RequestHandler = (req, res, next) => {
+  if (!realClerk) {
+    next();
+    return;
+  }
+  realClerk(req, res, next);
+};
 
 /**
  * Verify Clerk auth and ensure a local `users` row exists for this clerkUserId.
@@ -36,6 +59,14 @@ export const requireAuth: RequestHandler = async (
   res: Response,
   next: NextFunction,
 ) => {
+  if (!realClerk) {
+    res.status(401).json({
+      error: "auth_not_configured",
+      message:
+        "CLERK_SECRET_KEY is not set on the server. The Telegram bot still works.",
+    });
+    return;
+  }
   try {
     const { userId, sessionClaims } = getAuth(req);
     if (!userId) {

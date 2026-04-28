@@ -637,17 +637,94 @@ async function serveSiteFile(
     res.status(404).type("html").send(notFoundPage());
     return;
   }
+
+  const safeRel = normalizeRel(rel) ?? "index.html";
+  const files = site.files ?? {};
+  const partial = pickFile(files, safeRel);
+  const isBuilding =
+    site.status === "building" || site.status === "analyzing";
+  const isHtml = safeRel.endsWith(".html") || safeRel === "" || safeRel === "/";
+
+  // While building, return any partial HTML/CSS/JS we have so the iframe shows
+  // the LLM's tokens streaming in real time. HTML files get a small overlay +
+  // auto-refresh so the page picks up new bytes; CSS/JS stream as-is.
+  if (isBuilding) {
+    if (isHtml) {
+      const html = partial ?? "";
+      res
+        .status(200)
+        .set("Cache-Control", "no-store, no-cache, must-revalidate")
+        .type("text/html; charset=utf-8")
+        .send(buildingShell(site, html));
+      return;
+    }
+    if (partial != null) {
+      res
+        .status(200)
+        .set("Cache-Control", "no-store, no-cache, must-revalidate")
+        .type(contentType(safeRel))
+        .send(partial);
+      return;
+    }
+  }
+
+  if (site.status === "queued" || site.status === "awaiting_confirmation") {
+    res.status(202).type("html").send(generatingPage(site));
+    return;
+  }
+
   if (site.status !== "ready" || !site.files) {
     res.status(202).type("html").send(generatingPage(site));
     return;
   }
-  const safeRel = normalizeRel(rel) ?? "index.html";
+
   const content = pickFile(site.files, safeRel);
   if (content == null) {
     res.status(404).type("html").send(notFoundPage());
     return;
   }
   res.type(contentType(safeRel)).send(content);
+}
+
+/**
+ * While the LLM is streaming an HTML page we wrap the partial bytes in a
+ * shell that:
+ *   1. Renders the partial HTML directly so the user sees their site appearing
+ *      character-by-character (just like the model is writing it).
+ *   2. Auto-refreshes every ~700ms until the site is "ready".
+ *   3. Adds a tiny progress strip across the top so the user knows it's live.
+ */
+function buildingShell(site: Site, partialHtml: string): string {
+  const safe = (partialHtml ?? "").replace(/<\/?(html|head|body)[^>]*>/gi, "");
+  const stage = site.message ?? "Streaming bytes";
+  const progress = Math.max(0, Math.min(100, site.progress ?? 0));
+  return `<!doctype html><html><head><meta charset="utf-8"/>
+  <meta http-equiv="refresh" content="0.7"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>${escapeHtml(site.name)} — building</title>
+  <style>
+  html,body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;background:#0a0e14;color:#e6edf3}
+  .wf-strip{position:fixed;inset:0 0 auto 0;z-index:2147483647;background:rgba(10,14,20,0.92);backdrop-filter:blur(10px);border-bottom:1px solid rgba(0,255,194,0.18);padding:8px 14px;font:500 12px ui-monospace,SFMono-Regular,Menlo,monospace;color:#7d8590;display:flex;align-items:center;gap:10px}
+  .wf-strip .dot{width:8px;height:8px;border-radius:50%;background:#00ffc2;box-shadow:0 0 12px #00ffc2;animation:wfp 1s ease-in-out infinite}
+  .wf-strip .bar{flex:1;height:3px;background:#1f2937;border-radius:999px;overflow:hidden}
+  .wf-strip .bar > div{height:100%;background:linear-gradient(90deg,#00ffc2,#58a6ff);width:${progress}%;transition:width .35s ease}
+  .wf-strip .pct{color:#e6edf3;font-weight:700;min-width:38px;text-align:right}
+  .wf-spacer{height:36px}
+  @keyframes wfp{0%,100%{opacity:1}50%{opacity:.45}}
+  </style></head>
+  <body>
+    <div class="wf-strip"><span class="dot"></span><span>forging — ${escapeHtml(stage)}</span><span class="bar"><div></div></span><span class="pct">${progress}%</span></div>
+    <div class="wf-spacer"></div>
+    ${safe || `<div style="padding:32px;color:#7d8590;font:14px ui-monospace,SFMono-Regular,Menlo,monospace">waiting for the model to stream the first byte…</div>`}
+  </body></html>`;
+}
+
+function escapeHtml(s: string): string {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 export function pickFile(files: SiteFiles, rel: string): string | null {

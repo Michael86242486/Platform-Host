@@ -17,6 +17,11 @@ import { jobQueue } from "./queue";
 import { logger } from "./logger";
 import { inferSiteName, uniqueSlug } from "./slug";
 
+/** Mirror of the same constant in queue.ts — set on an analyze job's
+ * `instructions` column to skip the user-confirmation step and chain
+ * straight into the build job. */
+const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
+
 interface ChatState {
   awaiting?:
     | { kind: "create" }
@@ -60,8 +65,9 @@ class TelegramBotManager {
   /**
    * Ensure the global WebForge Telegram bot (configured via the
    * WEBFORGE_TELEGRAM_BOT_TOKEN env var) is registered and polling.
-   * The DB row requires a userId, so we tie it to the earliest-created
-   * user (a single token can only be polled by one process).
+   * The DB row requires a userId, so if no users exist yet we
+   * auto-create a "system" user that owns sites built directly from
+   * Telegram before anyone signs up via the mobile app.
    */
   async ensureSystemBot(): Promise<void> {
     const token = process.env["WEBFORGE_TELEGRAM_BOT_TOKEN"];
@@ -80,12 +86,20 @@ class TelegramBotManager {
       }
       return;
     }
-    const [user] = await db.select().from(usersTable).limit(1);
+    let [user] = await db.select().from(usersTable).limit(1);
     if (!user) {
-      logger.info(
-        "WEBFORGE_TELEGRAM_BOT_TOKEN set but no users yet — system bot deferred",
-      );
-      return;
+      const [created] = await db
+        .insert(usersTable)
+        .values({
+          clerkUserId: "system_telegram_owner",
+          email: "telegram@webforge.local",
+          firstName: "Telegram",
+          lastName: "Bot",
+          imageUrl: null,
+        })
+        .returning();
+      user = created;
+      logger.info({ userId: user.id }, "Created system user for telegram bot");
     }
     const preview = `${token.slice(0, 6)}…${token.slice(-4)}`;
     const [record] = await db
@@ -162,7 +176,30 @@ class TelegramBotManager {
   ): void {
     void botId;
 
-    bot.onText(/^\/(start|help)\b/i, async (msg) => {
+    bot.onText(/^\/start\b/i, async (msg) => {
+      const name = msg.from?.first_name ? `, ${msg.from.first_name}` : "";
+      const lines = [
+        `👋 Hey${name}! I'm *WebForge* — describe a website and I'll build & host it live.`,
+        "",
+        "Just tell me what you want, like:",
+        "  • a landing page for my coffee shop",
+        "  • portfolio for an indie game dev",
+        "  • a barbershop site with online booking",
+        "",
+        "Or use a command:",
+        "`/create <idea>` — build a new site",
+        "`/mysites` — see your sites",
+        "`/help` — full command list",
+        "",
+        "What would you like to build today?",
+      ];
+      this.clearState(msg.chat.id);
+      await bot.sendMessage(msg.chat.id, lines.join("\n"), {
+        parse_mode: "Markdown",
+      });
+    });
+
+    bot.onText(/^\/help\b/i, async (msg) => {
       await bot.sendMessage(msg.chat.id, this.helpText(), {
         parse_mode: "Markdown",
       });
@@ -176,7 +213,8 @@ class TelegramBotManager {
         this.setState(msg.chat.id, { awaiting: { kind: "create" } });
         await bot.sendMessage(
           msg.chat.id,
-          "✏️ Send me a description of the site you want to build.",
+          "✏️ Tell me what to build — a sentence is enough. e.g. _\"a portfolio for a wedding photographer with a dark-mode gallery\"_.",
+          { parse_mode: "Markdown" },
         );
       }
     });
@@ -593,18 +631,32 @@ Rules:
         userId,
         siteId: site.id,
         kind: "analyze",
+        // Auto-chain straight into a build job once analysis completes —
+        // the user already told us what they want.
+        instructions: AUTO_BUILD_SENTINEL,
         status: "queued",
         progress: 0,
         message: "Queued",
       })
       .returning();
     await jobQueue.enqueue(job.id);
+    const liveUrl = `${baseUrl}/api/hosted/${site.slug}/`;
     await bot.sendMessage(
       chatId,
-      `🔍 Analyzing *${site.name}*…\nFuture link: ${baseUrl}/api/hosted/${site.slug}/`,
-      { parse_mode: "Markdown" },
+      [
+        `🔨 Forging *${escapeMd(site.name)}*…`,
+        ``,
+        `🔍 Analyzing your idea…`,
+        `🎨 I'll write the CSS, JS and HTML live, token-by-token.`,
+        ``,
+        `📺 *Watch it build in real time:*`,
+        liveUrl,
+        ``,
+        `_Open that link now — you'll see the model's tokens stream into the page._`,
+      ].join("\n"),
+      { parse_mode: "Markdown", disable_web_page_preview: false },
     );
-    void this.pollAnalysisAndAskConfirmation(bot, chatId, site.id);
+    void this.pollBuildAndStream(bot, chatId, site.id);
   }
 
   private async runEdit(
@@ -740,8 +792,74 @@ Rules:
     chatId: number,
     siteId: string,
   ): Promise<void> {
+    return this.pollBuildAndStream(bot, chatId, siteId);
+  }
+
+  /**
+   * Watch a site through the analyze + build pipeline. While it's being
+   * built we send a single progress message to the chat and edit it as
+   * the model streams new files. When it finishes (or fails) we send a
+   * dedicated "live" / "failed" message.
+   */
+  private async pollBuildAndStream(
+    bot: TelegramBot,
+    chatId: number,
+    siteId: string,
+  ): Promise<void> {
     const baseUrl = publicBaseUrl();
-    for (let i = 0; i < 80; i++) {
+    let progressMessageId: number | null = null;
+    let lastRendered = "";
+    const seenFiles = new Set<string>();
+
+    const renderProgress = (s: Site, files: string[]) => {
+      const bar = renderBar(s.progress ?? 0);
+      const lines = [
+        `🛠️ *${escapeMd(s.name)}*`,
+        `${bar}  *${s.progress ?? 0}%*`,
+        `_${escapeMd(s.message ?? "Working")}_`,
+      ];
+      if (files.length > 0) {
+        lines.push("");
+        lines.push("*Files written:*");
+        for (const f of files.slice(-6)) lines.push(`  ✓ \`${f}\``);
+      }
+      lines.push("");
+      lines.push(`📺 [Live preview](${baseUrl}/api/hosted/${s.slug}/)`);
+      return lines.join("\n");
+    };
+
+    const sendOrEditProgress = async (s: Site) => {
+      const files = s.files ? Object.keys(s.files) : [];
+      for (const f of files) seenFiles.add(f);
+      const orderedFiles = Array.from(seenFiles);
+      const text = renderProgress(s, orderedFiles);
+      if (text === lastRendered) return;
+      lastRendered = text;
+      try {
+        if (progressMessageId == null) {
+          const sent = await bot.sendMessage(chatId, text, {
+            parse_mode: "Markdown",
+            disable_web_page_preview: true,
+          });
+          progressMessageId = sent.message_id;
+        } else {
+          await bot.editMessageText(text, {
+            chat_id: chatId,
+            message_id: progressMessageId,
+            parse_mode: "Markdown",
+            disable_web_page_preview: true,
+          });
+        }
+      } catch (err) {
+        // editMessageText throws if the body didn't change — ignore.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/message is not modified/i.test(msg)) {
+          logger.debug({ err: msg }, "telegram editMessage skipped");
+        }
+      }
+    };
+
+    for (let i = 0; i < 240; i++) {
       await sleep(1500);
       const [s] = await db
         .select()
@@ -749,18 +867,40 @@ Rules:
         .where(eq(sitesTable.id, siteId))
         .limit(1);
       if (!s) return;
+
+      if (s.status === "analyzing" || s.status === "building" || s.status === "queued") {
+        await sendOrEditProgress(s);
+        continue;
+      }
+
       if (s.status === "ready") {
+        // Final progress edit at 100%, then a fresh "live" message.
+        await sendOrEditProgress(s);
+        const files = s.files ? Object.keys(s.files) : [];
         await bot.sendMessage(
           chatId,
-          `✅ *${s.name}* is live\n${baseUrl}/api/hosted/${s.slug}/`,
-          { parse_mode: "Markdown" },
+          [
+            `🎉 *${escapeMd(s.name)} is LIVE!*`,
+            ``,
+            `🌐 ${baseUrl}/api/hosted/${s.slug}/`,
+            ``,
+            `📋 *What was built:*`,
+            `• ${files.length} files (${escapeMd(formatSize(byteSize(s.files)))})`,
+            `• Hosted on the WebForge server ✓`,
+            `• Mobile-responsive ✓`,
+            `• Streamed live from the model ✓`,
+            ``,
+            `_Tap the link above. Use \`/edit ${escapeMd(s.name)}\` to tweak it._`,
+          ].join("\n"),
+          { parse_mode: "Markdown", disable_web_page_preview: false },
         );
         return;
       }
       if (s.status === "failed") {
         await bot.sendMessage(
           chatId,
-          `❌ Build failed: ${s.error ?? "unknown"}`,
+          `❌ Build failed: ${escapeMd(s.error ?? "unknown")}\n\nTry \`/retry ${escapeMd(s.name)}\``,
+          { parse_mode: "Markdown" },
         );
         return;
       }
@@ -1112,6 +1252,25 @@ function escapeMd(s: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function renderBar(pct: number, width = 14): string {
+  const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+  const filled = Math.round((clamped / 100) * width);
+  return "▰".repeat(filled) + "▱".repeat(width - filled);
+}
+
+function byteSize(files: Record<string, string> | null | undefined): number {
+  if (!files) return 0;
+  let total = 0;
+  for (const v of Object.values(files)) total += Buffer.byteLength(v, "utf8");
+  return total;
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 export function publicBaseUrl(): string {

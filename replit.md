@@ -117,3 +117,25 @@ telegramBots(id, userId, token, tokenPreview, username, displayName,
   Query hooks after editing `lib/api-spec/openapi.yaml`.
 - `pnpm --filter @workspace/db run db:push` — push Drizzle schema to
   Postgres (use `--force` to skip prompts).
+
+## Live token-by-token streaming
+
+While the LLM is writing files, the queue worker upserts each partial file
+into `sites.files` every ~220ms. The public route
+`/api/hosted/:slug/(*splat)?` (in `routes/sites.ts`) detects status
+`building` / `analyzing` and serves the partial bytes wrapped in
+`buildingShell()` — a small overlay + `<meta http-equiv="refresh" content="0.7">`
+so the iframe re-fetches and shows new tokens as they arrive. CSS and JS
+files are streamed as-is.
+
+## Telegram bot
+
+- The system bot polls automatically when `WEBFORGE_TELEGRAM_BOT_TOKEN` is
+  set. `ensureSystemBot()` auto-creates a "system" user the first time it
+  runs so the bot can register before any mobile user signs up.
+- Conversation flow: `/start` greets and asks what to build; any free text
+  (or `/create <idea>`) kicks off an analyze-then-build job that auto-chains
+  via the `__AUTO_BUILD__` sentinel on the analyze job's `instructions`. The
+  bot immediately replies with the live preview URL so users can watch the
+  HTML stream in their browser, then edits a single progress message as
+  files are written, and finally posts the "live!" message with the URL.
