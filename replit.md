@@ -123,6 +123,29 @@ telegramBots(id, userId, token, tokenPreview, username, displayName,
 
 ## Live token-by-token streaming
 
+Two layers of live streaming feed the chat UI:
+
+1. **Server-Sent Events bus.** `lib/eventBus.ts` exposes a typed
+   `siteEventBus`. The build queue (`lib/queue.ts`) emits `site_updated`,
+   `message_added`, `file_progress`, and `narration_*` events at every
+   meaningful change. The `GET /api/sites/:id/events` SSE endpoint
+   (`routes/sites.ts`) authenticates via either the standard Bearer header
+   or a `?token=wf_…` query param (EventSource can't set headers) and
+   forwards every event to the subscriber, with a 20s keepalive ping.
+2. **Token-by-token agent narration.** `lib/narrate.ts` calls OpenAI with
+   `stream: true` to produce a short "thinking out loud" paragraph
+   (`thinking`, `building`, `done` phases). Each token is broadcast as
+   `narration_delta`; the final text is persisted as a regular agent
+   message so it survives a refresh.
+
+The chat UI (`artifacts/webforge/lib/useSiteStream.ts` +
+`artifacts/webforge/app/create.tsx`) opens an `EventSource` for the active
+site, invalidates the React Query caches on every server event (so
+polling drops to zero once SSE is connected), and renders in-flight
+narrations as live "typing" bubbles with a blinking caret. The inline
+preview iframe also bumps its refresh key on every `file_progress` event
+so users see the partial HTML stream in real time.
+
 While the LLM is writing files, the queue worker upserts each partial file
 into `sites.files` every ~220ms. The public route
 `/api/hosted/:slug/(*splat)?` (in `routes/sites.ts`) detects status

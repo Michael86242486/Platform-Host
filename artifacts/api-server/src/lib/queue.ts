@@ -16,6 +16,8 @@ import {
 } from "./llm-generator";
 import { logger } from "./logger";
 import { getDecryptedSecrets, injectSecretsIntoFiles } from "./secrets";
+import { siteEventBus } from "./eventBus";
+import { streamNarration } from "./narrate";
 
 const MAX_CONCURRENCY = 3;
 
@@ -143,6 +145,18 @@ class JobQueue {
       "Starting analysis…",
       { stage: 0 },
     );
+
+    // Stream a "thinking out loud" narration in parallel with the
+    // deterministic stage ticker — gives the user something alive to read
+    // within the first second.
+    void streamNarration({
+      userId: job.userId,
+      siteId,
+      intent: "thinking",
+      context: `User wants: ${prompt.slice(0, 400)}. Tentative name: ${name}.`,
+      fallback:
+        "Reading your idea now — picking out the vibe, the pages, and a palette that fits.",
+    });
 
     // Kick off the AI call in parallel with cosmetic progress stages.
     const analysisPromise = analyzeProjectAI(prompt, name);
@@ -279,6 +293,20 @@ class JobQueue {
       null,
     );
 
+    // Stream a short "what I'm about to build" narration so the user has
+    // something to read while the model warms up.
+    void streamNarration({
+      userId: job.userId,
+      siteId,
+      intent: "building",
+      context:
+        job.kind === "edit"
+          ? `Applying edit to "${site.name}": ${job.instructions ?? ""}`
+          : `Building "${site.name}". Plan: ${plan.summary}. Palette: ${plan.styles.palette}, mood: ${plan.styles.mood}.`,
+      fallback:
+        "Laying out the hero, the sections, and a tight color story. Streaming files in now.",
+    });
+
     const isEdit = job.kind === "edit" && !!job.instructions;
 
     let out: {
@@ -372,6 +400,16 @@ class JobQueue {
             .set({ progress: pct, message: label })
             .where(eq(jobsTable.id, job.id));
 
+          // Push a live site update so subscribers can rerender the iframe
+          // and progress bar without polling.
+          siteEventBus.emitSite({ type: "site_updated", siteId });
+          siteEventBus.emitSite({
+            type: "file_progress",
+            siteId,
+            currentFile,
+            bytes,
+          });
+
           // Emit a chat log line whenever a new file appears or we cross 50%.
           if (currentFile && currentFile !== lastReportedFile) {
             lastReportedFile = currentFile;
@@ -433,6 +471,16 @@ class JobQueue {
       `Built ${Object.keys(out.files).length} files. Tap Preview to see it live.`,
       { files: Object.keys(out.files) },
     );
+    siteEventBus.emitSite({ type: "site_updated", siteId });
+
+    // Final celebratory narration — streams token-by-token to the UI.
+    void streamNarration({
+      userId: job.userId,
+      siteId,
+      intent: "done",
+      context: `Just shipped "${site.name}". Files: ${Object.keys(out.files).slice(0, 6).join(", ")}.`,
+      fallback: "Shipped it. Tap Preview to see your site live.",
+    });
   }
 
   private async failJob(job: Job, message: string): Promise<void> {
@@ -491,13 +539,21 @@ async function insertAgentMessage(
   content: string,
   data: Record<string, unknown> | null,
 ): Promise<void> {
-  await db.insert(messagesTable).values({
-    userId,
+  const [row] = await db
+    .insert(messagesTable)
+    .values({
+      userId,
+      siteId,
+      role: "agent",
+      kind,
+      content,
+      data,
+    })
+    .returning();
+  siteEventBus.emitSite({
+    type: "message_added",
     siteId,
-    role: "agent",
-    kind,
-    content,
-    data,
+    messageId: row.id,
   });
 }
 

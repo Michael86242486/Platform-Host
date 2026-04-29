@@ -34,6 +34,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { MonoText } from "@/components/MonoText";
 import { useColors } from "@/hooks/useColors";
+import { useSiteStream, type LiveNarration } from "@/lib/useSiteStream";
 
 const SUGGESTIONS = [
   {
@@ -100,6 +101,10 @@ export default function CreateScreen() {
   const create = useCreateSite();
   const send = useSendSiteMessage();
 
+  // Subscribe to live server-sent events (web). Falls back to polling on
+  // native and as a safety net while the SSE connection establishes.
+  const stream = useSiteStream(activeSiteId);
+
   const siteQuery = useGetSite(activeSiteId ?? "", {
     query: {
       enabled: !!activeSiteId,
@@ -107,7 +112,10 @@ export default function CreateScreen() {
       refetchInterval: (q) => {
         const s = q.state.data as Site | undefined;
         if (!s) return 1500;
-        return s.status === "ready" || s.status === "failed" ? false : 1100;
+        if (s.status === "ready" || s.status === "failed") return false;
+        // SSE pushes updates instantly; only fall back to polling while we
+        // wait for the stream to connect.
+        return stream.connected ? false : 1100;
       },
     },
   });
@@ -118,7 +126,8 @@ export default function CreateScreen() {
       refetchInterval: (q) => {
         const s = siteQuery.data as Site | undefined;
         if (!s) return 1500;
-        return s.status === "ready" || s.status === "failed" ? 4000 : 1100;
+        if (s.status === "ready" || s.status === "failed") return 8000;
+        return stream.connected ? false : 1100;
       },
     },
   });
@@ -306,6 +315,8 @@ export default function CreateScreen() {
             messages={messages}
             site={site}
             isWorking={isWorking}
+            narrations={stream.narrations}
+            currentFile={stream.currentFile}
             showPreview={showPreview}
             onTogglePreview={() => setShowPreview((s) => !s)}
             onOpenSite={() => router.push(`/site/${activeSiteId}`)}
@@ -609,6 +620,8 @@ function ConversationView({
   messages,
   site,
   isWorking,
+  narrations,
+  currentFile,
   showPreview,
   onTogglePreview,
   onOpenSite,
@@ -617,6 +630,8 @@ function ConversationView({
   messages: AgentMessage[];
   site: Site | undefined;
   isWorking: boolean;
+  narrations: LiveNarration[];
+  currentFile: string | null;
   showPreview: boolean;
   onTogglePreview: () => void;
   onOpenSite: () => void;
@@ -638,15 +653,22 @@ function ConversationView({
     }
   }, [messages.length]);
 
-  // Iframe refresh during build (web-only inline preview).
+  // Iframe refresh during build. We bump a key whenever:
+  //   (a) the streamed `currentFile` changes (event-driven, instant), or
+  //   (b) every 1.2s as a safety net while building (covers native + the
+  //       brief window before SSE connects on web).
   const [refreshKey, setRefreshKey] = useState(0);
   const hasIndex = useMemo(
     () => (site?.files ?? []).includes("index.html"),
     [site?.files],
   );
   useEffect(() => {
+    if (!hasIndex) return;
+    setRefreshKey((k) => k + 1);
+  }, [currentFile, hasIndex]);
+  useEffect(() => {
     if (!site || !isWorking || !hasIndex) return;
-    const t = setInterval(() => setRefreshKey((k) => k + 1), 1500);
+    const t = setInterval(() => setRefreshKey((k) => k + 1), 1200);
     return () => clearInterval(t);
   }, [site, isWorking, hasIndex]);
 
@@ -697,16 +719,24 @@ function ConversationView({
         />
       ) : null}
 
-      {/* Live "thinking" bubble while a job is running and the last message
-          isn't already an in-flight progress update. */}
-      {isWorking && messages.length > 0 ? (
+      {/* Live token-by-token narration bubbles streaming from the server. */}
+      {narrations.map((n) => (
+        <NarrationBubble key={n.id} narration={n} />
+      ))}
+
+      {/* Live "thinking" bubble while a job is running and there's no
+          in-flight narration already showing the agent's voice. */}
+      {isWorking && messages.length > 0 && narrations.length === 0 ? (
         <AgentBubble>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <TypingDots />
             <MonoText
               style={{ color: colors.mutedForeground, fontSize: 11 }}
             >
-              {(site?.message ?? "working").toLowerCase()}
+              {(currentFile
+                ? `streaming ${currentFile}`
+                : site?.message ?? "working"
+              ).toLowerCase()}
             </MonoText>
           </View>
         </AgentBubble>
@@ -892,6 +922,28 @@ function AgentBubble({ children }: { children: React.ReactNode }) {
         {children}
       </View>
     </View>
+  );
+}
+
+function NarrationBubble({ narration }: { narration: LiveNarration }) {
+  const colors = useColors();
+  const text = narration.text;
+  return (
+    <AgentBubble>
+      <Text
+        style={{
+          color: colors.foreground,
+          fontSize: 14,
+          lineHeight: 20,
+          fontFamily: "Inter_400Regular",
+        }}
+      >
+        {text}
+        {!narration.done ? (
+          <Text style={{ color: colors.primary, fontWeight: "700" }}>▍</Text>
+        ) : null}
+      </Text>
+    </AgentBubble>
   );
 }
 

@@ -11,11 +11,14 @@ import {
   db,
   jobsTable,
   messagesTable,
+  sessionsTable,
   sitesTable,
+  usersTable,
   type Site,
   type SiteFiles,
 } from "../lib/db";
 import { jobQueue } from "../lib/queue";
+import { siteEventBus, type SiteEvent } from "../lib/eventBus";
 import { inferSiteName, uniqueSlug } from "../lib/slug";
 import { publicBaseUrl, publicHost } from "../lib/telegram";
 
@@ -601,6 +604,97 @@ router.post("/sites/:id/domain/verify", requireAuth, async (req, res) => {
     .where(eq(sitesTable.id, site.id))
     .returning();
   res.json(siteToDto(updated));
+});
+
+// --- Server-Sent Events: live site activity --------------------------------
+
+// EventSource doesn't support custom headers in browsers, so SSE auth uses
+// a `?token=` query param (same wf_… session token used elsewhere). We also
+// honor the standard Authorization header for native clients that wrap fetch.
+async function userFromSseAuth(req: import("express").Request) {
+  const headerBearer = (() => {
+    const h = req.headers.authorization;
+    return h?.startsWith("Bearer ") ? h.slice(7) : null;
+  })();
+  const queryToken =
+    typeof req.query.token === "string" ? req.query.token : null;
+  const token = headerBearer || queryToken;
+  if (!token || !token.startsWith("wf_")) return null;
+  const [session] = await db
+    .select()
+    .from(sessionsTable)
+    .where(eq(sessionsTable.token, token))
+    .limit(1);
+  if (!session || session.expiresAt < new Date()) return null;
+  const [user] = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, session.userId))
+    .limit(1);
+  return user ?? null;
+}
+
+router.get("/sites/:id/events", async (req, res) => {
+  const user = await userFromSseAuth(req);
+  if (!user) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, user.id),
+      ),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+
+  // Standard SSE headers. `X-Accel-Buffering: no` keeps proxies from buffering.
+  res.set({
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders?.();
+
+  const send = (event: string, data: unknown): void => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Hello frame so the client knows the stream is alive.
+  send("hello", { siteId: site.id, ts: Date.now() });
+  send("site_updated", { siteId: site.id });
+
+  const onEvent = (ev: SiteEvent) => {
+    send(ev.type, ev);
+  };
+  const unsubscribe = siteEventBus.subscribe(site.id, onEvent);
+
+  // Keepalive ping every 20s; some proxies (and React Native fetch) close
+  // idle connections after ~30s.
+  const keepalive = setInterval(() => {
+    res.write(`: ping ${Date.now()}\n\n`);
+  }, 20000);
+
+  const close = () => {
+    clearInterval(keepalive);
+    unsubscribe();
+    try {
+      res.end();
+    } catch {
+      // already closed
+    }
+  };
+  req.on("close", close);
+  req.on("aborted", close);
 });
 
 // --- Public hosted route ---------------------------------------------------

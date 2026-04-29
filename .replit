@@ -9,44 +9,6 @@ args = ["pnpm", "store", "prune"]
 env = { "CI" = "true" }
 
 [workflows]
-runButton = "Project"
-
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "API Server"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "WebForge"
-
-[[workflows.workflow]]
-name = "API Server"
-author = "agent"
-
-[workflows.workflow.metadata]
-outputType = "console"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "PORT=8080 pnpm --filter @workspace/api-server run dev"
-waitForPort = 8080
-
-[[workflows.workflow]]
-name = "WebForge"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "PORT=19469 pnpm --filter @workspace/webforge run dev"
-waitForPort = 19469
-
-[workflows.workflow.metadata]
-outputType = "webview"
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -60,7 +22,7 @@ timeoutMs = 20000
 
 [userenv.shared]
 VITE_CLERK_PUBLISHABLE_KEY = "pk_test_d2FudGVkLWJvYmNhdC03Ni5jbGVyay5hY2NvdW50cy5kZXYk"
-WEBFORGE_TELEGRAM_BOT_TOKEN = "8600399102:AAFX18MYCRLbRhCkikeLe9gGlSgyIj1ex_A"
+WEBFORGE_TELEGRAM_BOT_TOKEN = "8600399102:AAFsDWifHhok4gzH0dKIGEPmdke_94hSlh8"
 
 [[ports]]
 localPort = 8080
