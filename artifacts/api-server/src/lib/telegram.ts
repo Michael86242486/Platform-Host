@@ -15,6 +15,11 @@ import {
 } from "./db";
 import { jobQueue } from "./queue";
 import { logger } from "./logger";
+import {
+  deleteSecret,
+  listSecrets,
+  setSecret,
+} from "./secrets";
 import { inferSiteName, uniqueSlug } from "./slug";
 
 /** Mirror of the same constant in queue.ts — set on an analyze job's
@@ -102,9 +107,6 @@ class TelegramBotManager {
     string,
     { token: string; username: string; displayName: string | null }
   >();
-  /** ownerUserId -> { name -> value } secrets stored in memory for this
-   *  process (will be persisted to DB once the secrets vault lands). */
-  private userSecrets = new Map<string, Map<string, string>>();
 
   async startAll(): Promise<void> {
     const bots = await db
@@ -237,21 +239,27 @@ class TelegramBotManager {
     void botId;
 
     bot.onText(/^\/start\b/i, async (msg) => {
-      const name = msg.from?.first_name ? `, ${msg.from.first_name}` : "";
+      const name = msg.from?.first_name ?? "there";
       const lines = [
-        `👋 Hey${name}! I'm *WebForge* — describe a website and I'll build & host it live.`,
+        `👋 *Welcome, ${escapeMd(name)}!*`,
         "",
-        "Just tell me what you want, like:",
-        "  • a landing page for my coffee shop",
-        "  • portfolio for an indie game dev",
-        "  • a barbershop site with online booking",
+        "I'm *WebForge AI* — I build complete, beautiful websites for you using AI.",
         "",
-        "Or use a command:",
-        "`/create <idea>` — build a new site",
-        "`/mysites` — see your sites",
-        "`/help` — full command list",
+        "*Here's how it works:*",
+        "1️⃣ Tell me what you want with `/create`",
+        "2️⃣ I'll show you a plan + an AI-generated visual preview",
+        "3️⃣ Pick a build mode:",
+        "   • 🚀 Simple — fast, straightforward build",
+        "   • 🤖 Autonomous — I review and auto-fix my own code",
+        "   • 📋 Background — runs in parallel; chat stays free",
+        "4️⃣ You get a live URL to share — with a real screenshot in this chat",
         "",
-        "What would you like to build today?",
+        "*Try it now:*",
+        "`/create portfolio`",
+        "`/create saas blue gradient, project management tool`",
+        "`/clone notion` _(or any popular product)_",
+        "",
+        "Run `/help` to see all commands. 👇",
       ];
       this.clearState(msg.chat.id);
       await bot.sendMessage(msg.chat.id, lines.join("\n"), {
@@ -277,6 +285,42 @@ class TelegramBotManager {
           { parse_mode: "Markdown" },
         );
       }
+    });
+
+    bot.onText(/^\/clone\b\s*(.*)$/i, async (msg, match) => {
+      const target = (match?.[1] ?? "").trim();
+      if (!target) {
+        await bot.sendMessage(
+          msg.chat.id,
+          [
+            "⚡ *Instant clone*",
+            "",
+            "Usage: `/clone <product>` — I'll skip planning and start building straight away.",
+            "",
+            "*Try:*",
+            "`/clone notion` · `/clone replit` · `/clone github`",
+            "`/clone lovable` · `/clone airbnb` · `/clone linear`",
+          ].join("\n"),
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      await bot.sendMessage(
+        msg.chat.id,
+        `🚀 Cloning *${escapeMd(target)}* — skipping planning, going straight to build.`,
+        { parse_mode: "Markdown" },
+      );
+      const clonePrompt =
+        `Build a faithful MVP-grade clone of ${target}. Reproduce the core ` +
+        `landing/marketing surface AND the primary product flow as a working ` +
+        `client-side prototype: nav, hero, feature highlights, pricing, ` +
+        `testimonials, footer, plus the signature interactive screen of ` +
+        `${target} (e.g. Notion = an editable doc, Replit = a code editor + ` +
+        `preview pane, GitHub = a repo file browser, Lovable = a chat-to-build ` +
+        `surface). Match ${target}'s real palette, typography mood, and tone. ` +
+        `Multi-page, mobile-responsive, fully functional with localStorage. ` +
+        `No external assets — emojis and CSS-only visuals.`;
+      await this.runCreate(ownerUserId, bot, msg.chat.id, clonePrompt);
     });
 
     bot.onText(/^\/(mysites|mysite)\b/i, async (msg) => {
@@ -415,17 +459,33 @@ class TelegramBotManager {
     });
 
     bot.onText(/^\/secrets\b/i, async (msg) => {
-      const list = this.userSecrets.get(ownerUserId) ?? new Map();
-      if (list.size === 0) {
+      const list = await listSecrets(ownerUserId);
+      if (list.length === 0) {
         await bot.sendMessage(
           msg.chat.id,
-          "🔒 No secrets stored. Use `/setsecret NAME=value`.",
+          [
+            "🔒 *Secrets vault* — empty.",
+            "",
+            "Add one with `/setsecret NAME=value` — encrypted at rest and",
+            "auto-injected into your sites whenever you reference `${NAME}`.",
+            "",
+            "Examples:",
+            "  • `/setsecret OPENAI_API_KEY=sk-...`",
+            "  • `/setsecret STRIPE_PUBLISHABLE_KEY=pk_live_...`",
+          ].join("\n"),
           { parse_mode: "Markdown" },
         );
         return;
       }
-      const lines = ["🔒 *Your secrets* (values are hidden)"];
-      for (const name of list.keys()) lines.push(`  • \`${name}\``);
+      const lines = [
+        "🔒 *Your secrets* — encrypted at rest",
+        "",
+        ...list.map((s) => `  • \`${s.name}\``),
+        "",
+        "Reference them in any built site as `${NAME}` and I'll inject them at build-time.",
+        "",
+        "_Use `/delsecret NAME` to remove one._",
+      ];
       await bot.sendMessage(msg.chat.id, lines.join("\n"), {
         parse_mode: "Markdown",
       });
@@ -434,45 +494,60 @@ class TelegramBotManager {
     bot.onText(/^\/setsecret\b\s*(.*)$/i, async (msg, match) => {
       const arg = (match?.[1] ?? "").trim();
       const m = arg.match(/^([A-Z][A-Z0-9_]*)\s*=\s*(.+)$/);
+      // Always try to delete the user message so the plaintext secret never
+      // sits in chat history — even if the syntax was wrong.
+      bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
       if (!m) {
         await bot.sendMessage(
           msg.chat.id,
-          "Usage: `/setsecret NAME=value`\nName must be uppercase letters, digits and underscores.",
+          [
+            "Usage: `/setsecret NAME=value`",
+            "",
+            "Name must be uppercase letters, digits and underscores",
+            "(e.g. `OPENAI_API_KEY`, `STRIPE_SECRET_KEY`).",
+          ].join("\n"),
           { parse_mode: "Markdown" },
         );
         return;
       }
-      const list = this.userSecrets.get(ownerUserId) ?? new Map();
-      list.set(m[1], m[2].trim());
-      this.userSecrets.set(ownerUserId, list);
-      // Delete the original message so the secret doesn't sit in chat history.
-      try {
-        await bot.deleteMessage(msg.chat.id, msg.message_id);
-      } catch {
-        /* noop */
+      const ok = await setSecret(ownerUserId, m[1], m[2].trim());
+      if (!ok) {
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ \`${escapeMd(m[1])}\` isn't a valid secret name.`,
+          { parse_mode: "Markdown" },
+        );
+        return;
       }
       await bot.sendMessage(
         msg.chat.id,
-        `✅ Stored secret \`${m[1]}\` (in-memory for this session).`,
+        [
+          `✅ Encrypted and stored \`${m[1]}\`.`,
+          "",
+          "Reference it in any future site as `${" + m[1] + "}` — I'll inject the real value at build-time.",
+        ].join("\n"),
         { parse_mode: "Markdown" },
       );
     });
 
     bot.onText(/^\/delsecret\b\s*(.*)$/i, async (msg, match) => {
       const name = (match?.[1] ?? "").trim();
-      const list = this.userSecrets.get(ownerUserId);
-      if (!name || !list || !list.has(name)) {
+      if (!name) {
         await bot.sendMessage(
           msg.chat.id,
-          `No secret named \`${escapeMd(name || "?")}\`.`,
+          "Usage: `/delsecret NAME`. List yours with `/secrets`.",
           { parse_mode: "Markdown" },
         );
         return;
       }
-      list.delete(name);
-      await bot.sendMessage(msg.chat.id, `🗑️ Deleted \`${name}\`.`, {
-        parse_mode: "Markdown",
-      });
+      const removed = await deleteSecret(ownerUserId, name);
+      await bot.sendMessage(
+        msg.chat.id,
+        removed
+          ? `🗑️ Deleted \`${name}\`.`
+          : `No secret named \`${escapeMd(name)}\`.`,
+        { parse_mode: "Markdown" },
+      );
     });
 
     // ---- Real-deployment family — coming soon, but recognised so the bot
@@ -526,6 +601,26 @@ class TelegramBotManager {
         comingSoon(
           "Host",
           "Upload a `.zip` of your own static or runtime code and serve it from a WebForge URL.",
+        ),
+        { parse_mode: "Markdown" },
+      );
+    });
+    bot.onText(/^\/createbackend\b/i, async (msg) => {
+      await bot.sendMessage(
+        msg.chat.id,
+        comingSoon(
+          "Create Backend",
+          "Spin up a live FastAPI / Express backend with one command — auto routes, DB, auth, public URL.",
+        ),
+        { parse_mode: "Markdown" },
+      );
+    });
+    bot.onText(/^\/backends\b/i, async (msg) => {
+      await bot.sendMessage(
+        msg.chat.id,
+        comingSoon(
+          "Backends",
+          "List, restart and tail logs of your deployed backends.",
         ),
         { parse_mode: "Markdown" },
       );
@@ -891,52 +986,55 @@ Rules:
 
   private helpText(): string {
     return [
-      "🤖 *WebForge AI — Help*",
+      "🤖 *WebForge AI — Full command reference*",
       "",
-      "*Commands:*",
-      "`/create <type> style notes` — Plan + preview + build",
-      "`/deploy <name> <runtime> <start-cmd>` — Deploy a real app: Node/Python/Bun/Deno/Bash/Static. Live URL with autoscale.",
-      "`/apps` — List your deployed apps (status, URLs, logs, scale-mode)",
-      "`/appstart <name>`, `/appstop <name>`, `/applogs <name>`, `/appscale <name> persistent|autoscale`",
-      "`/cms` — Open the visual CMS editor (edit any page of any site, live)",
-      "`/code <language> <what to build>` — Generate code in any language (Python, Go, Rust, etc.) — sent as a .zip",
-      "`/edit <id> <change>` — Modify an existing site (e.g. /edit 12 add pricing section)",
-      "`/tasks` — List your background builds",
-      "`/mysite` — View your live websites",
-      "`/host` — Upload a .zip of your own code and host it instantly",
-      "`/hostbot <token>` — Host your own Telegram bot (powered by AI)",
-      "`/mybots` — List your hosted bots · `/stopbot @username` — stop one",
-      "`/template` — Build instantly from a curated template (portfolio, business, saas, blog, store, fintech, restaurant)",
-      "`/templates` — List all available templates",
-      "`/status <id>` — Check a build's progress",
-      "`/cancel` — Cancel current planning step",
-      "`/secrets` — List your stored API keys (encrypted)",
-      "`/setsecret NAME=value` — Store an API key / secret",
-      "`/delsecret NAME` — Delete a stored secret",
-      "`/credits` — Show your credit balance & tier",
-      "`/boosts` — See Pro / VIP power-up tiers",
-      "`/image <prompt>` — Generate an image from text (or send a photo to remix it)",
-      "`/debug` — Self-diagnostic report",
-      "`/help` — This guide",
+      "*Build & clone*",
+      "👋  `/start` — Start here / show welcome",
+      "🪄  `/create <idea>` — Have AI build a website for you",
+      "⚡  `/clone <product>` — Instant clone (e.g. `/clone notion`)",
+      "🎨  `/templates` — Browse ready-made site templates",
+      "🧩  `/template <key>` — Build a template instantly",
+      "✏️  `/edit <name|id>` — Edit one of your sites with AI",
+      "🔁  `/retry <name|id>` — Retry a failed build",
+      "🗑  `/delete <name|id>` — Delete a site",
       "",
-      "🎙 *Voice notes:* Just send me a voice message describing your site — I'll transcribe and build it!",
+      "*Apps & infra*",
+      "🚀  `/deploy` — Deploy any app (Node, Python, Bun, Deno…) — _coming soon_",
+      "📦  `/apps` — List & manage your deployed apps — _coming soon_",
+      "🛠  `/createbackend` — Deploy a live FastAPI/Express backend — _coming soon_",
+      "📁  `/backends` — List your deployed backends — _coming soon_",
+      "🛠  `/cms` — Open the visual CMS editor — _coming soon_",
+      "📦  `/host` — Upload a .zip to host your own code — _coming soon_",
+      "💻  `/code <lang> <what>` — Generate code in any language — _coming soon_",
       "",
-      "*Build modes (after preview):*",
+      "*Your stuff*",
+      "🌐  `/mysite` — View & manage your websites",
+      "📊  `/status <name|id>` — Check a website's status",
+      "👀  `/preview <name|id>` — Get the live URL",
+      "🔒  `/secrets` — Manage encrypted API keys (auto-injected at build)",
+      "🔑  `/setsecret NAME=value` — Add a secret",
+      "🗑  `/delsecret NAME` — Remove a secret",
+      "📋  `/tasks` — See your active jobs",
+      "💳  `/credits` — Show your credit balance & tier",
+      "⚡  `/boosts` — See Pro / VIP power-up tiers",
+      "",
+      "*Bots*",
+      "🤖  `/hostbot <token>` — Host your own Telegram bot",
+      "🤖  `/mybots` — List your hosted bots",
+      "🛑  `/stopbot @username` — Stop one of your bots",
+      "",
+      "*Extras*",
+      "🎨  `/image <prompt>` — Generate an image from text",
+      "🩺  `/debug` — Self-diagnostic report",
+      "❓  `/help` — This guide",
+      "✗  `/cancel` — Cancel current action",
+      "",
+      "🎙 *Voice notes:* send a voice message and I'll transcribe & build it.",
+      "",
+      "*Build modes (after `/create`):*",
       "🚀 Simple — fastest path, ~2 min",
-      "🤖 Autonomous — self-review + auto-fix, ~3-4 min",
+      "🤖 Autonomous — self-review + auto-fix, ~3–4 min",
       "📋 Background — runs in parallel, free chat",
-      "",
-      "*Website types:*",
-      "portfolio · business · saas · startup · agency",
-      "blog · ecommerce · restaurant · fintech · consulting · landing",
-      "",
-      "*Examples:*",
-      "`/create portfolio dark minimal photography`",
-      "`/create saas purple, project management`",
-      "`/create restaurant warm terracotta Italian`",
-      "`/create ecommerce streetwear fashion brand`",
-      "",
-      "⏱ Build time: 2–4 minutes",
     ].join("\n");
   }
 
@@ -1226,20 +1324,40 @@ Rules:
     let lastRendered = "";
     const seenFiles = new Set<string>();
 
+    // 7-step build narrative — each step "completes" once we've crossed
+    // its progress threshold. Mirrors the user-visible feel of mature
+    // Lovable / v0-style builders.
+    const STEPS: { at: number; label: string }[] = [
+      { at: 5, label: "Researching design inspiration" },
+      { at: 18, label: "Building the full website with AI" },
+      { at: 55, label: "Auditing quality: SEO, accessibility, mobile" },
+      { at: 72, label: "Self-review pass (autonomous QA)" },
+      { at: 84, label: "Auto-fixing issues found" },
+      { at: 92, label: "Generating AI hero image" },
+      { at: 100, label: "Publishing to your live URL" },
+    ];
+
     const renderProgress = (s: Site, files: string[]) => {
-      const bar = renderBar(s.progress ?? 0);
-      const lines = [
-        `🛠️ *${escapeMd(s.name)}*`,
-        `${bar}  *${s.progress ?? 0}%*`,
-        `_${escapeMd(s.message ?? "Working")}_`,
-      ];
+      const pct = s.progress ?? 0;
+      const lines = [`🔨 *${escapeMd(s.name)}*`, ""];
+      STEPS.forEach((step, i) => {
+        const done = pct >= step.at;
+        const active = !done && (i === 0 || pct >= STEPS[i - 1].at);
+        const icon = done ? "✅" : active ? "⏳" : "⚪";
+        lines.push(`${icon} Step ${i + 1}/7: ${step.label}`);
+      });
+      lines.push("");
+      lines.push(`${renderBar(pct)}  *${pct}%*`);
+      if (s.message) {
+        lines.push(`_${escapeMd(s.message)}_`);
+      }
       if (files.length > 0) {
         lines.push("");
-        lines.push("*Files written:*");
-        for (const f of files.slice(-6)) lines.push(`  ✓ \`${f}\``);
+        lines.push(`📄 ${files.length} file${files.length === 1 ? "" : "s"} written`);
+        for (const f of files.slice(-3)) lines.push(`  ✓ \`${f}\``);
       }
       lines.push("");
-      lines.push(`📺 [Live preview](${baseUrl}/api/hosted/${s.slug}/)`);
+      lines.push(`📺 [Watch it build live](${baseUrl}/api/hosted/${s.slug}/)`);
       return lines.join("\n");
     };
 

@@ -15,6 +15,7 @@ import {
   editProjectAI,
 } from "./llm-generator";
 import { logger } from "./logger";
+import { getDecryptedSecrets, injectSecretsIntoFiles } from "./secrets";
 
 const MAX_CONCURRENCY = 3;
 
@@ -333,10 +334,20 @@ class JobQueue {
       let lastReportedFile: string | null = null;
       let revealedCount = 0;
       const seenFiles = new Set<string>();
+      // Tell the model which user-provided secrets are available so it can
+      // wire them in as `${NAME}` placeholders (we substitute the real values
+      // post-stream in `injectSecretsIntoFiles`).
+      const availableSecretNames = Object.keys(
+        await getDecryptedSecrets(job.userId),
+      );
+      const promptWithSecrets =
+        availableSecretNames.length > 0
+          ? `${site.prompt}\n\n[Available user secrets — reference as \${NAME} and I'll inject the value at build-time]: ${availableSecretNames.join(", ")}`
+          : site.prompt;
       out = await buildProjectAIStream(
         plan,
         site.name,
-        site.prompt,
+        promptWithSecrets,
         async ({ coverColor, files, currentFile, bytes }) => {
           const fileCount = Object.keys(files).length;
           // Estimate progress: 10% start + grows with bytes streamed (capped 90%)
@@ -389,13 +400,18 @@ class JobQueue {
         }
       : plan;
 
+    // Inject any user-stored secrets the AI referenced as `${NAME}`. Values
+    // are decrypted on demand and never logged.
+    const userSecrets = await getDecryptedSecrets(job.userId);
+    const finalFiles = injectSecretsIntoFiles(out.files, userSecrets);
+
     await db
       .update(sitesTable)
       .set({
         status: "ready",
         progress: 100,
         message: "Ready",
-        files: out.files,
+        files: finalFiles,
         coverColor: out.coverColor,
         plan: planForBuild,
         updatedAt: new Date(),

@@ -1,0 +1,80 @@
+Web builder 2, [25/04/2026, 16:04]
+✅ Language set to English (English)
+
+From now on the websites I build for you will be written in English.
+
+Web builder 2, [25/04/2026, 16:04]
+👋 Welcome, Michael!
+
+I'm WebForge AI — I build complete, beautiful websites for you using AI.
+
+Here's how it works:
+1️⃣ Tell me what you want with /create
+2️⃣ I'll show you a plan + an AI-generated visual preview
+3️⃣ Pick a build mode:
+   • 🚀 Simple — fast straightforward build
+   • 🤖 Autonomous — I review and auto-fix my own code
+   • 📋 Background — runs in parallel; chat stays free
+4️⃣ You get a live URL to share — with a real screenshot in this chat
+
+Try it now:
+/create portfolio
+/create saas blue gradient, project management tool
+/clone notion (or any popular product)
+
+Run /help to see all commands. 👇
+
+Web builder 2, [25/04/2026, 16:05]
+🚀 Cloning replit — skipping planning, going straight to build.
+
+Web builder 2, [25/04/2026, 16:05]
+✅ Step 1/7: Researching design inspiration
+✅ Step 2/7: Building the full website with AI
+✅ Step 3/7: Auditing quality: SEO, accessibility, mobile
+✅ Step 4/7: Self-review pass (autonomous QA)
+✅ Step 5/7: Auto-fixing issues found
+✅ Step 6/7: Generating AI hero image
+✅ Step 7/7: Publishing to your live URL
+
+[▓▓▓▓▓▓▓▓▓▓] 100%
+
+Web builder 2, [25/04/2026, 16:17]
+🔧 Autonomous fix applied
+Found 8 issues (major). Auto-corrected.
+
+Web builder 2, [25/04/2026, 16:50]
+[🖼 Preview: landing website
+⚠️ This is a stylized concept image, not a screenshot. The actual built site will use the same colors and layout brief, but won't match this image pixel-for-pixel.
+
+Choose how you'd like me to build it:]
+Preview: landing website
+⚠️ This is a stylized concept image, not a screenshot. The actual built site will use the same colors and layout brief, but won't match this image pixel-for-pixel.
+
+Choose how you'd like me to build it:
+
+Web builder 2, [25/04/2026, 20:14]
+📋 Here is my plan:
+
+🎯 Type: blog
+📝 Description: A blog that helps users identify and learn about different aspects of humanity, possibly with a focus on human psychology, sociology, or culture.
+
+Sections I'll build:
+  • Featured article hero
+  • Category navigation
+  • Article grid (9 posts)
+  • Newsletter CTA
+  • Trending sidebar
+  • Footer
+
+What's included:
+  • Complete CSS design system (colors, typography, spacing tokens)
+  • Scroll-triggered animations + micro-interactions
+  • Fully responsive (mobile, tablet, desktop)
+  • Web research used for design inspiration ✓
+  • SEO meta + Open Graph tags
+  • Multi-page site with frontend + assets
+  • Client-side login + localStorage data layer
+
+⏱ Estimated time: 1–3 minutes (now races primary + Groq in parallel)
+
+Reply yes to start, or tell me what to change.
