@@ -10,7 +10,10 @@ This is a pnpm monorepo with three artifacts:
 
 - `artifacts/webforge` — Expo (SDK 54) mobile app, dev-aesthetic dark UI with
   falling-code background, Clerk-powered auth (email + Google/Facebook/Apple
-  SSO), expo-router navigation, React Query data layer.
+  SSO), expo-router navigation, React Query data layer. The agent screen
+  (`app/create.tsx`) is a full chat UI: message bubbles, suggestion chips,
+  inline live preview, voice input, and a composer at the bottom that lets
+  users keep refining the build with follow-up messages.
 - `artifacts/api-server` — Express 5 + Clerk JWT verification, Drizzle ORM on
   Postgres, in-process site generator and job queue, multi-bot Telegram
   manager. Mounted at `/api`.

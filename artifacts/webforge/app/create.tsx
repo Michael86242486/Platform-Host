@@ -23,13 +23,16 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
   getGetSiteQueryKey,
+  getListSiteMessagesQueryKey,
   useCreateSite,
   useGetSite,
+  useListSiteMessages,
+  useSendSiteMessage,
   type Site,
 } from "@workspace/api-client-react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { MonoText } from "@/components/MonoText";
-import { NeonButton } from "@/components/NeonButton";
 import { useColors } from "@/hooks/useColors";
 
 const SUGGESTIONS = [
@@ -65,6 +68,15 @@ const SUGGESTIONS = [
   },
 ];
 
+type AgentMessage = {
+  id: string;
+  role: "user" | "agent" | "system";
+  kind: string;
+  content: string;
+  data?: Record<string, unknown> | null;
+  createdAt: string;
+};
+
 const apiBase =
   (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "") || "";
 
@@ -73,7 +85,9 @@ export default function CreateScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ prompt?: string; siteId?: string }>();
   const { getToken } = useAuth();
-  const [prompt, setPrompt] = useState(
+  const qc = useQueryClient();
+
+  const [draft, setDraft] = useState(
     typeof params.prompt === "string" ? params.prompt : "",
   );
   const [recording, setRecording] = useState(false);
@@ -81,60 +95,85 @@ export default function CreateScreen() {
   const [activeSiteId, setActiveSiteId] = useState<string | null>(
     typeof params.siteId === "string" ? params.siteId : null,
   );
+  const [showPreview, setShowPreview] = useState(true);
+
   const create = useCreateSite();
+  const send = useSendSiteMessage();
 
-  const pulse = useRef(new Animated.Value(1)).current;
+  const siteQuery = useGetSite(activeSiteId ?? "", {
+    query: {
+      enabled: !!activeSiteId,
+      queryKey: getGetSiteQueryKey(activeSiteId ?? ""),
+      refetchInterval: (q) => {
+        const s = q.state.data as Site | undefined;
+        if (!s) return 1500;
+        return s.status === "ready" || s.status === "failed" ? false : 1100;
+      },
+    },
+  });
+  const messagesQuery = useListSiteMessages(activeSiteId ?? "", {
+    query: {
+      enabled: !!activeSiteId,
+      queryKey: getListSiteMessagesQueryKey(activeSiteId ?? ""),
+      refetchInterval: (q) => {
+        const s = siteQuery.data as Site | undefined;
+        if (!s) return 1500;
+        return s.status === "ready" || s.status === "failed" ? 4000 : 1100;
+      },
+    },
+  });
 
-  useEffect(() => {
-    if (!recording) {
-      pulse.setValue(1);
-      return;
+  const site = siteQuery.data as Site | undefined;
+  const messages = (messagesQuery.data ?? []) as AgentMessage[];
+
+  // Submit: either start a new site, or send a follow-up message.
+  const onSubmit = useCallback(async () => {
+    const trimmed = draft.trim();
+    if (trimmed.length < 2) return;
+    if (!activeSiteId) {
+      try {
+        const created = await create.mutateAsync({
+          data: { prompt: trimmed, name: null, autoBuild: true },
+        });
+        void Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success,
+        );
+        setActiveSiteId(created.id);
+        setDraft("");
+      } catch (e) {
+        Alert.alert(
+          "Could not start build",
+          e instanceof Error ? e.message : "Unknown error",
+        );
+      }
+    } else {
+      try {
+        await send.mutateAsync({
+          id: activeSiteId,
+          data: { content: trimmed },
+        });
+        setDraft("");
+        void Haptics.selectionAsync();
+        // Refresh messages immediately
+        await qc.invalidateQueries({
+          queryKey: getListSiteMessagesQueryKey(activeSiteId),
+        });
+      } catch (e) {
+        Alert.alert(
+          "Could not send",
+          e instanceof Error ? e.message : "Unknown error",
+        );
+      }
     }
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, {
-          toValue: 1.18,
-          duration: 700,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulse, {
-          toValue: 1,
-          duration: 700,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [recording, pulse]);
+  }, [draft, activeSiteId, create, send, qc]);
 
-  const onSubmit = async () => {
-    const trimmed = prompt.trim();
-    if (trimmed.length < 4) return;
-    try {
-      const site = await create.mutateAsync({
-        data: { prompt: trimmed, name: null, autoBuild: true },
-      });
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setActiveSiteId(site.id);
-    } catch (e) {
-      Alert.alert(
-        "Could not start build",
-        e instanceof Error ? e.message : "Unknown error",
-      );
-    }
-  };
-
-  // Web-only voice recording using MediaRecorder + upload to /api/voice/transcribe.
+  // Voice input (web only — uses MediaRecorder + /api/voice/transcribe).
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
   const stopRecording = useCallback(async () => {
     const mr = mediaRecorderRef.current;
-    if (!mr) return;
-    if (mr.state === "inactive") return;
+    if (!mr || mr.state === "inactive") return;
     mr.stop();
   }, []);
 
@@ -158,8 +197,10 @@ export default function CreateScreen() {
           Alert.alert("Hmm", "I didn't catch any words. Try again.");
           return;
         }
-        setPrompt((prev) => (prev ? `${prev.trim()} ${t}` : t));
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setDraft((prev) => (prev ? `${prev.trim()} ${t}` : t));
+        void Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success,
+        );
       } catch (err) {
         Alert.alert(
           "Transcription failed",
@@ -224,786 +265,962 @@ export default function CreateScreen() {
     else void startRecording();
   };
 
-  const onCancelBuild = () => {
-    setActiveSiteId(null);
-    setPrompt("");
-  };
+  const sending = create.isPending || send.isPending;
+  const inputDisabled = transcribing || sending;
+  const isWorking =
+    !!site && site.status !== "ready" && site.status !== "failed";
 
-  if (activeSiteId) {
-    return (
-      <BuildView
-        siteId={activeSiteId}
-        onBack={onCancelBuild}
-        onOpenLibrary={() => router.replace(`/site/${activeSiteId}`)}
-      />
-    );
-  }
+  const onClose = () => router.back();
+  const onNewChat = () => {
+    setActiveSiteId(null);
+    setDraft("");
+  };
 
   return (
     <SafeAreaView
       style={{ flex: 1, backgroundColor: colors.background }}
       edges={["top"]}
     >
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          paddingHorizontal: 16,
-          paddingTop: 8,
-          paddingBottom: 8,
-          justifyContent: "space-between",
-        }}
-      >
-        <Pressable
-          onPress={() => router.back()}
-          style={({ pressed }) => ({
-            padding: 8,
-            opacity: pressed ? 0.6 : 1,
-          })}
-        >
-          <Feather name="x" size={24} color={colors.mutedForeground} />
-        </Pressable>
-        <MonoText
-          style={{
-            color: colors.primary,
-            fontSize: 11,
-            letterSpacing: 1.4,
-          }}
-        >
-          {">_ new site"}
-        </MonoText>
-        <View style={{ width: 40 }} />
-      </View>
+      <ChatHeader
+        site={site}
+        onClose={onClose}
+        onNewChat={onNewChat}
+        hasSite={!!activeSiteId}
+      />
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
       >
-        <ScrollView
-          contentContainerStyle={{
-            padding: 20,
-            paddingBottom: 40,
-            gap: 16,
-          }}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={{ gap: 8 }}>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 8,
-              }}
-            >
-              <View
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: 4,
-                  backgroundColor: colors.primary,
-                  shadowColor: colors.primary,
-                  shadowOpacity: 0.8,
-                  shadowRadius: 8,
-                }}
-              />
-              <MonoText
-                style={{
-                  color: colors.mutedForeground,
-                  fontSize: 11,
-                  letterSpacing: 1.4,
-                  textTransform: "uppercase",
-                }}
-              >
-                AI co-builder online
-              </MonoText>
-            </View>
-            <Text
-              style={{
-                color: colors.foreground,
-                fontSize: 32,
-                fontFamily: "Inter_700Bold",
-                letterSpacing: -0.8,
-                lineHeight: 38,
-              }}
-            >
-              What should we forge?
-            </Text>
-            <Text
-              style={{
-                color: colors.mutedForeground,
-                fontSize: 14,
-                lineHeight: 20,
-              }}
-            >
-              Type or speak it. The agent picks the layout, palette, copy, and
-              ships every page for you.
-            </Text>
-          </View>
-
-          <LinearGradient
-            colors={[`${colors.primary}22`, "transparent"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={{
-              borderRadius: 18,
-              padding: 1,
+        {!activeSiteId ? (
+          <EmptyChat
+            colors={colors}
+            onPick={(p) => {
+              void Haptics.selectionAsync();
+              setDraft(p);
             }}
-          >
-            <View
-              style={{
-                backgroundColor: colors.cardElevated,
-                borderColor: colors.border,
-                borderWidth: 1,
-                borderRadius: 17,
-                padding: 14,
-              }}
-            >
-              <TextInput
-                value={prompt}
-                onChangeText={setPrompt}
-                placeholder="e.g. A minimal photographer portfolio with a dark hero…"
-                placeholderTextColor={colors.mutedForeground}
-                multiline
-                autoFocus
-                editable={!transcribing && !create.isPending}
-                style={{
-                  color: colors.foreground,
-                  fontFamily: "Inter_500Medium",
-                  fontSize: 16,
-                  minHeight: 130,
-                  textAlignVertical: "top",
-                }}
-              />
-              <View
-                style={{
-                  flexDirection: "row",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginTop: 8,
-                }}
-              >
-                <View
-                  style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
-                >
-                  <Animated.View style={{ transform: [{ scale: pulse }] }}>
-                    <Pressable
-                      onPress={onMicPress}
-                      disabled={transcribing}
-                      style={({ pressed }) => ({
-                        width: 38,
-                        height: 38,
-                        borderRadius: 19,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        backgroundColor: recording ? "#ef4444" : colors.card,
-                        borderWidth: 1,
-                        borderColor: recording ? "#ef4444" : colors.border,
-                        opacity: pressed ? 0.7 : 1,
-                        shadowColor: recording ? "#ef4444" : colors.primary,
-                        shadowOpacity: recording ? 0.6 : 0,
-                        shadowRadius: 12,
-                      })}
-                    >
-                      {transcribing ? (
-                        <ActivityIndicator
-                          size="small"
-                          color={colors.primary}
-                        />
-                      ) : (
-                        <Feather
-                          name={recording ? "square" : "mic"}
-                          size={16}
-                          color={recording ? "#fff" : colors.foreground}
-                        />
-                      )}
-                    </Pressable>
-                  </Animated.View>
-                  <MonoText
-                    style={{
-                      color: recording
-                        ? "#ef4444"
-                        : transcribing
-                          ? colors.primary
-                          : colors.mutedForeground,
-                      fontSize: 11,
-                      letterSpacing: 1.2,
-                    }}
-                  >
-                    {recording
-                      ? "● REC — tap to stop"
-                      : transcribing
-                        ? "transcribing…"
-                        : "tap to speak"}
-                  </MonoText>
-                </View>
-                <MonoText
-                  style={{
-                    color:
-                      prompt.length > 800
-                        ? colors.warning
-                        : colors.mutedForeground,
-                    fontSize: 11,
-                  }}
-                >
-                  {prompt.length}/1000
-                </MonoText>
-              </View>
-            </View>
-          </LinearGradient>
-
-          <NeonButton
-            title="✨ Forge it"
-            onPress={onSubmit}
-            loading={create.isPending}
-            disabled={
-              prompt.trim().length < 4 || transcribing || create.isPending
-            }
-            fullWidth
           />
-
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 8,
-              marginTop: 8,
-              opacity: 0.6,
+        ) : (
+          <ConversationView
+            messages={messages}
+            site={site}
+            isWorking={isWorking}
+            showPreview={showPreview}
+            onTogglePreview={() => setShowPreview((s) => !s)}
+            onOpenSite={() => router.push(`/site/${activeSiteId}`)}
+            onOpenInBrowser={async () => {
+              if (!site?.previewUrl) return;
+              await Linking.openURL(site.previewUrl);
             }}
-          >
-            <Feather name="zap" size={12} color={colors.primary} />
-            <MonoText
-              style={{
-                color: colors.mutedForeground,
-                fontSize: 11,
-                letterSpacing: 1.2,
-              }}
-            >
-              powered by GPT — multi-page output
-            </MonoText>
-          </View>
+          />
+        )}
 
-          <View style={{ marginTop: 20, gap: 10 }}>
-            <MonoText
-              style={{
-                color: colors.mutedForeground,
-                fontSize: 11,
-                letterSpacing: 1.4,
-                textTransform: "uppercase",
-              }}
-            >
-              Try one of these
-            </MonoText>
-            {SUGGESTIONS.map((s) => (
-              <Pressable
-                key={s.label}
-                onPress={() => {
-                  void Haptics.selectionAsync();
-                  setPrompt(s.prompt);
-                }}
-                style={({ pressed }) => ({
-                  padding: 14,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: colors.card,
-                  opacity: pressed ? 0.85 : 1,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 12,
-                })}
-              >
-                <View
-                  style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 8,
-                    backgroundColor: `${colors.primary}22`,
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <Feather name={s.icon} size={14} color={colors.primary} />
-                </View>
-                <Text
-                  style={{
-                    color: colors.foreground,
-                    fontSize: 14,
-                    flex: 1,
-                  }}
-                >
-                  {s.label}
-                </Text>
-                <Feather
-                  name="arrow-up-right"
-                  size={16}
-                  color={colors.mutedForeground}
-                />
-              </Pressable>
-            ))}
-          </View>
-        </ScrollView>
+        <Composer
+          colors={colors}
+          value={draft}
+          onChange={setDraft}
+          onSubmit={onSubmit}
+          onMicPress={onMicPress}
+          recording={recording}
+          transcribing={transcribing}
+          disabled={inputDisabled}
+          sending={sending}
+          placeholder={
+            activeSiteId
+              ? "Ask the agent to change something…"
+              : "Describe the site you want…"
+          }
+        />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Live build view — Bolt.new-style streaming preview
+// Header
 // ---------------------------------------------------------------------------
 
-function BuildView({
-  siteId,
-  onBack,
-  onOpenLibrary,
+function ChatHeader({
+  site,
+  onClose,
+  onNewChat,
+  hasSite,
 }: {
-  siteId: string;
-  onBack: () => void;
-  onOpenLibrary: () => void;
+  site: Site | undefined;
+  onClose: () => void;
+  onNewChat: () => void;
+  hasSite: boolean;
 }) {
   const colors = useColors();
-  const siteQuery = useGetSite(siteId, {
-    query: {
-      queryKey: getGetSiteQueryKey(siteId),
-      refetchInterval: (q) => {
-        const s = q.state.data as Site | undefined;
-        if (!s) return 1200;
-        return s.status === "ready" || s.status === "failed" ? false : 900;
-      },
-    },
-  });
-  const site = siteQuery.data as Site | undefined;
+  const status = site?.status ?? "queued";
+  const isReady = status === "ready";
+  const isFailed = status === "failed";
+  const accent = isReady
+    ? colors.success
+    : isFailed
+      ? colors.destructive
+      : (site?.coverColor || colors.primary);
 
-  // Track build-log lines for the streaming console.
-  const [logLines, setLogLines] = useState<string[]>([]);
-  const lastMsgRef = useRef<string | null>(null);
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingHorizontal: 12,
+        paddingTop: 8,
+        paddingBottom: 10,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border,
+        backgroundColor: colors.surface,
+      }}
+    >
+      <Pressable
+        onPress={onClose}
+        hitSlop={10}
+        style={({ pressed }) => ({
+          padding: 6,
+          opacity: pressed ? 0.6 : 1,
+        })}
+      >
+        <Feather name="chevron-left" size={22} color={colors.foreground} />
+      </Pressable>
+
+      <View
+        style={{
+          flex: 1,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+        }}
+      >
+        <View
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: 13,
+            backgroundColor: `${accent}22`,
+            borderWidth: 1,
+            borderColor: `${accent}55`,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Feather name="zap" size={13} color={accent} />
+        </View>
+        <View style={{ alignItems: "flex-start" }}>
+          <Text
+            style={{
+              color: colors.foreground,
+              fontFamily: "Inter_600SemiBold",
+              fontSize: 14,
+              lineHeight: 16,
+            }}
+            numberOfLines={1}
+          >
+            {site?.name ?? "WebForge Agent"}
+          </Text>
+          <View
+            style={{ flexDirection: "row", alignItems: "center", gap: 5 }}
+          >
+            <View
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 3,
+                backgroundColor: accent,
+                shadowColor: accent,
+                shadowOpacity: 0.8,
+                shadowRadius: 4,
+              }}
+            />
+            <MonoText
+              style={{
+                color: colors.mutedForeground,
+                fontSize: 10,
+                letterSpacing: 1.2,
+                textTransform: "uppercase",
+              }}
+            >
+              {hasSite
+                ? isReady
+                  ? "live"
+                  : isFailed
+                    ? "build failed"
+                    : `${status} · ${site?.progress ?? 0}%`
+                : "ready when you are"}
+            </MonoText>
+          </View>
+        </View>
+      </View>
+
+      <Pressable
+        onPress={onNewChat}
+        hitSlop={10}
+        style={({ pressed }) => ({
+          padding: 6,
+          opacity: pressed ? 0.6 : 1,
+        })}
+      >
+        <Feather
+          name={hasSite ? "edit" : "x"}
+          size={20}
+          color={colors.mutedForeground}
+        />
+      </Pressable>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Empty state
+// ---------------------------------------------------------------------------
+
+function EmptyChat({
+  colors,
+  onPick,
+}: {
+  colors: ReturnType<typeof useColors>;
+  onPick: (p: string) => void;
+}) {
+  return (
+    <ScrollView
+      contentContainerStyle={{
+        flexGrow: 1,
+        paddingHorizontal: 18,
+        paddingTop: 26,
+        paddingBottom: 16,
+        gap: 22,
+      }}
+      keyboardShouldPersistTaps="handled"
+    >
+      <View style={{ alignItems: "center", gap: 14 }}>
+        <LinearGradient
+          colors={[`${colors.primary}33`, `${colors.accent}11`]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: 32,
+            alignItems: "center",
+            justifyContent: "center",
+            borderWidth: 1,
+            borderColor: `${colors.primary}55`,
+          }}
+        >
+          <Feather name="zap" size={28} color={colors.primary} />
+        </LinearGradient>
+        <Text
+          style={{
+            color: colors.foreground,
+            fontSize: 24,
+            fontFamily: "Inter_700Bold",
+            letterSpacing: -0.4,
+            textAlign: "center",
+          }}
+        >
+          What should we build today?
+        </Text>
+        <Text
+          style={{
+            color: colors.mutedForeground,
+            fontSize: 13,
+            lineHeight: 19,
+            textAlign: "center",
+            maxWidth: 320,
+          }}
+        >
+          Describe a site in plain English. The agent will plan it, design it,
+          and ship it — page by page. You can keep chatting to refine.
+        </Text>
+      </View>
+
+      <View style={{ gap: 8 }}>
+        <MonoText
+          style={{
+            color: colors.mutedForeground,
+            fontSize: 10,
+            letterSpacing: 1.4,
+            textTransform: "uppercase",
+            paddingHorizontal: 4,
+          }}
+        >
+          Try one of these
+        </MonoText>
+        {SUGGESTIONS.map((s) => (
+          <Pressable
+            key={s.label}
+            onPress={() => onPick(s.prompt)}
+            style={({ pressed }) => ({
+              padding: 12,
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: colors.border,
+              backgroundColor: colors.card,
+              opacity: pressed ? 0.85 : 1,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+            })}
+          >
+            <View
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 10,
+                backgroundColor: `${colors.primary}1A`,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Feather name={s.icon} size={14} color={colors.primary} />
+            </View>
+            <Text
+              style={{
+                color: colors.foreground,
+                fontSize: 14,
+                flex: 1,
+                fontFamily: "Inter_500Medium",
+              }}
+              numberOfLines={2}
+            >
+              {s.label}
+            </Text>
+            <Feather
+              name="arrow-up-right"
+              size={16}
+              color={colors.mutedForeground}
+            />
+          </Pressable>
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Conversation view (messages + inline preview)
+// ---------------------------------------------------------------------------
+
+function ConversationView({
+  messages,
+  site,
+  isWorking,
+  showPreview,
+  onTogglePreview,
+  onOpenSite,
+  onOpenInBrowser,
+}: {
+  messages: AgentMessage[];
+  site: Site | undefined;
+  isWorking: boolean;
+  showPreview: boolean;
+  onTogglePreview: () => void;
+  onOpenSite: () => void;
+  onOpenInBrowser: () => void;
+}) {
+  const colors = useColors();
+  const scrollRef = useRef<ScrollView>(null);
+  const lastCount = useRef(0);
+
+  // Auto-scroll on new messages.
   useEffect(() => {
-    const m = site?.message;
-    if (m && m !== lastMsgRef.current) {
-      lastMsgRef.current = m;
-      setLogLines((prev) => [...prev.slice(-20), m]);
+    if (messages.length !== lastCount.current) {
+      lastCount.current = messages.length;
+      const t = setTimeout(
+        () => scrollRef.current?.scrollToEnd({ animated: true }),
+        80,
+      );
+      return () => clearTimeout(t);
     }
-  }, [site?.message]);
+  }, [messages.length]);
 
-  // Iframe refresh key — bumps every ~1.4s while a page file is present and
-  // the site is still being built, so users see new sections appearing.
+  // Iframe refresh during build (web-only inline preview).
   const [refreshKey, setRefreshKey] = useState(0);
   const hasIndex = useMemo(
     () => (site?.files ?? []).includes("index.html"),
     [site?.files],
   );
   useEffect(() => {
-    if (!site) return;
-    if (site.status === "ready" || site.status === "failed") return;
-    if (!hasIndex) return;
-    const t = setInterval(() => setRefreshKey((k) => k + 1), 1400);
+    if (!site || !isWorking || !hasIndex) return;
+    const t = setInterval(() => setRefreshKey((k) => k + 1), 1500);
     return () => clearInterval(t);
-  }, [site, hasIndex]);
+  }, [site, isWorking, hasIndex]);
 
-  const accent = site?.coverColor || colors.primary;
-  const status = site?.status ?? "queued";
-  const progress = site?.progress ?? 0;
-  const isReady = status === "ready";
-  const isFailed = status === "failed";
   const previewUrl = site?.previewUrl ?? null;
   const iframeSrc =
     previewUrl && hasIndex ? `${previewUrl}?_=${refreshKey}` : null;
 
-  const onOpenInBrowser = async () => {
-    if (!previewUrl) return;
-    void Haptics.selectionAsync();
-    await Linking.openURL(previewUrl);
-  };
-
   return (
-    <SafeAreaView
-      style={{ flex: 1, backgroundColor: colors.background }}
-      edges={["top"]}
+    <ScrollView
+      ref={scrollRef}
+      style={{ flex: 1 }}
+      contentContainerStyle={{
+        paddingHorizontal: 14,
+        paddingTop: 14,
+        paddingBottom: 14,
+        gap: 10,
+      }}
+      keyboardShouldPersistTaps="handled"
     >
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          paddingHorizontal: 16,
-          paddingVertical: 8,
-        }}
-      >
-        <Pressable
-          onPress={onBack}
-          style={({ pressed }) => ({
-            padding: 8,
-            opacity: pressed ? 0.6 : 1,
-          })}
-        >
-          <Feather
-            name="chevron-left"
-            size={24}
-            color={colors.mutedForeground}
-          />
-        </Pressable>
-        <View
-          style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
-        >
-          <View
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              backgroundColor: isReady
-                ? colors.success
-                : isFailed
-                  ? colors.destructive
-                  : accent,
-              shadowColor: accent,
-              shadowOpacity: 0.8,
-              shadowRadius: 6,
-            }}
-          />
+      {messages.length === 0 && isWorking ? (
+        <AgentBubble>
+          <TypingDots />
           <MonoText
             style={{
-              color: isReady
-                ? colors.success
-                : isFailed
-                  ? colors.destructive
-                  : accent,
+              color: colors.mutedForeground,
               fontSize: 11,
-              letterSpacing: 1.4,
-              fontWeight: "700",
+              marginTop: 6,
             }}
           >
-            {status.toUpperCase()}
+            warming up the agent…
           </MonoText>
-        </View>
-        <View style={{ width: 40 }} />
-      </View>
+        </AgentBubble>
+      ) : null}
 
-      <ScrollView
-        contentContainerStyle={{ padding: 16, paddingBottom: 40, gap: 14 }}
+      {messages.map((m) => (
+        <MessageBubble key={m.id} message={m} />
+      ))}
+
+      {/* Inline preview card — appears once we have any HTML to show. */}
+      {site && (hasIndex || isWorking) ? (
+        <PreviewCard
+          site={site}
+          iframeSrc={iframeSrc}
+          showPreview={showPreview}
+          onToggle={onTogglePreview}
+          onOpenSite={onOpenSite}
+          onOpenInBrowser={onOpenInBrowser}
+        />
+      ) : null}
+
+      {/* Live "thinking" bubble while a job is running and the last message
+          isn't already an in-flight progress update. */}
+      {isWorking && messages.length > 0 ? (
+        <AgentBubble>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <TypingDots />
+            <MonoText
+              style={{ color: colors.mutedForeground, fontSize: 11 }}
+            >
+              {(site?.message ?? "working").toLowerCase()}
+            </MonoText>
+          </View>
+        </AgentBubble>
+      ) : null}
+    </ScrollView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Message bubble — renders user, agent, and rich agent message kinds.
+// ---------------------------------------------------------------------------
+
+function MessageBubble({ message }: { message: AgentMessage }) {
+  const colors = useColors();
+  if (message.role === "user") {
+    return (
+      <View
+        style={{
+          alignSelf: "flex-end",
+          maxWidth: "85%",
+          backgroundColor: colors.primary,
+          paddingHorizontal: 13,
+          paddingVertical: 10,
+          borderRadius: 16,
+          borderBottomRightRadius: 4,
+        }}
       >
-        <View>
+        <Text
+          style={{
+            color: colors.primaryForeground,
+            fontFamily: "Inter_500Medium",
+            fontSize: 14,
+            lineHeight: 20,
+          }}
+        >
+          {message.content}
+        </Text>
+      </View>
+    );
+  }
+
+  // System: subtle centered note.
+  if (message.role === "system") {
+    return (
+      <MonoText
+        style={{
+          color: colors.mutedForeground,
+          fontSize: 10,
+          textAlign: "center",
+          paddingVertical: 4,
+        }}
+      >
+        {message.content}
+      </MonoText>
+    );
+  }
+
+  // Agent — render based on kind.
+  switch (message.kind) {
+    case "analysis":
+      return <AnalysisCard message={message} />;
+    case "plan":
+      return <PlanCard message={message} />;
+    case "awaiting_confirmation":
+      return (
+        <AgentBubble>
           <Text
             style={{
               color: colors.foreground,
-              fontSize: 24,
-              fontFamily: "Inter_700Bold",
-              letterSpacing: -0.6,
+              fontSize: 14,
+              lineHeight: 20,
             }}
-            numberOfLines={2}
           >
-            {site?.name ?? "Forging your site"}
+            {message.content}
           </Text>
-          {site?.prompt ? (
-            <Text
-              numberOfLines={2}
-              style={{
-                color: colors.mutedForeground,
-                fontSize: 12,
-                marginTop: 4,
-              }}
-            >
-              {site.prompt}
-            </Text>
-          ) : null}
-        </View>
-
-        <LivePreviewPane
-          iframeSrc={iframeSrc}
-          accent={accent}
-          isReady={isReady}
-          isFailed={isFailed}
-          status={status}
-          progress={progress}
-          message={site?.message ?? "warming up…"}
-          previewUrl={previewUrl}
-          onOpenInBrowser={onOpenInBrowser}
+          <MonoText
+            style={{
+              color: colors.primary,
+              fontSize: 10,
+              letterSpacing: 1.2,
+              marginTop: 6,
+              textTransform: "uppercase",
+            }}
+          >
+            reply &quot;build it&quot; to confirm
+          </MonoText>
+        </AgentBubble>
+      );
+    case "build_started":
+      return (
+        <StatusLine
+          icon="play-circle"
+          label="Build started"
+          color={colors.accent}
         />
+      );
+    case "build_done":
+      return (
+        <StatusLine
+          icon="check-circle"
+          label={message.content || "Build complete"}
+          color={colors.success}
+        />
+      );
+    case "build_failed":
+      return (
+        <StatusLine
+          icon="alert-circle"
+          label={message.content || "Build failed"}
+          color={colors.destructive}
+        />
+      );
+    case "log":
+    case "build_progress":
+      return (
+        <View style={{ paddingLeft: 6 }}>
+          <MonoText
+            style={{
+              color: colors.mutedForeground,
+              fontSize: 11,
+              letterSpacing: 0.5,
+            }}
+          >
+            <Text style={{ color: colors.primary }}>›_ </Text>
+            {message.content}
+          </MonoText>
+        </View>
+      );
+    default:
+      return (
+        <AgentBubble>
+          <Text
+            style={{
+              color: colors.foreground,
+              fontSize: 14,
+              lineHeight: 20,
+            }}
+          >
+            {message.content}
+          </Text>
+        </AgentBubble>
+      );
+  }
+}
 
-        <View
+function AgentBubble({ children }: { children: React.ReactNode }) {
+  const colors = useColors();
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        gap: 8,
+        alignItems: "flex-end",
+        maxWidth: "92%",
+      }}
+    >
+      <View
+        style={{
+          width: 26,
+          height: 26,
+          borderRadius: 13,
+          backgroundColor: `${colors.primary}1A`,
+          borderWidth: 1,
+          borderColor: `${colors.primary}55`,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Feather name="zap" size={12} color={colors.primary} />
+      </View>
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: colors.card,
+          borderWidth: 1,
+          borderColor: colors.border,
+          paddingHorizontal: 13,
+          paddingVertical: 10,
+          borderRadius: 16,
+          borderBottomLeftRadius: 4,
+        }}
+      >
+        {children}
+      </View>
+    </View>
+  );
+}
+
+function AnalysisCard({ message }: { message: AgentMessage }) {
+  const colors = useColors();
+  const a = (message.data ?? {}) as {
+    intent?: string;
+    audience?: string | null;
+    features?: string[];
+    pages?: string[];
+    styleHints?: string[];
+  };
+  return (
+    <AgentBubble>
+      <Text
+        style={{
+          color: colors.foreground,
+          fontSize: 14,
+          lineHeight: 20,
+          marginBottom: 6,
+        }}
+      >
+        {message.content}
+      </Text>
+      {a.audience ? (
+        <MonoText
           style={{
-            backgroundColor: colors.cardElevated,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: colors.border,
-            padding: 14,
-            gap: 8,
+            color: colors.mutedForeground,
+            fontSize: 11,
+            marginBottom: 6,
           }}
         >
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}
-          >
-            <MonoText
-              style={{
-                color: colors.mutedForeground,
-                fontSize: 11,
-                letterSpacing: 1.4,
-                textTransform: "uppercase",
-              }}
-            >
-              Build log
-            </MonoText>
-            <MonoText
-              style={{
-                color: accent,
-                fontSize: 12,
-              }}
-            >
-              {progress}%
-            </MonoText>
-          </View>
-          <View
-            style={{
-              height: 4,
-              backgroundColor: colors.border,
-              borderRadius: 2,
-              overflow: "hidden",
-            }}
-          >
+          audience › {a.audience}
+        </MonoText>
+      ) : null}
+      {a.features?.length ? (
+        <View style={{ marginTop: 6, gap: 4 }}>
+          {a.features.map((f) => (
             <View
-              style={{
-                width: `${Math.max(2, progress)}%`,
-                backgroundColor: accent,
-                height: "100%",
-              }}
-            />
-          </View>
-          <View style={{ marginTop: 4, gap: 2 }}>
-            {logLines.length === 0 ? (
-              <MonoText
-                style={{ color: colors.mutedForeground, fontSize: 12 }}
-              >
-                {">_ "} starting agent…
-              </MonoText>
-            ) : (
-              logLines.map((line, idx) => (
-                <MonoText
-                  key={`${idx}-${line}`}
-                  style={{
-                    color:
-                      idx === logLines.length - 1
-                        ? colors.foreground
-                        : colors.mutedForeground,
-                    fontSize: 12,
-                  }}
-                  numberOfLines={1}
-                >
-                  {">_ "} {line}
-                </MonoText>
-              ))
-            )}
-          </View>
-        </View>
-
-        {(site?.files ?? []).length > 0 ? (
-          <View
-            style={{
-              backgroundColor: colors.card,
-              borderRadius: 14,
-              borderWidth: 1,
-              borderColor: colors.border,
-              padding: 14,
-              gap: 6,
-            }}
-          >
-            <MonoText
-              style={{
-                color: colors.mutedForeground,
-                fontSize: 11,
-                letterSpacing: 1.4,
-                textTransform: "uppercase",
-              }}
+              key={f}
+              style={{ flexDirection: "row", gap: 6, alignItems: "flex-start" }}
             >
-              Files materialized ({(site?.files ?? []).length})
-            </MonoText>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-              {(site?.files ?? []).map((f) => (
-                <View
-                  key={f}
-                  style={{
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
-                    borderRadius: 6,
-                    backgroundColor: colors.cardElevated,
-                    borderWidth: 1,
-                    borderColor: `${accent}55`,
-                  }}
-                >
-                  <MonoText
-                    style={{
-                      color: colors.foreground,
-                      fontSize: 11,
-                    }}
-                  >
-                    {f}
-                  </MonoText>
-                </View>
-              ))}
+              <MonoText
+                style={{ color: colors.primary, fontSize: 11, lineHeight: 18 }}
+              >
+                ✓
+              </MonoText>
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontSize: 13,
+                  lineHeight: 18,
+                  flex: 1,
+                }}
+              >
+                {f}
+              </Text>
             </View>
-          </View>
-        ) : null}
+          ))}
+        </View>
+      ) : null}
+    </AgentBubble>
+  );
+}
 
-        {isReady ? (
-          <View style={{ gap: 10 }}>
-            <NeonButton
-              title="Open in library"
-              onPress={onOpenLibrary}
-              fullWidth
-            />
-            <Pressable
-              onPress={onBack}
-              style={({ pressed }) => ({
-                padding: 14,
-                borderRadius: 12,
+function PlanCard({ message }: { message: AgentMessage }) {
+  const colors = useColors();
+  const p = (message.data ?? {}) as {
+    pages?: { name?: string; route?: string; sections?: string[] }[];
+    palette?: string[];
+  };
+  return (
+    <AgentBubble>
+      <Text
+        style={{
+          color: colors.foreground,
+          fontSize: 14,
+          lineHeight: 20,
+          marginBottom: 8,
+        }}
+      >
+        {message.content}
+      </Text>
+
+      {p.palette?.length ? (
+        <View
+          style={{
+            flexDirection: "row",
+            gap: 6,
+            marginBottom: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          {p.palette.slice(0, 6).map((c, i) => (
+            <View
+              key={`${c}-${i}`}
+              style={{
+                width: 22,
+                height: 22,
+                borderRadius: 6,
+                backgroundColor: c,
                 borderWidth: 1,
                 borderColor: colors.border,
-                backgroundColor: colors.card,
-                alignItems: "center",
-                opacity: pressed ? 0.8 : 1,
-              })}
+              }}
+            />
+          ))}
+        </View>
+      ) : null}
+
+      {p.pages?.length ? (
+        <View style={{ gap: 6 }}>
+          {p.pages.slice(0, 6).map((pg, i) => (
+            <View
+              key={`${pg.name ?? "page"}-${i}`}
+              style={{
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                backgroundColor: colors.cardElevated,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: colors.border,
+              }}
             >
               <Text
                 style={{
                   color: colors.foreground,
+                  fontSize: 13,
                   fontFamily: "Inter_600SemiBold",
-                  fontSize: 14,
                 }}
               >
-                Forge another
+                {pg.name ?? pg.route ?? `Page ${i + 1}`}
               </Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {isFailed ? (
-          <View
-            style={{
-              padding: 14,
-              borderRadius: 12,
-              borderWidth: 1,
-              borderColor: colors.destructive,
-              gap: 8,
-              backgroundColor: `${colors.destructive}11`,
-            }}
-          >
-            <Text
-              style={{
-                color: colors.destructive,
-                fontFamily: "Inter_700Bold",
-              }}
-            >
-              Build failed
-            </Text>
-            <MonoText
-              style={{ color: colors.mutedForeground, fontSize: 12 }}
-            >
-              {site?.error ?? "Unknown error"}
-            </MonoText>
-            <NeonButton title="Try again" onPress={onBack} />
-          </View>
-        ) : null}
-      </ScrollView>
-    </SafeAreaView>
+              {pg.sections?.length ? (
+                <MonoText
+                  style={{
+                    color: colors.mutedForeground,
+                    fontSize: 10,
+                    marginTop: 2,
+                  }}
+                >
+                  {pg.sections.join(" · ")}
+                </MonoText>
+              ) : null}
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </AgentBubble>
   );
 }
 
-function LivePreviewPane({
+function StatusLine({
+  icon,
+  label,
+  color,
+}: {
+  icon: keyof typeof Feather.glyphMap;
+  label: string;
+  color: string;
+}) {
+  const colors = useColors();
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingVertical: 4,
+        paddingHorizontal: 6,
+      }}
+    >
+      <Feather name={icon} size={14} color={color} />
+      <Text
+        style={{
+          color: colors.foreground,
+          fontSize: 13,
+          fontFamily: "Inter_500Medium",
+          flex: 1,
+        }}
+      >
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function TypingDots() {
+  const colors = useColors();
+  const a = useRef(new Animated.Value(0)).current;
+  const b = useRef(new Animated.Value(0)).current;
+  const c = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const make = (v: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(v, {
+            toValue: 1,
+            duration: 400,
+            easing: Easing.inOut(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(v, {
+            toValue: 0,
+            duration: 400,
+            easing: Easing.inOut(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+    const loops = [make(a, 0), make(b, 150), make(c, 300)];
+    loops.forEach((l) => l.start());
+    return () => loops.forEach((l) => l.stop());
+  }, [a, b, c]);
+
+  const dot = (v: Animated.Value) => (
+    <Animated.View
+      style={{
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: colors.primary,
+        opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.25, 1] }),
+        transform: [
+          {
+            translateY: v.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, -3],
+            }),
+          },
+        ],
+      }}
+    />
+  );
+
+  return (
+    <View style={{ flexDirection: "row", gap: 4, alignItems: "center" }}>
+      {dot(a)}
+      {dot(b)}
+      {dot(c)}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inline preview card
+// ---------------------------------------------------------------------------
+
+function PreviewCard({
+  site,
   iframeSrc,
-  accent,
-  isReady,
-  isFailed,
-  status,
-  progress,
-  message,
-  previewUrl,
+  showPreview,
+  onToggle,
+  onOpenSite,
   onOpenInBrowser,
 }: {
+  site: Site;
   iframeSrc: string | null;
-  accent: string;
-  isReady: boolean;
-  isFailed: boolean;
-  status: string;
-  progress: number;
-  message: string;
-  previewUrl: string | null;
+  showPreview: boolean;
+  onToggle: () => void;
+  onOpenSite: () => void;
   onOpenInBrowser: () => void;
 }) {
   const colors = useColors();
-  const pulse = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    if (isReady) {
-      pulse.setValue(0);
-      return;
-    }
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, {
-          toValue: 1,
-          duration: 1100,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulse, {
-          toValue: 0,
-          duration: 1100,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [isReady, pulse]);
-
-  const overlayOpacity = pulse.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.18, 0.4],
-  });
+  const isReady = site.status === "ready";
+  const isFailed = site.status === "failed";
+  const accent = isReady
+    ? colors.success
+    : isFailed
+      ? colors.destructive
+      : (site.coverColor || colors.primary);
 
   return (
     <View
       style={{
-        borderRadius: 16,
+        marginTop: 4,
+        borderRadius: 14,
         borderWidth: 1,
         borderColor: colors.border,
+        backgroundColor: colors.card,
         overflow: "hidden",
-        backgroundColor: "#000",
-        minHeight: 360,
       }}
     >
-      {/* Fake browser chrome */}
+      {/* Browser-chrome header */}
       <View
         style={{
           flexDirection: "row",
           alignItems: "center",
-          gap: 6,
+          gap: 8,
           paddingHorizontal: 10,
           paddingVertical: 8,
-          backgroundColor: colors.cardElevated,
+          backgroundColor: colors.surface,
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
         }}
       >
-        {["#FF5F57", "#FEBC2E", "#28C840"].map((c) => (
+        <View style={{ flexDirection: "row", gap: 5 }}>
           <View
-            key={c}
             style={{
               width: 9,
               height: 9,
-              borderRadius: 5,
-              backgroundColor: c,
+              borderRadius: 4.5,
+              backgroundColor: "#FF5F57",
             }}
           />
-        ))}
-        <Pressable
-          onPress={onOpenInBrowser}
-          disabled={!previewUrl}
+          <View
+            style={{
+              width: 9,
+              height: 9,
+              borderRadius: 4.5,
+              backgroundColor: "#FEBC2E",
+            }}
+          />
+          <View
+            style={{
+              width: 9,
+              height: 9,
+              borderRadius: 4.5,
+              backgroundColor: "#28C840",
+            }}
+          />
+        </View>
+        <View
           style={{
             flex: 1,
-            backgroundColor: colors.card,
-            marginLeft: 6,
             paddingHorizontal: 8,
             paddingVertical: 3,
+            backgroundColor: colors.cardElevated,
             borderRadius: 6,
             flexDirection: "row",
             alignItems: "center",
@@ -1013,145 +1230,287 @@ function LivePreviewPane({
           <Feather name="lock" size={9} color={colors.mutedForeground} />
           <MonoText
             numberOfLines={1}
-            style={{ color: colors.mutedForeground, fontSize: 10, flex: 1 }}
-          >
-            {previewUrl ?? "preview is loading…"}
-          </MonoText>
-          {previewUrl ? (
-            <Feather
-              name="external-link"
-              size={11}
-              color={colors.mutedForeground}
-            />
-          ) : null}
-        </Pressable>
-      </View>
-
-      {/* Iframe area */}
-      <View style={{ minHeight: 320, backgroundColor: "#0a0a0a" }}>
-        {Platform.OS === "web" && iframeSrc ? (
-          React.createElement("iframe", {
-            src: iframeSrc,
-            title: "Live site preview",
-            style: {
-              width: "100%",
-              height: "100%",
-              minHeight: 320,
-              border: "0",
-              background: "#0a0a0a",
-              display: "block",
-            },
-            sandbox: "allow-scripts allow-same-origin",
-          })
-        ) : (
-          <View
             style={{
-              minHeight: 320,
-              alignItems: "center",
-              justifyContent: "center",
-              padding: 24,
-              gap: 10,
+              color: colors.mutedForeground,
+              fontSize: 10,
+              flex: 1,
             }}
           >
-            <ActivityIndicator color={accent} />
+            {site.publicUrl ?? site.previewUrl ?? "preview pending…"}
+          </MonoText>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 4,
+              paddingHorizontal: 6,
+              paddingVertical: 2,
+              borderRadius: 999,
+              backgroundColor: `${accent}22`,
+            }}
+          >
+            <View
+              style={{
+                width: 5,
+                height: 5,
+                borderRadius: 2.5,
+                backgroundColor: accent,
+              }}
+            />
             <MonoText
               style={{
                 color: accent,
-                fontSize: 11,
-                letterSpacing: 1.4,
+                fontSize: 9,
+                letterSpacing: 1,
                 fontWeight: "700",
               }}
             >
-              {isFailed
-                ? "● BUILD FAILED"
-                : isReady
-                  ? "● READY"
-                  : "● GENERATING"}
+              {isReady
+                ? "LIVE"
+                : isFailed
+                  ? "FAILED"
+                  : `${site.progress ?? 0}%`}
             </MonoText>
-            <Text
-              style={{
-                color: "#fff",
-                fontFamily: "Inter_600SemiBold",
-                fontSize: 14,
-                textAlign: "center",
-              }}
-            >
-              {message}
-            </Text>
-            {previewUrl ? (
-              <Pressable onPress={onOpenInBrowser}>
-                <MonoText style={{ color: colors.primary, fontSize: 11 }}>
-                  Open preview in browser ↗
-                </MonoText>
-              </Pressable>
-            ) : null}
           </View>
-        )}
+        </View>
+        <Pressable
+          onPress={onToggle}
+          hitSlop={8}
+          style={({ pressed }) => ({
+            padding: 4,
+            opacity: pressed ? 0.6 : 1,
+          })}
+        >
+          <Feather
+            name={showPreview ? "chevron-up" : "chevron-down"}
+            size={14}
+            color={colors.mutedForeground}
+          />
+        </Pressable>
       </View>
 
-      {/* Generating overlay shimmer (only while building) */}
-      {!isReady && Platform.OS === "web" && iframeSrc ? (
-        <Animated.View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            top: 32,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: accent,
-            opacity: overlayOpacity,
-          }}
-        />
+      {showPreview ? (
+        <View style={{ minHeight: 240, backgroundColor: "#0a0a0a" }}>
+          {Platform.OS === "web" && iframeSrc ? (
+            React.createElement("iframe", {
+              src: iframeSrc,
+              title: "Live preview",
+              style: {
+                width: "100%",
+                height: "100%",
+                minHeight: 240,
+                border: "0",
+                background: "#0a0a0a",
+                display: "block",
+              },
+              sandbox: "allow-scripts allow-same-origin",
+            })
+          ) : (
+            <View
+              style={{
+                minHeight: 240,
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 10,
+                padding: 20,
+              }}
+            >
+              {isFailed ? null : <ActivityIndicator color={accent} />}
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontFamily: "Inter_500Medium",
+                  fontSize: 13,
+                  textAlign: "center",
+                }}
+              >
+                {site.message ?? "warming up…"}
+              </Text>
+            </View>
+          )}
+        </View>
       ) : null}
 
-      {/* Status pill in the corner */}
+      {/* Footer actions */}
       <View
         style={{
-          position: "absolute",
-          top: 44,
-          right: 10,
-          paddingHorizontal: 8,
-          paddingVertical: 4,
-          borderRadius: 999,
           flexDirection: "row",
           alignItems: "center",
-          gap: 6,
-          backgroundColor: "#000A",
-          borderWidth: 1,
-          borderColor: `${accent}77`,
+          gap: 8,
+          padding: 10,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+          backgroundColor: colors.surface,
         }}
       >
-        <View
+        <Pressable
+          onPress={onOpenInBrowser}
+          disabled={!site.previewUrl}
+          style={({ pressed }) => ({
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            paddingHorizontal: 10,
+            paddingVertical: 7,
+            borderRadius: 999,
+            backgroundColor: colors.cardElevated,
+            opacity: !site.previewUrl ? 0.5 : pressed ? 0.7 : 1,
+          })}
+        >
+          <Feather name="external-link" size={11} color={colors.foreground} />
+          <MonoText style={{ color: colors.foreground, fontSize: 10 }}>
+            open
+          </MonoText>
+        </Pressable>
+        <Pressable
+          onPress={onOpenSite}
+          style={({ pressed }) => ({
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            paddingHorizontal: 10,
+            paddingVertical: 7,
+            borderRadius: 999,
+            backgroundColor: colors.cardElevated,
+            opacity: pressed ? 0.7 : 1,
+          })}
+        >
+          <Feather name="settings" size={11} color={colors.foreground} />
+          <MonoText style={{ color: colors.foreground, fontSize: 10 }}>
+            site settings
+          </MonoText>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Composer
+// ---------------------------------------------------------------------------
+
+function Composer({
+  colors,
+  value,
+  onChange,
+  onSubmit,
+  onMicPress,
+  recording,
+  transcribing,
+  disabled,
+  sending,
+  placeholder,
+}: {
+  colors: ReturnType<typeof useColors>;
+  value: string;
+  onChange: (s: string) => void;
+  onSubmit: () => void;
+  onMicPress: () => void;
+  recording: boolean;
+  transcribing: boolean;
+  disabled: boolean;
+  sending: boolean;
+  placeholder: string;
+}) {
+  const canSend = value.trim().length >= 2 && !disabled;
+  return (
+    <View
+      style={{
+        paddingHorizontal: 12,
+        paddingTop: 8,
+        paddingBottom: Platform.OS === "ios" ? 12 : 14,
+        borderTopWidth: 1,
+        borderTopColor: colors.border,
+        backgroundColor: colors.surface,
+      }}
+    >
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "flex-end",
+          gap: 8,
+          backgroundColor: colors.cardElevated,
+          borderRadius: 22,
+          borderWidth: 1,
+          borderColor: colors.border,
+          paddingHorizontal: 12,
+          paddingVertical: 6,
+        }}
+      >
+        <Pressable
+          onPress={onMicPress}
+          disabled={transcribing}
+          hitSlop={8}
+          style={({ pressed }) => ({
+            width: 30,
+            height: 30,
+            borderRadius: 15,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: recording ? "#ef4444" : "transparent",
+            opacity: pressed ? 0.7 : 1,
+            marginBottom: 5,
+          })}
+        >
+          {transcribing ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <Feather
+              name={recording ? "square" : "mic"}
+              size={16}
+              color={recording ? "#fff" : colors.mutedForeground}
+            />
+          )}
+        </Pressable>
+
+        <TextInput
+          value={value}
+          onChangeText={onChange}
+          placeholder={placeholder}
+          placeholderTextColor={colors.mutedForeground}
+          multiline
+          editable={!disabled}
           style={{
-            width: 6,
-            height: 6,
-            borderRadius: 3,
-            backgroundColor: isReady
-              ? colors.success
-              : isFailed
-                ? colors.destructive
-                : accent,
+            flex: 1,
+            color: colors.foreground,
+            fontFamily: "Inter_500Medium",
+            fontSize: 15,
+            maxHeight: 140,
+            paddingTop: 9,
+            paddingBottom: 9,
+            ...(Platform.OS === "web"
+              ? ({ outlineStyle: "none" } as object)
+              : null),
           }}
         />
-        <MonoText
-          style={{
-            color: isReady
-              ? colors.success
-              : isFailed
-                ? colors.destructive
-                : accent,
-            fontSize: 10,
-            letterSpacing: 1.2,
-            fontWeight: "700",
-          }}
+
+        <Pressable
+          onPress={onSubmit}
+          disabled={!canSend}
+          hitSlop={6}
+          style={({ pressed }) => ({
+            width: 32,
+            height: 32,
+            borderRadius: 16,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: canSend ? colors.primary : colors.muted,
+            opacity: pressed ? 0.8 : 1,
+            marginBottom: 4,
+          })}
         >
-          {isReady
-            ? "LIVE"
-            : isFailed
-              ? "FAILED"
-              : `${status.toUpperCase()} ${progress}%`}
-        </MonoText>
+          {sending ? (
+            <ActivityIndicator size="small" color={colors.primaryForeground} />
+          ) : (
+            <Feather
+              name="arrow-up"
+              size={16}
+              color={
+                canSend ? colors.primaryForeground : colors.mutedForeground
+              }
+            />
+          )}
+        </Pressable>
       </View>
     </View>
   );
