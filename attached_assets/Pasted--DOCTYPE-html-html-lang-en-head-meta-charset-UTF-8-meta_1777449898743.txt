@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebForge Preview</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<style>
+body {
+  background: #0D1117;
+  color: #C9D1D9;
+  font-family: ui-monospace, monospace;
+}
+</style>
+</head>
+
+<body class="flex flex-col h-screen">
+
+<!-- HEADER -->
+<header class="flex items-center justify-between p-3 border-b border-gray-800">
+  <button onclick="goBack()" class="text-sm text-gray-400">← Back</button>
+  <h1 class="text-green-400 text-sm font-bold">🔍 Live Preview</h1>
+  <button class="text-sm text-cyan-400">Deploy</button>
+</header>
+
+<!-- MAIN -->
+<div class="flex flex-1 overflow-hidden">
+
+  <!-- LEFT: WEBSITE -->
+  <div class="w-2/3 bg-white">
+    <iframe id="siteFrame" class="w-full h-full"></iframe>
+  </div>
+
+  <!-- RIGHT: CONTROLS -->
+  <div class="w-1/3 flex flex-col border-l border-gray-800">
+
+    <!-- STATUS -->
+    <div class="p-3 border-b border-gray-800">
+      <div class="text-xs text-gray-400">Status</div>
+      <div class="text-green-400 text-sm">● Live</div>
+    </div>
+
+    <!-- LOGS -->
+    <div class="flex-1 overflow-y-auto p-3 text-xs space-y-2" id="logs">
+      <div>• Build completed</div>
+      <div>• Pages generated</div>
+      <div>• Assets loaded</div>
+    </div>
+
+    <!-- EDIT BOX -->
+    <div class="p-3 border-t border-gray-800">
+      <input id="editInput"
+        class="w-full p-2 text-xs rounded bg-[#161B22] border border-gray-700"
+        placeholder="Tell AI what to change..." />
+      <button onclick="sendEdit()"
+        class="mt-2 w-full bg-cyan-500 text-black py-2 text-xs rounded">
+        Apply Change
+      </button>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+
+// LOAD SITE (simulate dynamic site)
+const siteHTML = `
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { font-family: sans-serif; text-align:center; }
+button { padding:10px; margin:10px; }
+</style>
+</head>
+<body>
+
+<h1>🚀 My Generated Website</h1>
+<p>This is your live preview.</p>
+
+<button onclick="alert('Hello User!')">Click Me</button>
+
+</body>
+</html>
+`;
+
+document.getElementById("siteFrame").srcdoc = siteHTML;
+
+// NAVIGATION
+function goBack() {
+  window.history.back();
+}
+
+// EDIT SYSTEM
+function sendEdit() {
+  const input = document.getElementById("editInput").value;
+
+  if (!input) return;
+
+  addLog("Applying change: " + input);
+
+  // simulate change
+  setTimeout(() => {
+    addLog("Rebuilding...");
+  }, 500);
+
+  setTimeout(() => {
+    addLog("Update complete ✅");
+
+    // simulate new preview
+    document.getElementById("siteFrame").srcdoc = `
+    <html>
+      <body style="font-family:sans-serif;text-align:center;">
+        <h1>✨ Updated Website</h1>
+        <p>${input}</p>
+      </body>
+    </html>
+    `;
+  }, 1500);
+
+  document.getElementById("editInput").value = "";
+}
+
+// LOGS
+function addLog(text) {
+  const log = document.createElement("div");
+  log.innerText = "• " + text;
+  document.getElementById("logs").appendChild(log);
+}
+
+</script>
+
+</body>
+</html>

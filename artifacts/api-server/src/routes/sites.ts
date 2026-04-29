@@ -605,13 +605,61 @@ router.post("/sites/:id/domain/verify", requireAuth, async (req, res) => {
 
 // --- Public hosted route ---------------------------------------------------
 
-// /api/hosted/:slug → redirect to /api/hosted/:slug/index.html
-router.get("/hosted/:slug", (req, res) => {
+// /api/hosted/:slug (no trailing slash) → redirect to the canonical "/" form.
+// We guard on req.path because Express 5's loose routing also matches the
+// trailing-slash variant, which would cause a redirect loop here.
+router.get("/hosted/:slug", (req, res, next) => {
+  if (req.path.endsWith("/")) {
+    next();
+    return;
+  }
   res.redirect(302, `/api/hosted/${req.params.slug}/`);
 });
 
+// Raw routes — always serve the actual site bytes (no preview chrome).
+// Used by the preview shell's iframe and by visitors who want the bare site.
+router.get("/hosted/:slug/_raw/", async (req, res) => {
+  await serveSiteFile(req.params.slug, "index.html", res, { raw: true });
+});
+router.get("/hosted/:slug/_raw/*splat", async (req, res) => {
+  const wildcard = (req.params as unknown as { splat?: string | string[] })
+    .splat;
+  const sub = Array.isArray(wildcard)
+    ? wildcard.join("/")
+    : (wildcard ?? "index.html");
+  await serveSiteFile(req.params.slug, sub || "index.html", res, { raw: true });
+});
+
+// JSON status feed — the preview shell polls this to update the right panel
+// without reloading the iframe.
+router.get("/hosted/:slug/_status", async (req, res) => {
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(eq(sitesTable.slug, req.params.slug))
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  const files = site.files ?? {};
+  const fileList = Object.keys(files)
+    .sort()
+    .map((path) => ({ path, bytes: (files[path] ?? "").length }));
+  const totalBytes = fileList.reduce((acc, f) => acc + f.bytes, 0);
+  res.set("Cache-Control", "no-store").json({
+    name: site.name,
+    status: site.status,
+    progress: site.progress ?? 0,
+    message: site.message ?? "",
+    files: fileList,
+    totalBytes,
+    updatedAt: site.updatedAt,
+  });
+});
+
 router.get("/hosted/:slug/", async (req, res) => {
-  await serveSiteFile(req.params.slug, "index.html", res);
+  await serveSiteFile(req.params.slug, "index.html", res, { raw: false });
 });
 
 router.get("/hosted/:slug/*splat", async (req, res) => {
@@ -620,13 +668,16 @@ router.get("/hosted/:slug/*splat", async (req, res) => {
   const sub = Array.isArray(wildcard)
     ? wildcard.join("/")
     : (wildcard ?? "index.html");
-  await serveSiteFile(req.params.slug, sub || "index.html", res);
+  await serveSiteFile(req.params.slug, sub || "index.html", res, {
+    raw: false,
+  });
 });
 
 async function serveSiteFile(
   slug: string,
   rel: string,
   res: import("express").Response,
+  opts: { raw: boolean } = { raw: false },
 ): Promise<void> {
   const [site] = await db
     .select()
@@ -643,11 +694,23 @@ async function serveSiteFile(
   const partial = pickFile(files, safeRel);
   const isBuilding =
     site.status === "building" || site.status === "analyzing";
-  const isHtml = safeRel.endsWith(".html") || safeRel === "" || safeRel === "/";
+  const isHtml =
+    safeRel.endsWith(".html") || safeRel === "" || safeRel === "/";
+  const isRootPage = safeRel === "index.html";
+
+  // The pro split-screen preview shell only ever renders for the root page on
+  // the non-raw route. Sub-pages and the iframe target use the raw branch.
+  if (!opts.raw && isRootPage && (isBuilding || site.status === "ready")) {
+    res
+      .status(200)
+      .set("Cache-Control", "no-store, no-cache, must-revalidate")
+      .type("text/html; charset=utf-8")
+      .send(previewShell(site));
+    return;
+  }
 
   // While building, return any partial HTML/CSS/JS we have so the iframe shows
-  // the LLM's tokens streaming in real time. HTML files get a small overlay +
-  // auto-refresh so the page picks up new bytes; CSS/JS stream as-is.
+  // the LLM's tokens streaming in real time.
   if (isBuilding) {
     if (isHtml) {
       const html = partial ?? "";
@@ -655,7 +718,7 @@ async function serveSiteFile(
         .status(200)
         .set("Cache-Control", "no-store, no-cache, must-revalidate")
         .type("text/html; charset=utf-8")
-        .send(buildingShell(site, html));
+        .send(html || streamingPlaceholder(site));
       return;
     }
     if (partial != null) {
@@ -687,36 +750,315 @@ async function serveSiteFile(
 }
 
 /**
- * While the LLM is streaming an HTML page we wrap the partial bytes in a
- * shell that:
- *   1. Renders the partial HTML directly so the user sees their site appearing
- *      character-by-character (just like the model is writing it).
- *   2. Auto-refreshes every ~700ms until the site is "ready".
- *   3. Adds a tiny progress strip across the top so the user knows it's live.
+ * The polished split-screen preview shell.
+ *
+ *   ┌──────────────────────────────────────────────────────────────┐
+ *   │  ← Back        WebForge — Live Preview            ⟳  ⤓ Open │
+ *   ├────────────────────────────────────────┬─────────────────────┤
+ *   │                                        │  ● Live              │
+ *   │                                        │  Building            │
+ *   │                                        │  ▰▰▰▰▰▰▰▱▱▱  62%      │
+ *   │             [ iframe of               ]│                      │
+ *   │              the actual site          ]│  Activity            │
+ *   │                                        │  • assets/styles.css │
+ *   │                                        │  • assets/app.js     │
+ *   │                                        │  • index.html        │
+ *   │                                        │                      │
+ *   │                                        │  Pages               │
+ *   │                                        │  - index.html        │
+ *   │                                        │                      │
+ *   │                                        │  Tell the AI ...     │
+ *   └────────────────────────────────────────┴─────────────────────┘
+ *
+ * The iframe loads `_raw/index.html` — that branch always returns the bare
+ * site bytes so we don't recurse into the shell. The right panel polls
+ * `_status` for live progress + file list and refreshes the iframe whenever
+ * the byte count changes.
  */
-function buildingShell(site: Site, partialHtml: string): string {
-  const safe = (partialHtml ?? "").replace(/<\/?(html|head|body)[^>]*>/gi, "");
-  const stage = site.message ?? "Streaming bytes";
-  const progress = Math.max(0, Math.min(100, site.progress ?? 0));
+function previewShell(site: Site): string {
+  const slug = site.slug;
+  const name = escapeHtml(site.name);
+  const initialJson = JSON.stringify({
+    slug,
+    name: site.name,
+    status: site.status,
+    progress: Math.max(0, Math.min(100, site.progress ?? 0)),
+    message: site.message ?? "",
+  }).replace(/</g, "\\u003c");
+  return `<!doctype html><html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="theme-color" content="#0d1117"/>
+<title>${name} — WebForge Preview</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2300ffc2'/%3E%3Cpath d='M9 11l4 10 3-7 3 7 4-10' fill='none' stroke='%230d1117' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"/>
+<style>
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#0d1117;color:#c9d1d9;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:transparent}
+a{color:inherit;text-decoration:none}
+.app{display:flex;flex-direction:column;height:100vh}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border-bottom:1px solid #1f2630;background:rgba(13,17,23,0.85);backdrop-filter:blur(8px)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:0.02em}
+.brand .logo{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#00ffc2,#58a6ff);box-shadow:0 0 18px rgba(0,255,194,0.35)}
+.brand .name{color:#e6edf3}
+.brand .sep{color:#3d4451}
+.brand .title{color:#7d8590;max-width:38vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:11px;color:#7ee2c4;background:rgba(0,255,194,0.08);border:1px solid rgba(0,255,194,0.22)}
+.brand .pill .dot{width:6px;height:6px;border-radius:50%;background:#00ffc2;box-shadow:0 0 8px #00ffc2;animation:pulse 1.4s ease-in-out infinite}
+.actions{display:flex;align-items:center;gap:8px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;font-size:12px;color:#c9d1d9;background:#161b22;border:1px solid #2a313c;transition:all .15s}
+.btn:hover{background:#1f2630;border-color:#3d4451}
+.btn.primary{background:linear-gradient(135deg,#00ffc2,#58a6ff);color:#0d1117;border-color:transparent;font-weight:700}
+.btn.primary:hover{filter:brightness(1.08)}
+.split{flex:1;display:flex;min-height:0}
+.left{flex:1;background:#0d1117;position:relative;overflow:hidden}
+.left iframe{width:100%;height:100%;border:0;background:#fff;display:block}
+.left .scrim{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#7d8590;font-size:13px;pointer-events:none;opacity:0;transition:opacity .25s}
+.left.loading .scrim{opacity:1}
+.right{width:380px;min-width:300px;max-width:42vw;border-left:1px solid #1f2630;display:flex;flex-direction:column;background:#0a0e14}
+.section{padding:14px 16px;border-bottom:1px solid #1f2630}
+.section:last-child{border-bottom:0}
+.section h3{margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#7d8590}
+.statusrow{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:#c9d1d9}
+.statusrow .live{display:inline-flex;align-items:center;gap:8px;color:#7ee2c4}
+.statusrow .live .dot{width:7px;height:7px;border-radius:50%;background:#00ffc2;box-shadow:0 0 10px #00ffc2;animation:pulse 1.4s ease-in-out infinite}
+.statusrow .live.ready .dot{animation:none}
+.bar{margin-top:10px;height:4px;background:#161b22;border-radius:999px;overflow:hidden}
+.bar > div{height:100%;background:linear-gradient(90deg,#00ffc2,#58a6ff);width:0%;transition:width .35s ease}
+.metaline{margin-top:8px;font-size:11px;color:#7d8590;display:flex;justify-content:space-between}
+.activity{flex:1;overflow:auto;padding:10px 16px;font-size:12px;line-height:1.55}
+.activity .row{display:flex;justify-content:space-between;gap:12px;padding:4px 0;color:#c9d1d9;border-bottom:1px dashed #1f2630}
+.activity .row:last-child{border-bottom:0}
+.activity .row .path{color:#9eecd0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity .row .size{color:#7d8590;flex-shrink:0;font-variant-numeric:tabular-nums}
+.activity .empty{color:#3d4451;font-style:italic;padding:8px 0}
+.steps{display:grid;gap:6px;margin-top:6px;font-size:11.5px}
+.steps .s{display:flex;align-items:center;gap:8px;color:#5a6373}
+.steps .s .ico{width:14px;height:14px;border-radius:50%;border:1.5px solid #2a313c;display:inline-flex;align-items:center;justify-content:center;font-size:9px;color:transparent;flex-shrink:0}
+.steps .s.done{color:#7ee2c4}
+.steps .s.done .ico{background:#00ffc2;border-color:#00ffc2;color:#0d1117}
+.steps .s.cur{color:#e6edf3}
+.steps .s.cur .ico{border-color:#58a6ff;animation:pulse 1.2s ease-in-out infinite}
+.composer{padding:12px 16px;border-top:1px solid #1f2630;background:#0a0e14}
+.composer textarea{width:100%;resize:none;height:64px;padding:10px 12px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#c9d1d9;background:#161b22;border:1px solid #2a313c;border-radius:8px;outline:none;transition:border-color .15s}
+.composer textarea:focus{border-color:#58a6ff}
+.composer .row{display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px}
+.composer .hint{font-size:10.5px;color:#5a6373;line-height:1.4}
+.composer .hint code{color:#9eecd0;background:rgba(0,255,194,0.06);padding:1px 5px;border-radius:4px}
+.composer button{padding:7px 14px;border-radius:7px;font-size:12px;font-weight:700;color:#0d1117;background:linear-gradient(135deg,#00ffc2,#58a6ff)}
+.composer button:disabled{opacity:0.55;cursor:not-allowed}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#161b22;border:1px solid #2a313c;color:#c9d1d9;padding:9px 14px;border-radius:8px;font-size:12px;box-shadow:0 10px 30px rgba(0,0,0,.4);opacity:0;pointer-events:none;transition:opacity .2s,transform .2s}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@media (max-width:760px){
+  .right{position:absolute;right:0;top:0;bottom:0;width:88%;max-width:380px;transform:translateX(100%);transition:transform .25s;z-index:5;box-shadow:-10px 0 40px rgba(0,0,0,.5)}
+  .right.open{transform:translateX(0)}
+  .actions .toggle{display:inline-flex}
+}
+@media (min-width:761px){.actions .toggle{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo"></span>
+      <span class="name">WebForge</span>
+      <span class="sep">/</span>
+      <span class="title" id="siteTitle">${name}</span>
+      <span class="pill" id="livePill"><span class="dot"></span><span id="livePillText">Building</span></span>
+    </div>
+    <div class="actions">
+      <button class="btn" id="reloadBtn" title="Reload preview">⟳ Reload</button>
+      <a class="btn" href="_raw/" target="_blank" rel="noopener" title="Open the bare site in a new tab">⤓ Open</a>
+      <button class="btn toggle" id="toggleRight" title="Toggle panel">☰</button>
+    </div>
+  </header>
+  <div class="split">
+    <div class="left" id="left">
+      <iframe id="frame" src="_raw/" title="Live website preview" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+      <div class="scrim">Refreshing preview…</div>
+    </div>
+    <aside class="right" id="right">
+      <div class="section">
+        <h3>Status</h3>
+        <div class="statusrow">
+          <span class="live" id="liveLabel"><span class="dot"></span><span id="liveText">Building</span></span>
+          <span id="msgText" style="color:#7d8590;font-size:11px;max-width:55%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+        </div>
+        <div class="bar"><div id="barFill"></div></div>
+        <div class="metaline"><span id="pctText">0%</span><span id="byteText">0 B</span></div>
+        <div class="steps" id="steps"></div>
+      </div>
+      <div class="section" style="flex-shrink:0">
+        <h3>Pages &amp; assets</h3>
+        <div class="activity" id="files" style="padding:0;max-height:260px"><div class="empty">waiting for the first byte…</div></div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="composer">
+        <h3 style="margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#7d8590">Tell the AI what to change</h3>
+        <textarea id="editBox" placeholder="e.g. swap the hero copy to lead with our 30-day refund guarantee, then tighten the pricing table"></textarea>
+        <div class="row">
+          <span class="hint">Open Telegram &rarr; <code>/edit ${name}</code></span>
+          <button id="copyBtn">Copy command</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script id="initial" type="application/json">${initialJson}</script>
+<script>
+(function(){
+  var STEPS = [
+    { p: 5,   label: "Researching design inspiration" },
+    { p: 18,  label: "Building the full website with AI" },
+    { p: 55,  label: "Auditing quality (SEO, a11y, mobile)" },
+    { p: 72,  label: "Self-review pass (autonomous QA)" },
+    { p: 84,  label: "Auto-fixing issues found" },
+    { p: 92,  label: "Generating AI hero image" },
+    { p: 100, label: "Publishing to your live URL" }
+  ];
+  var initial = JSON.parse(document.getElementById("initial").textContent);
+  var slug = initial.slug;
+  var statusUrl = "_status";
+  var rawUrl = "_raw/?";
+  var lastBytes = -1;
+  var lastStatus = initial.status;
+  var refreshing = false;
+  var frame = document.getElementById("frame");
+  var leftEl = document.getElementById("left");
+  var pollMs = 800;
+  var stopped = false;
+
+  function fmtBytes(n){
+    if (n < 1024) return n + " B";
+    if (n < 1024*1024) return (n/1024).toFixed(1) + " KB";
+    return (n/1024/1024).toFixed(2) + " MB";
+  }
+
+  function renderSteps(progress, ready){
+    var html = "";
+    var idx = ready ? STEPS.length : (function(){
+      for (var i=0;i<STEPS.length;i++){ if (progress < STEPS[i].p) return i; }
+      return STEPS.length - 1;
+    })();
+    for (var i=0;i<STEPS.length;i++){
+      var cls = (i < idx) ? "done" : (i === idx ? "cur" : "");
+      var ico = (i < idx) ? "✓" : "";
+      html += '<div class="s '+cls+'"><span class="ico">'+ico+'</span><span>'+STEPS[i].label+'</span></div>';
+    }
+    document.getElementById("steps").innerHTML = html;
+  }
+
+  function renderFiles(files){
+    var box = document.getElementById("files");
+    if (!files || !files.length){
+      box.innerHTML = '<div class="empty" style="padding:8px 16px">waiting for the first byte…</div>';
+      return;
+    }
+    var html = "";
+    for (var i=0;i<files.length;i++){
+      html += '<div class="row" style="padding:6px 16px"><span class="path">'+escapeHtml(files[i].path)+'</span><span class="size">'+fmtBytes(files[i].bytes)+'</span></div>';
+    }
+    box.innerHTML = html;
+  }
+
+  function escapeHtml(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c];}); }
+
+  function refreshFrame(){
+    if (refreshing) return;
+    refreshing = true;
+    leftEl.classList.add("loading");
+    try {
+      frame.contentWindow.location.replace(rawUrl + "t=" + Date.now());
+    } catch (e) {
+      frame.src = rawUrl + "t=" + Date.now();
+    }
+    setTimeout(function(){ leftEl.classList.remove("loading"); refreshing = false; }, 500);
+  }
+
+  function setStatus(d){
+    document.getElementById("siteTitle").textContent = d.name || initial.name;
+    var ready = d.status === "ready";
+    var pct = Math.max(0, Math.min(100, d.progress || 0));
+    document.getElementById("barFill").style.width = pct + "%";
+    document.getElementById("pctText").textContent = pct + "%";
+    document.getElementById("byteText").textContent = fmtBytes(d.totalBytes || 0);
+    document.getElementById("msgText").textContent = d.message || "";
+    var pillText = ready ? "Live" : (d.status === "queued" ? "Queued" : "Building");
+    document.getElementById("livePillText").textContent = pillText;
+    document.getElementById("liveText").textContent = pillText;
+    var liveLabel = document.getElementById("liveLabel");
+    if (ready) liveLabel.classList.add("ready"); else liveLabel.classList.remove("ready");
+    renderSteps(pct, ready);
+    renderFiles(d.files || []);
+  }
+
+  async function poll(){
+    if (stopped) return;
+    try {
+      var r = await fetch(statusUrl, { cache: "no-store" });
+      if (r.ok){
+        var d = await r.json();
+        setStatus(d);
+        if (d.totalBytes !== lastBytes || d.status !== lastStatus){
+          refreshFrame();
+          lastBytes = d.totalBytes;
+          lastStatus = d.status;
+        }
+        if (d.status === "ready"){
+          pollMs = 5000;
+        } else if (d.status === "failed"){
+          stopped = true;
+        }
+      }
+    } catch (e) {}
+    setTimeout(poll, pollMs);
+  }
+
+  document.getElementById("reloadBtn").addEventListener("click", refreshFrame);
+  document.getElementById("toggleRight").addEventListener("click", function(){
+    document.getElementById("right").classList.toggle("open");
+  });
+  document.getElementById("copyBtn").addEventListener("click", function(){
+    var txt = document.getElementById("editBox").value.trim();
+    var cmd = "/edit " + (initial.name || "site") + (txt ? " " + txt : "");
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(cmd).then(function(){ toast("Copied — paste it into the WebForge bot"); });
+    } else {
+      var ta = document.createElement("textarea"); ta.value = cmd; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); toast("Copied — paste it into the WebForge bot"); } catch(e){ toast("Copy failed"); }
+      document.body.removeChild(ta);
+    }
+  });
+  function toast(msg){
+    var t = document.getElementById("toast"); t.textContent = msg; t.classList.add("show");
+    clearTimeout(toast._t); toast._t = setTimeout(function(){ t.classList.remove("show"); }, 2200);
+  }
+
+  // Seed the UI from the initial server state, then start polling.
+  setStatus({ name: initial.name, status: initial.status, progress: initial.progress, message: initial.message, totalBytes: 0, files: [] });
+  poll();
+})();
+</script>
+</body></html>`;
+}
+
+/**
+ * The empty-iframe placeholder shown for ~1 second before the model writes the
+ * first byte of HTML. Plain, calm, on-brand.
+ */
+function streamingPlaceholder(site: Site): string {
   return `<!doctype html><html><head><meta charset="utf-8"/>
-  <meta http-equiv="refresh" content="0.7"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>${escapeHtml(site.name)} — building</title>
+  <meta http-equiv="refresh" content="1"/>
   <style>
-  html,body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;background:#0a0e14;color:#e6edf3}
-  .wf-strip{position:fixed;inset:0 0 auto 0;z-index:2147483647;background:rgba(10,14,20,0.92);backdrop-filter:blur(10px);border-bottom:1px solid rgba(0,255,194,0.18);padding:8px 14px;font:500 12px ui-monospace,SFMono-Regular,Menlo,monospace;color:#7d8590;display:flex;align-items:center;gap:10px}
-  .wf-strip .dot{width:8px;height:8px;border-radius:50%;background:#00ffc2;box-shadow:0 0 12px #00ffc2;animation:wfp 1s ease-in-out infinite}
-  .wf-strip .bar{flex:1;height:3px;background:#1f2937;border-radius:999px;overflow:hidden}
-  .wf-strip .bar > div{height:100%;background:linear-gradient(90deg,#00ffc2,#58a6ff);width:${progress}%;transition:width .35s ease}
-  .wf-strip .pct{color:#e6edf3;font-weight:700;min-width:38px;text-align:right}
-  .wf-spacer{height:36px}
-  @keyframes wfp{0%,100%{opacity:1}50%{opacity:.45}}
+  html,body{margin:0;height:100%;background:#fafbfc;color:#7d8590;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;display:flex;align-items:center;justify-content:center}
+  .w{display:flex;align-items:center;gap:10px;font-size:13px}
+  .d{width:8px;height:8px;border-radius:50%;background:#00ffc2;box-shadow:0 0 12px #00ffc2;animation:p 1.2s ease-in-out infinite}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.35}}
   </style></head>
-  <body>
-    <div class="wf-strip"><span class="dot"></span><span>forging — ${escapeHtml(stage)}</span><span class="bar"><div></div></span><span class="pct">${progress}%</span></div>
-    <div class="wf-spacer"></div>
-    ${safe || `<div style="padding:32px;color:#7d8590;font:14px ui-monospace,SFMono-Regular,Menlo,monospace">waiting for the model to stream the first byte…</div>`}
-  </body></html>`;
+  <body><div class="w"><span class="d"></span><span>${escapeHtml(site.name)} — waiting for the first byte…</span></div></body></html>`;
 }
 
 function escapeHtml(s: string): string {
