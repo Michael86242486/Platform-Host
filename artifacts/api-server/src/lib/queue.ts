@@ -18,6 +18,7 @@ import { logger } from "./logger";
 import { getDecryptedSecrets, injectSecretsIntoFiles } from "./secrets";
 import { siteEventBus } from "./eventBus";
 import { streamNarration } from "./narrate";
+import { PUTER_CONFIGURED, uploadSite } from "./puter";
 
 const MAX_CONCURRENCY = 3;
 
@@ -443,15 +444,104 @@ class JobQueue {
     const userSecrets = await getDecryptedSecrets(job.userId);
     const finalFiles = injectSecretsIntoFiles(out.files, userSecrets);
 
+    // Persist the freshly-built files (still marked "building") so the mobile
+    // app can render them immediately if the user is watching, then push to
+    // Puter for the public URL.
+    await db
+      .update(sitesTable)
+      .set({
+        status: "building",
+        progress: 80,
+        message: "Uploading to Puter cloud hosting…",
+        files: finalFiles,
+        coverColor: out.coverColor,
+        plan: planForBuild,
+        puterStatus: PUTER_CONFIGURED ? "uploading" : null,
+        puterError: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, siteId));
+    await db
+      .update(jobsTable)
+      .set({ progress: 80, message: "Uploading to Puter…" })
+      .where(eq(jobsTable.id, job.id));
+    siteEventBus.emitSite({ type: "site_updated", siteId });
+
+    let puterPublicUrl: string | null = null;
+    let puterSubdomain: string | null = site.puterSubdomain ?? null;
+    let puterRootDir: string | null = site.puterRootDir ?? null;
+    let puterStatus: "hosted" | "failed" | null = null;
+    let puterError: string | null = null;
+
+    if (PUTER_CONFIGURED) {
+      const totalFiles = Object.keys(finalFiles).length;
+      let attempt = 0;
+      const MAX_ATTEMPTS = 3;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        attempt++;
+        try {
+          const uploaded = await uploadSite({
+            userId: job.userId,
+            siteId,
+            files: finalFiles,
+            subdomain: puterSubdomain,
+            opts: {
+              concurrency: 4,
+              onFile: async (rel, idx) => {
+                // Map upload progress into the 80 → 98% band.
+                const pct = Math.min(
+                  98,
+                  80 + Math.round((idx / Math.max(totalFiles, 1)) * 18),
+                );
+                await db
+                  .update(sitesTable)
+                  .set({
+                    progress: pct,
+                    message: `Uploading ${rel} (${idx}/${totalFiles})`,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(sitesTable.id, siteId));
+                siteEventBus.emitSite({ type: "site_updated", siteId });
+              },
+            },
+          });
+          puterPublicUrl = uploaded.publicUrl;
+          puterSubdomain = uploaded.subdomain;
+          puterRootDir = uploaded.rootDir;
+          puterStatus = "hosted";
+          break;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn(
+            { err, attempt, siteId },
+            "Puter upload attempt failed",
+          );
+          if (attempt >= MAX_ATTEMPTS) {
+            puterStatus = "failed";
+            puterError = msg;
+            break;
+          }
+          await sleep(750 * attempt);
+        }
+      }
+    } else {
+      puterStatus = "failed";
+      puterError = "PUTER_USERNAME / PUTER_PASSWORD not configured";
+      logger.warn({ siteId }, "Puter not configured — skipping upload");
+    }
+
     await db
       .update(sitesTable)
       .set({
         status: "ready",
         progress: 100,
-        message: "Ready",
-        files: finalFiles,
-        coverColor: out.coverColor,
-        plan: planForBuild,
+        message: puterStatus === "hosted" ? "Live on Puter" : "Ready",
+        puterStatus,
+        puterError,
+        puterPublicUrl,
+        puterSubdomain,
+        puterRootDir,
         updatedAt: new Date(),
       })
       .where(eq(sitesTable.id, siteId));
@@ -464,13 +554,27 @@ class JobQueue {
         finishedAt: new Date(),
       })
       .where(eq(jobsTable.id, job.id));
-    await insertAgentMessage(
-      job.userId,
-      siteId,
-      "build_done",
-      `Built ${Object.keys(out.files).length} files. Tap Preview to see it live.`,
-      { files: Object.keys(out.files) },
-    );
+    if (puterStatus === "hosted" && puterPublicUrl) {
+      await insertAgentMessage(
+        job.userId,
+        siteId,
+        "build_done",
+        `Built ${Object.keys(out.files).length} files and published to ${puterPublicUrl}`,
+        { files: Object.keys(out.files), publicUrl: puterPublicUrl },
+      );
+    } else {
+      await insertAgentMessage(
+        job.userId,
+        siteId,
+        "build_done",
+        `Built ${Object.keys(out.files).length} files (Puter upload ${puterStatus ?? "skipped"}${puterError ? `: ${puterError}` : ""})`,
+        {
+          files: Object.keys(out.files),
+          puterStatus,
+          puterError,
+        },
+      );
+    }
     siteEventBus.emitSite({ type: "site_updated", siteId });
 
     // Final celebratory narration — streams token-by-token to the UI.

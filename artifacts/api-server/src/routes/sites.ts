@@ -20,6 +20,7 @@ import {
 import { jobQueue } from "../lib/queue";
 import { siteEventBus, type SiteEvent } from "../lib/eventBus";
 import { buildProject } from "../lib/generator";
+import { deleteSite as puterDeleteSite, PUTER_CONFIGURED } from "../lib/puter";
 import { inferSiteName, uniqueSlug } from "../lib/slug";
 import { publicBaseUrl, publicHost } from "../lib/telegram";
 
@@ -60,12 +61,25 @@ const setDomainSchema = z.object({
 
 function siteToDto(site: Site) {
   const baseUrl = publicBaseUrl();
-  const slugUrl = baseUrl ? `${baseUrl}/api/hosted/${site.slug}/` : null;
+  // The internal preview URL is still served by the api-server while the
+  // build is in flight (so the mobile app can render partial HTML in real
+  // time). Once Puter has the files, the canonical public URL is the Puter one.
+  const internalPreviewUrl = baseUrl
+    ? `${baseUrl}/api/hosted/${site.slug}/`
+    : null;
   const customDomainVerified =
     site.customDomain && site.customDomainStatus === "verified";
+
+  // Resolution order for the live URL:
+  //   1) verified custom domain  (user owns it)
+  //   2) Puter public URL        (PRIMARY hosting per the architecture rules)
+  //   3) internal preview URL    (fallback, only while Puter is unconfigured
+  //                               or the upload has not finished yet)
   const publicUrl = customDomainVerified
     ? `https://${site.customDomain}`
-    : slugUrl;
+    : site.puterPublicUrl ?? internalPreviewUrl;
+  const previewUrl = site.puterPublicUrl ?? internalPreviewUrl;
+
   return {
     id: site.id,
     name: site.name,
@@ -76,7 +90,7 @@ function siteToDto(site: Site) {
     message: site.message,
     error: site.error,
     coverColor: site.coverColor,
-    previewUrl: slugUrl,
+    previewUrl,
     publicUrl,
     files: site.files ? Object.keys(site.files) : [],
     analysis: site.analysis,
@@ -91,6 +105,11 @@ function siteToDto(site: Site) {
       ? `webforge-verify=${site.customDomainToken}`
       : null,
     customDomainTarget: publicHost(),
+    puterPublicUrl: site.puterPublicUrl,
+    puterSubdomain: site.puterSubdomain,
+    puterStatus: site.puterStatus,
+    puterError: site.puterError,
+    hostingProvider: site.puterPublicUrl ? "puter" : "internal",
     createdAt: site.createdAt.toISOString(),
     updatedAt: site.updatedAt.toISOString(),
   };
@@ -172,16 +191,34 @@ router.get("/sites/:id", requireAuth, async (req, res) => {
 });
 
 router.delete("/sites/:id", requireAuth, async (req, res) => {
-  const result = await db
-    .delete(sitesTable)
+  // Look up first so we can release the Puter subdomain + files. Puter
+  // failures here are non-fatal: the user-facing delete must always succeed.
+  const [existing] = await db
+    .select()
+    .from(sitesTable)
     .where(
-      and(eq(sitesTable.id, String(req.params.id)), eq(sitesTable.userId, req.user!.id)),
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
     )
-    .returning({ id: sitesTable.id });
-  if (result.length === 0) {
+    .limit(1);
+  if (!existing) {
     res.status(404).json({ error: "not_found" });
     return;
   }
+  if (PUTER_CONFIGURED) {
+    await puterDeleteSite({
+      userId: req.user!.id,
+      siteId: existing.id,
+      subdomain: existing.puterSubdomain,
+    }).catch(() => {
+      // Logged inside puter.ts. We never block the user's delete on it.
+    });
+  }
+  await db
+    .delete(sitesTable)
+    .where(eq(sitesTable.id, existing.id));
   res.status(204).send();
 });
 

@@ -51,8 +51,41 @@ aesthetic — monospace accents, glowing dots, gradient CTAs.
 sketching layout, writing HTML, etc. — updating `sites.progress/message` so
 the mobile UI can poll it. `lib/generator.ts` produces a deterministic
 single-document site (HTML + inline CSS + JS) by picking a palette and copy
-based on prompt keywords. Generated HTML is stored in `sites.html` and served
-publicly at `GET /api/hosted/{slug}`.
+based on prompt keywords. Generated HTML is stored in `sites.html`.
+
+## Hosting on Puter
+
+Finished sites are uploaded to **Puter** (`https://puter.com`) for public
+static hosting, replacing the previous Replit-only `/api/hosted/{slug}`
+serving. The api-server is the **only** Puter client — the mobile app and
+agent never see Puter credentials, only the resulting public URL. Files for
+each site live at `/{puterUser}/webforge/users/{userId}/sites/{siteId}/` and
+are served from a deterministic subdomain (`wf-<sha256[0:10]>.puter.site`).
+
+The integration lives in `artifacts/api-server/src/lib/puter.ts`:
+
+- `login()` calls `POST /login`, caches the bearer token for ~6h.
+- `mkdirP(path)` calls `POST /mkdir` with `create_missing_parents: true`.
+- `uploadOne(path, content)` writes one file via `POST /batch` with a
+  multipart form pairing `operation` (write op JSON), `fileinfo` (file
+  metadata JSON), and `file` (binary blob) — Puter's filesystem write API.
+- `ensureHosting(subdomain, rootDir)` calls `POST /drivers/call` with the
+  `puter-subdomains` interface (`select` to find existing, `create` to
+  attach), retrying with random suffixes on collision.
+- `deleteSite(...)` calls the `puter-subdomains.delete` driver and the
+  `POST /delete` filesystem endpoint to tear down hosting + files.
+
+The build queue (`lib/queue.ts`) persists files at 80%, then uploads to
+Puter (progress 80→98%, 3 attempts with backoff). On success the site row
+gets `puterStatus: "hosted"`, `puterPublicUrl`, `puterSubdomain`,
+`puterRootDir`. The site DTO returns `publicUrl` pointing at Puter when
+present, with `hostingProvider: "puter"`. Required secrets:
+`PUTER_USERNAME`, `PUTER_PASSWORD`. The `/api/health` endpoint pings Puter
+on every call so misconfigured credentials surface immediately.
+
+`/api/hosted/{slug}` is kept only as a live in-progress preview while
+builds are streaming — once Puter takes over, `publicUrl` returns the
+Puter URL.
 
 Other routes:
 

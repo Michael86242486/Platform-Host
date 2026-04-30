@@ -76,6 +76,19 @@ export const sitesTable = pgTable(
     }),
     customDomainToken: text("custom_domain_token"),
     customDomainError: text("custom_domain_error"),
+    /** Puter subdomain assigned to this site (unique). The live URL is
+     *  `https://<puterSubdomain>.puter.site/`. */
+    puterSubdomain: text("puter_subdomain").unique(),
+    /** Cached public Puter URL for this site (returned to clients). */
+    puterPublicUrl: text("puter_public_url"),
+    /** Root directory inside Puter that holds this site's files. */
+    puterRootDir: text("puter_root_dir"),
+    /** Status of the upload to Puter cloud hosting. */
+    puterStatus: text("puter_status", {
+      enum: ["pending", "uploading", "hosted", "failed"],
+    }),
+    /** Last error encountered while uploading to Puter (if any). */
+    puterError: text("puter_error"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
