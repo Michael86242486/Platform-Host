@@ -747,6 +747,94 @@ export const useRetrySite = <
 };
 
 /**
+ * Pushes the site's existing files to Puter and (re)attaches the static
+hosting subdomain. Use to recover sites whose first Puter upload
+failed (e.g. transient network errors). Does not call the LLM.
+
+ * @summary Re-upload a built site to Puter without rebuilding
+ */
+export const getRepublishSiteUrl = (id: string) => {
+  return `/api/sites/${id}/republish`;
+};
+
+export const republishSite = async (
+  id: string,
+  options?: RequestInit,
+): Promise<Site> => {
+  return customFetch<Site>(getRepublishSiteUrl(id), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getRepublishSiteMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof republishSite>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof republishSite>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  const mutationKey = ["republishSite"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof republishSite>>,
+    { id: string }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return republishSite(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RepublishSiteMutationResult = NonNullable<
+  Awaited<ReturnType<typeof republishSite>>
+>;
+
+export type RepublishSiteMutationError = ErrorType<void>;
+
+/**
+ * @summary Re-upload a built site to Puter without rebuilding
+ */
+export const useRepublishSite = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof republishSite>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof republishSite>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  return useMutation(getRepublishSiteMutationOptions(options));
+};
+
+/**
  * Replaces just one page (e.g. `about.html`) in the site's file map by
 re-rendering it from the deterministic page generator using the site's
 existing plan. Fast (~ms), never calls the LLM, and never disturbs

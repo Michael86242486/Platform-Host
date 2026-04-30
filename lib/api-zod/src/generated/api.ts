@@ -426,6 +426,83 @@ export const RetrySiteResponse = zod.object({
 });
 
 /**
+ * Pushes the site's existing files to Puter and (re)attaches the static
+hosting subdomain. Use to recover sites whose first Puter upload
+failed (e.g. transient network errors). Does not call the LLM.
+
+ * @summary Re-upload a built site to Puter without rebuilding
+ */
+export const RepublishSiteParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const republishSiteResponseProgressMin = 0;
+export const republishSiteResponseProgressMax = 100;
+
+export const RepublishSiteResponse = zod.object({
+  id: zod.string(),
+  name: zod.string(),
+  slug: zod.string(),
+  prompt: zod.string(),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
+  progress: zod
+    .number()
+    .min(republishSiteResponseProgressMin)
+    .max(republishSiteResponseProgressMax),
+  message: zod.string().nullish(),
+  error: zod.string().nullish(),
+  previewUrl: zod.string().nullish(),
+  publicUrl: zod.string().nullish(),
+  coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
+});
+
+/**
  * Replaces just one page (e.g. `about.html`) in the site's file map by
 re-rendering it from the deterministic page generator using the site's
 existing plan. Fast (~ms), never calls the LLM, and never disturbs

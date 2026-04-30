@@ -20,7 +20,11 @@ import {
 import { jobQueue } from "../lib/queue";
 import { siteEventBus, type SiteEvent } from "../lib/eventBus";
 import { buildProject } from "../lib/generator";
-import { deleteSite as puterDeleteSite, PUTER_CONFIGURED } from "../lib/puter";
+import {
+  deleteSite as puterDeleteSite,
+  PUTER_CONFIGURED,
+  uploadSite as puterUploadSite,
+} from "../lib/puter";
 import { inferSiteName, uniqueSlug } from "../lib/slug";
 import { publicBaseUrl, publicHost } from "../lib/telegram";
 
@@ -454,6 +458,105 @@ router.post("/sites/:id/retry", requireAuth, async (req, res) => {
     })
     .where(eq(sitesTable.id, site.id));
   await jobQueue.enqueue(job.id);
+  const [updated] = await db
+    .select()
+    .from(sitesTable)
+    .where(eq(sitesTable.id, site.id))
+    .limit(1);
+  res.json(siteToDto(updated));
+});
+
+/**
+ * Re-upload an already-built site to Puter. Used to recover sites whose first
+ * Puter upload failed (e.g. legacy `wf-` rows from before the API was fixed,
+ * or transient network errors). Does NOT regenerate any HTML — it just takes
+ * the files we already have on disk and pushes them to Puter, then updates
+ * the hosting columns. Cheap, idempotent, no LLM calls.
+ */
+router.post("/sites/:id/republish", requireAuth, async (req, res) => {
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  if (!PUTER_CONFIGURED) {
+    res.status(503).json({
+      error: "puter_not_configured",
+      message: "Puter credentials are not set on the server.",
+    });
+    return;
+  }
+  const files = (site.files ?? {}) as SiteFiles;
+  const fileKeys = Object.keys(files);
+  if (fileKeys.length === 0 || !files["index.html"]) {
+    res.status(409).json({
+      error: "no_files",
+      message:
+        "This site has no built files yet — run a build (or retry) first.",
+    });
+    return;
+  }
+  // Mark the site as actively republishing so the mobile UI can show a
+  // spinner. The status returns to "ready" on success or "ready" with a
+  // populated puterError on failure.
+  await db
+    .update(sitesTable)
+    .set({
+      puterStatus: "uploading",
+      puterError: null,
+      message: "Republishing to Puter…",
+      updatedAt: new Date(),
+    })
+    .where(eq(sitesTable.id, site.id));
+  siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
+
+  try {
+    const uploaded = await puterUploadSite({
+      userId: req.user!.id,
+      siteId: site.id,
+      files: files as Record<string, string>,
+      // Reuse the existing subdomain when present so the public URL is stable
+      // across republishes. New sites get a fresh deterministic one.
+      subdomain: site.puterSubdomain,
+    });
+    await db
+      .update(sitesTable)
+      .set({
+        puterStatus: "hosted",
+        puterPublicUrl: uploaded.publicUrl,
+        puterSubdomain: uploaded.subdomain,
+        puterRootDir: uploaded.rootDir,
+        puterError: null,
+        message: "Live on Puter",
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, site.id));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await db
+      .update(sitesTable)
+      .set({
+        puterStatus: "failed",
+        puterError: msg.slice(0, 500),
+        message: "Republish failed",
+        updatedAt: new Date(),
+      })
+      .where(eq(sitesTable.id, site.id));
+    siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
+    res.status(502).json({ error: "republish_failed", message: msg });
+    return;
+  }
+
+  siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
   const [updated] = await db
     .select()
     .from(sitesTable)

@@ -26,6 +26,7 @@ import {
   useGetSite,
   useRegenerateSitePage,
   useRemoveSiteDomain,
+  useRepublishSite,
   useRetrySite,
   useSetSiteDomain,
   useVerifySiteDomain,
@@ -56,6 +57,7 @@ export default function SiteDetailScreen() {
     },
   });
   const retry = useRetrySite();
+  const republish = useRepublishSite();
   const del = useDeleteSite();
   const setDomain = useSetSiteDomain();
   const removeDomain = useRemoveSiteDomain();
@@ -101,6 +103,24 @@ export default function SiteDetailScreen() {
     if (!site) return;
     await retry.mutateAsync({ id: site.id });
     siteQuery.refetch();
+  };
+
+  const onRepublish = async () => {
+    if (!site) return;
+    void Haptics.selectionAsync();
+    try {
+      await republish.mutateAsync({ id: site.id });
+      await siteQuery.refetch();
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        "Republished",
+        "Your site is live on Puter again. New URLs can take up to a minute to propagate.",
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Couldn't republish";
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Republish failed", msg);
+    }
   };
 
   const onRegeneratePage = async (page: SitePlanPage) => {
@@ -286,6 +306,12 @@ export default function SiteDetailScreen() {
               {site.prompt}
             </Text>
           </Surface>
+
+          <PuterHostingSection
+            site={site}
+            isBusy={republish.isPending}
+            onRepublish={onRepublish}
+          />
 
           <DomainSection
             site={site}
@@ -709,6 +735,199 @@ function BlurOverlay({
         )}
       </View>
     </View>
+  );
+}
+
+/**
+ * Puter hosting status banner with a "Republish" button. Always shown so the
+ * user can see exactly where their site is hosted, what its public URL is,
+ * and recover any failed upload with one tap.
+ */
+function PuterHostingSection({
+  site,
+  onRepublish,
+  isBusy,
+}: {
+  site: Site;
+  onRepublish: () => Promise<void>;
+  isBusy: boolean;
+}) {
+  const colors = useColors();
+  const status = (site.puterStatus ?? null) as
+    | "hosted"
+    | "uploading"
+    | "failed"
+    | null;
+  const isHosted = status === "hosted" && Boolean(site.puterPublicUrl);
+  const isUploading = status === "uploading" || isBusy;
+  const isFailed = status === "failed";
+  const isPending = !status && site.status === "ready";
+
+  // Color/label per state
+  const stateAccent = isHosted
+    ? colors.primary
+    : isFailed
+      ? "#FF6B6B"
+      : isUploading
+        ? "#FEBC2E"
+        : colors.mutedForeground;
+  const stateLabel = isHosted
+    ? "LIVE ON PUTER"
+    : isFailed
+      ? "PUTER UPLOAD FAILED"
+      : isUploading
+        ? "REPUBLISHING…"
+        : isPending
+          ? "NOT YET ON PUTER"
+          : "BUILDING…";
+
+  // Hide entirely while the site is still in its first build — the build
+  // queue handles the initial Puter upload, no user action needed.
+  if (site.status !== "ready" && !isFailed && !isHosted) {
+    return null;
+  }
+
+  const canRepublish =
+    !isUploading &&
+    site.status === "ready" &&
+    Boolean(site.files && Object.keys(site.files).length > 0);
+
+  const onCopyUrl = async () => {
+    if (!site.puterPublicUrl) return;
+    await Clipboard.setStringAsync(site.puterPublicUrl);
+    void Haptics.selectionAsync();
+    Alert.alert("Copied", "Puter URL copied to clipboard.");
+  };
+
+  return (
+    <Surface padded style={{ marginTop: 16, gap: 10 }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <MonoText
+          style={{
+            color: stateAccent,
+            fontSize: 11,
+            letterSpacing: 1.4,
+            textTransform: "uppercase",
+          }}
+        >
+          {stateLabel}
+        </MonoText>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <View
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 4,
+              backgroundColor: stateAccent,
+            }}
+          />
+          <MonoText style={{ color: colors.mutedForeground, fontSize: 11 }}>
+            puter.site
+          </MonoText>
+        </View>
+      </View>
+
+      {isHosted && site.puterPublicUrl ? (
+        <Pressable onPress={onCopyUrl}>
+          <MonoText
+            numberOfLines={1}
+            style={{
+              color: colors.foreground,
+              fontSize: 13,
+            }}
+          >
+            {site.puterPublicUrl}
+          </MonoText>
+        </Pressable>
+      ) : null}
+
+      {isFailed && site.puterError ? (
+        <Text
+          style={{
+            color: "#FF9C9C",
+            fontSize: 12,
+            lineHeight: 18,
+          }}
+          numberOfLines={3}
+        >
+          {site.puterError}
+        </Text>
+      ) : null}
+
+      {isPending ? (
+        <Text
+          style={{
+            color: colors.mutedForeground,
+            fontSize: 12,
+            lineHeight: 18,
+          }}
+        >
+          This site has not been pushed to Puter yet. Tap Republish to put it
+          live on a public URL.
+        </Text>
+      ) : null}
+
+      {(isFailed || isPending || isHosted) ? (
+        <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
+          <Pressable
+            onPress={onRepublish}
+            disabled={!canRepublish}
+            style={({ pressed }) => ({
+              flex: 1,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              paddingVertical: 12,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: isFailed ? "#FF6B6B66" : colors.border,
+              backgroundColor: isFailed
+                ? "#FF6B6B14"
+                : colors.cardElevated,
+              opacity: !canRepublish ? 0.55 : pressed ? 0.7 : 1,
+            })}
+          >
+            {isUploading ? (
+              <ActivityIndicator size="small" color={colors.foreground} />
+            ) : (
+              <Feather
+                name={isFailed ? "rotate-ccw" : "upload-cloud"}
+                size={15}
+                color={isFailed ? "#FF9C9C" : colors.foreground}
+              />
+            )}
+            <Text
+              style={{
+                color: isFailed ? "#FF9C9C" : colors.foreground,
+                fontSize: 14,
+                fontFamily: "Inter_600SemiBold",
+              }}
+            >
+              {isUploading
+                ? "Republishing…"
+                : isFailed
+                  ? "Retry Puter upload"
+                  : isHosted
+                    ? "Republish to Puter"
+                    : "Publish to Puter"}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+    </Surface>
   );
 }
 

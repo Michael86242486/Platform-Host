@@ -162,6 +162,32 @@ paths:
               schema:
                 $ref: "#/components/schemas/Site"
 
+  /sites/{id}/republish:
+    post:
+      operationId: republishSite
+      tags: [sites]
+      summary: Re-upload a built site to Puter without rebuilding
+      description: |
+        Pushes the site's existing files to Puter and (re)attaches the static
+        hosting subdomain. Use to recover sites whose first Puter upload
+        failed (e.g. transient network errors). Does not call the LLM.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "409":
+          description: No built files yet
+        "503":
+          description: Puter not configured
+
   /sites/{id}/pages/regenerate:
     post:
       operationId: regenerateSitePage
