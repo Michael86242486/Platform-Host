@@ -5,11 +5,19 @@ import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import { MonoText } from "./MonoText";
 
+export type SiteStatus =
+  | "queued"
+  | "analyzing"
+  | "awaiting_confirmation"
+  | "building"
+  | "ready"
+  | "failed";
+
 export interface SiteSummary {
   id: string;
   name: string;
   slug: string;
-  status: "queued" | "generating" | "ready" | "failed";
+  status: SiteStatus | string;
   progress: number;
   message?: string | null;
   coverColor?: string | null;
@@ -21,25 +29,53 @@ interface Props {
   onPress?: () => void;
 }
 
+interface StatusMeta {
+  label: string;
+  color: string;
+  showProgress: boolean;
+}
+
+function getStatusMeta(
+  status: string | undefined,
+  progress: number,
+  colors: ReturnType<typeof useColors>,
+): StatusMeta {
+  const pct = Math.max(0, Math.min(100, Math.round(progress || 0)));
+  switch (status) {
+    case "ready":
+      return { label: "LIVE", color: colors.success, showProgress: false };
+    case "building":
+      return { label: `BUILDING ${pct}%`, color: colors.primary, showProgress: true };
+    case "analyzing":
+      return { label: `ANALYZING ${pct}%`, color: colors.primary, showProgress: true };
+    case "awaiting_confirmation":
+      return { label: "REVIEW", color: colors.warning ?? colors.primary, showProgress: false };
+    case "queued":
+      return { label: "QUEUED", color: colors.mutedForeground, showProgress: true };
+    case "failed":
+      return { label: "FAILED", color: colors.destructive, showProgress: false };
+    default:
+      return {
+        label: (status || "UNKNOWN").toString().toUpperCase().slice(0, 16),
+        color: colors.mutedForeground,
+        showProgress: false,
+      };
+  }
+}
+
 export function SiteCard({ site, onPress }: Props) {
   const colors = useColors();
   const accent = site.coverColor || colors.primary;
-  const statusMeta = (() => {
-    switch (site.status) {
-      case "ready":
-        return { label: "LIVE", color: colors.success };
-      case "generating":
-        return { label: `${site.progress}%`, color: colors.primary };
-      case "queued":
-        return { label: "QUEUED", color: colors.mutedForeground };
-      case "failed":
-        return { label: "FAILED", color: colors.destructive };
-    }
-  })();
+  const progress = Math.max(0, Math.min(100, Math.round(site.progress ?? 0)));
+  const statusMeta = getStatusMeta(site.status, progress, colors);
+  const name = site.name?.trim() || "Untitled site";
+  const slug = site.slug?.trim() || "draft";
 
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${name}, ${statusMeta.label.toLowerCase()}`}
       style={({ pressed }) => [
         styles.card,
         {
@@ -103,7 +139,7 @@ export function SiteCard({ site, onPress }: Props) {
             letterSpacing: -0.4,
           }}
         >
-          {site.name}
+          {name}
         </Text>
         <View
           style={{
@@ -122,10 +158,10 @@ export function SiteCard({ site, onPress }: Props) {
               flex: 1,
             }}
           >
-            /{site.slug}
+            /{slug}
           </MonoText>
         </View>
-        {site.status === "generating" || site.status === "queued" ? (
+        {statusMeta.showProgress ? (
           <View
             style={{
               height: 3,
@@ -137,7 +173,7 @@ export function SiteCard({ site, onPress }: Props) {
           >
             <View
               style={{
-                width: `${Math.max(4, site.progress)}%`,
+                width: `${Math.max(4, progress)}%`,
                 backgroundColor: accent,
                 height: "100%",
               }}
