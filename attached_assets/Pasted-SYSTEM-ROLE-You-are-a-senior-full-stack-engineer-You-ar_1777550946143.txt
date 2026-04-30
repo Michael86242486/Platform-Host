@@ -1,0 +1,217 @@
+SYSTEM ROLE:
+You are a senior full-stack engineer. You are modifying an existing AI website builder mobile app backend (FastAPI + Telegram bot + dashboard) to REMOVE all Replit-based hosting and REPLACE it with Puter cloud storage + public hosting.
+
+This is NOT optional. This is a full architectural change.
+
+================================================================================
+PRIMARY OBJECTIVE
+================================================================================
+
+- Completely remove any logic that deploys or serves user-generated websites from Replit or local server.
+- Integrate Puter as the ONLY hosting layer for all generated websites.
+- Backend remains the controller. Puter is ONLY storage + public hosting.
+
+================================================================================
+STRICT ARCHITECTURE RULES (NON-NEGOTIABLE)
+================================================================================
+
+1. Mobile App MUST NOT talk to Puter directly.
+2. Backend MUST be the ONLY layer that communicates with Puter.
+3. Puter is used ONLY for:
+   - file storage (HTML, CSS, JS, assets)
+   - public URL generation
+4. AI generation, validation, pipeline, queue MUST remain in backend.
+5. Every site must be isolated per user using structured paths.
+
+================================================================================
+PUTER STORAGE STRUCTURE (MANDATORY)
+================================================================================
+
+All sites MUST be stored like:
+
+/users/{user_id}/sites/{site_id}/
+
+Example:
+/users/u123/sites/9fa2-uuid/
+
+Inside each site:
+
+index.html
+about.html
+contact.html
+login.html
+account.html
+assets/styles.css
+assets/app.js
+meta.json
+build.log
+
+site_id MUST be UUIDv4.
+
+================================================================================
+BACKEND IMPLEMENTATION (REQUIRED)
+================================================================================
+
+Create a PuterService module:
+
+Functions required:
+
+1. upload_site(user_id, site_id, files_dict)
+   - files_dict = { "index.html": "...", "assets/styles.css": "..." }
+   - Write all files to Puter using puter.fs.write
+
+2. get_public_url(user_id, site_id)
+   - Returns public URL using puter.fs.public
+   - Must point to index.html
+
+3. read_site(user_id, site_id)
+   - Reads files back for editing
+
+4. update_site(user_id, site_id, updated_files)
+   - Overwrites existing files
+
+================================================================================
+PUTER SDK INTEGRATION
+================================================================================
+
+Use Puter JS SDK or HTTP equivalent.
+
+Example logic:
+
+await puter.fs.write("/users/u123/sites/abc/index.html", html)
+const url = await puter.fs.public("/users/u123/sites/abc/index.html")
+
+Wrap all calls in backend service layer.
+
+Add retry logic and error handling.
+
+================================================================================
+CREATE SITE FLOW (UPDATED)
+================================================================================
+
+1. User sends prompt
+2. Backend creates job
+3. AI Builder:
+   PLAN → BUILD → REVIEW → FIX
+4. Pipeline:
+   validate → inject → optimize → package
+5. Generate site_id (UUID)
+6. Upload ALL files to Puter via PuterService
+7. Generate public URL
+8. Save metadata in database
+9. Return URL to user
+
+DO NOT skip pipeline.
+DO NOT return fake preview.
+DO NOT return before upload completes.
+
+================================================================================
+EDIT SITE FLOW
+================================================================================
+
+/edit {site_id} {instruction}
+
+1. Create new job
+2. Load existing files from Puter
+3. Apply modification via AI
+4. Re-run validation pipeline
+5. Re-upload to same path
+6. Keep same public URL
+
+================================================================================
+REMOVE OLD HOSTING LOGIC
+================================================================================
+
+DELETE or DISABLE:
+
+- Any Replit static hosting routes
+- Any local file serving endpoints (/site/* from backend)
+- Any temporary HTML preview shortcuts
+- Any "instant generation without deployment"
+
+================================================================================
+PREVIEW SYSTEM (UPDATED)
+================================================================================
+
+Preview MUST use real Puter URL.
+
+Frontend (mobile/web):
+
+- Open WebView pointing to Puter URL
+- Show loading until job completes
+- Show logs + progress
+
+NO fake HTML previews allowed.
+
+================================================================================
+JOB QUEUE INTEGRATION
+================================================================================
+
+All uploads MUST go through job system:
+
+- status: queued → running → uploading → completed
+- progress updates:
+  - 20% planning
+  - 40% generating
+  - 60% validating
+  - 80% uploading to Puter
+  - 100% done
+
+Limit concurrency to 2–3 jobs.
+
+================================================================================
+SECURITY RULES
+================================================================================
+
+- Never expose Puter paths to frontend directly
+- Never allow raw user file injection
+- Validate all generated HTML before upload
+- Encrypt all user secrets (AES-256-GCM)
+- Sanitize file paths
+
+================================================================================
+FAILURE HANDLING
+================================================================================
+
+If Puter upload fails:
+
+- mark job as failed
+- retry up to 2 times
+- log error in build.log
+- notify user with clear message
+
+================================================================================
+FINAL OUTPUT REQUIREMENTS
+================================================================================
+
+After implementation:
+
+1. All websites MUST be hosted on Puter
+2. All URLs returned MUST be Puter public URLs
+3. No Replit hosting remains
+4. Multi-page enforcement must still work
+5. System must feel real (not instant fake templates)
+
+================================================================================
+IMPORTANT BEHAVIOR CHANGE
+================================================================================
+
+If generation finishes too fast (<3 seconds):
+
+→ Introduce enforced pipeline delay + validation checks  
+→ Ensure real multi-page generation is happening  
+
+NO template shortcuts allowed.
+
+================================================================================
+START IMPLEMENTATION
+================================================================================
+
+1. Create PuterService
+2. Refactor create/edit pipeline
+3. Remove old hosting
+4. Integrate upload step
+5. Test with sample site (Coca-Cola business site)
+6. Return working live Puter URL
+
+Proceed step-by-step with clear code structure.
