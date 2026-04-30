@@ -19,6 +19,7 @@ import {
 } from "../lib/db";
 import { jobQueue } from "../lib/queue";
 import { siteEventBus, type SiteEvent } from "../lib/eventBus";
+import { buildProject } from "../lib/generator";
 import { inferSiteName, uniqueSlug } from "../lib/slug";
 import { publicBaseUrl, publicHost } from "../lib/telegram";
 
@@ -34,6 +35,10 @@ const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
 
 const editSchema = z.object({
   prompt: z.string().min(4).max(1000),
+});
+
+const regeneratePageSchema = z.object({
+  path: z.string().min(1).max(200),
 });
 
 const messageSchema = z.object({
@@ -286,6 +291,88 @@ router.post("/sites/:id/edit", requireAuth, async (req, res) => {
     })
     .where(eq(sitesTable.id, site.id));
   await jobQueue.enqueue(job.id);
+  const [updated] = await db
+    .select()
+    .from(sitesTable)
+    .where(eq(sitesTable.id, site.id))
+    .limit(1);
+  res.json(siteToDto(updated));
+});
+
+/**
+ * POST /sites/:id/pages/regenerate { path }
+ *
+ * Re-render a single page from the deterministic generator using the site's
+ * existing plan. Fast (~ms), zero LLM tokens, leaves every other page and the
+ * shared CSS/JS untouched. Surfaces in the mobile app as a "Regenerate page"
+ * affordance — useful when the LLM emitted a broken or empty page.
+ */
+router.post("/sites/:id/pages/regenerate", requireAuth, async (req, res) => {
+  const parsed = regeneratePageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_input" });
+    return;
+  }
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  if (!site.plan) {
+    res.status(409).json({ error: "no_plan" });
+    return;
+  }
+
+  // Normalise path the same way the public hosting route does so it matches
+  // entries in `site.files` exactly.
+  const requested = parsed.data.path.trim().replace(/^\/+/, "");
+  if (!requested || requested.includes("..") || requested.length > 200) {
+    res.status(400).json({ error: "invalid_path" });
+    return;
+  }
+  const planned = site.plan.pages.find((p) => p.path === requested);
+  if (!planned) {
+    res.status(404).json({ error: "page_not_in_plan" });
+    return;
+  }
+
+  // Re-render the whole project deterministically and lift JUST the requested
+  // page out. Cheap; deterministic; never touches assets or other pages.
+  const fresh = buildProject(site.plan, site.name);
+  const newContent = fresh.files[requested];
+  if (!newContent) {
+    res.status(500).json({ error: "regenerate_failed" });
+    return;
+  }
+  const nextFiles: SiteFiles = { ...(site.files ?? {}), [requested]: newContent };
+
+  await db
+    .update(sitesTable)
+    .set({
+      files: nextFiles,
+      message: `Regenerated ${requested}`,
+      updatedAt: new Date(),
+    })
+    .where(eq(sitesTable.id, site.id));
+  await db.insert(messagesTable).values({
+    userId: req.user!.id,
+    siteId: site.id,
+    role: "agent",
+    kind: "build_done",
+    content: `Regenerated ${requested} from the deterministic template.`,
+    data: { path: requested, regenerated: true },
+  });
+  siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
+
   const [updated] = await db
     .select()
     .from(sitesTable)

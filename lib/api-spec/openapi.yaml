@@ -162,6 +162,36 @@ paths:
               schema:
                 $ref: "#/components/schemas/Site"
 
+  /sites/{id}/pages/regenerate:
+    post:
+      operationId: regenerateSitePage
+      tags: [sites]
+      summary: Re-roll a single page from the deterministic generator
+      description: |
+        Replaces just one page (e.g. `about.html`) in the site's file map by
+        re-rendering it from the deterministic page generator using the site's
+        existing plan. Fast (~ms), never calls the LLM, and never disturbs
+        other pages or shared assets. Use this when a single page rendered
+        broken or empty.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegeneratePageInput"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+
   /sites/{id}/messages:
     get:
       operationId: listSiteMessages
@@ -487,6 +517,16 @@ components:
           minLength: 4
           maxLength: 1000
       required: [prompt]
+
+    RegeneratePageInput:
+      type: object
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Relative page path (e.g. `about.html`).
+      required: [path]
 
     SetDomainInput:
       type: object

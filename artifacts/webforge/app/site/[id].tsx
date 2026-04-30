@@ -24,11 +24,13 @@ import {
   getGetSiteQueryKey,
   useDeleteSite,
   useGetSite,
+  useRegenerateSitePage,
   useRemoveSiteDomain,
   useRetrySite,
   useSetSiteDomain,
   useVerifySiteDomain,
   type Site,
+  type SitePlanPage,
 } from "@workspace/api-client-react";
 
 import { MatrixRain } from "@/components/MatrixRain";
@@ -58,6 +60,10 @@ export default function SiteDetailScreen() {
   const setDomain = useSetSiteDomain();
   const removeDomain = useRemoveSiteDomain();
   const verifyDomain = useVerifySiteDomain();
+  const regeneratePage = useRegenerateSitePage();
+  const [regeneratingPath, setRegeneratingPath] = React.useState<string | null>(
+    null,
+  );
 
   const site = siteQuery.data as Site | undefined;
 
@@ -95,6 +101,40 @@ export default function SiteDetailScreen() {
     if (!site) return;
     await retry.mutateAsync({ id: site.id });
     siteQuery.refetch();
+  };
+
+  const onRegeneratePage = async (page: SitePlanPage) => {
+    if (!site || regeneratingPath) return;
+    setRegeneratingPath(page.path);
+    void Haptics.selectionAsync();
+    try {
+      await regeneratePage.mutateAsync({
+        id: site.id,
+        data: { path: page.path },
+      });
+      await siteQuery.refetch();
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Couldn't regenerate page";
+      Alert.alert("Regenerate failed", msg);
+    } finally {
+      setRegeneratingPath(null);
+    }
+  };
+
+  const confirmRegenerate = (page: SitePlanPage) => {
+    Alert.alert(
+      "Regenerate this page?",
+      `Re-render "${page.title}" (/${page.path}) from the deterministic template. Other pages and shared assets stay untouched.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Regenerate",
+          style: "default",
+          onPress: () => void onRegeneratePage(page),
+        },
+      ],
+    );
   };
 
   if (!site) {
@@ -315,6 +355,16 @@ export default function SiteDetailScreen() {
                 {">_ "} {site.message ?? "starting…"}
               </MonoText>
             </Surface>
+          ) : null}
+
+          {site.plan && site.plan.pages.length > 0 ? (
+            <PagesSection
+              pages={site.plan.pages}
+              accent={accent}
+              regeneratingPath={regeneratingPath}
+              onRegenerate={confirmRegenerate}
+              disabled={isWorking}
+            />
           ) : null}
         </ScrollView>
       </SafeAreaView>
@@ -1005,5 +1055,103 @@ function MonoTextInput(props: {
         padding: 0,
       }}
     />
+  );
+}
+
+function PagesSection({
+  pages,
+  accent,
+  regeneratingPath,
+  onRegenerate,
+  disabled,
+}: {
+  pages: SitePlanPage[];
+  accent: string;
+  regeneratingPath: string | null;
+  onRegenerate: (page: SitePlanPage) => void;
+  disabled: boolean;
+}) {
+  const colors = useColors();
+  return (
+    <Surface padded style={{ marginTop: 16, gap: 12 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Feather name="file-text" size={14} color={colors.mutedForeground} />
+        <MonoText
+          style={{
+            color: colors.mutedForeground,
+            fontSize: 11,
+            letterSpacing: 1.4,
+            textTransform: "uppercase",
+          }}
+        >
+          Pages
+        </MonoText>
+      </View>
+      <Text
+        style={{
+          color: colors.mutedForeground,
+          fontSize: 12,
+          lineHeight: 18,
+        }}
+      >
+        Tap a page to re-render it from the deterministic template. Useful when
+        a single page came out broken — leaves the rest of the site untouched.
+      </Text>
+      <View style={{ gap: 8 }}>
+        {pages.map((page) => {
+          const busy = regeneratingPath === page.path;
+          const isDisabled = disabled || (regeneratingPath !== null && !busy);
+          return (
+            <Pressable
+              key={page.path}
+              onPress={() => onRegenerate(page)}
+              disabled={isDisabled}
+              accessibilityRole="button"
+              accessibilityLabel={`Regenerate ${page.title}`}
+              style={({ pressed, focused }) => ({
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: focused ? accent : colors.border,
+                backgroundColor: colors.cardElevated,
+                opacity: pressed ? 0.7 : isDisabled && !busy ? 0.4 : 1,
+              })}
+            >
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    color: colors.foreground,
+                    fontSize: 14,
+                    fontFamily: "Inter_700Bold",
+                    letterSpacing: -0.2,
+                  }}
+                >
+                  {page.title}
+                </Text>
+                <MonoText
+                  numberOfLines={1}
+                  style={{
+                    color: colors.mutedForeground,
+                    fontSize: 11,
+                  }}
+                >
+                  /{page.path}
+                </MonoText>
+              </View>
+              {busy ? (
+                <ActivityIndicator size="small" color={accent} />
+              ) : (
+                <Feather name="refresh-cw" size={16} color={accent} />
+              )}
+            </Pressable>
+          );
+        })}
+      </View>
+    </Surface>
   );
 }

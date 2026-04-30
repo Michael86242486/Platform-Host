@@ -26,6 +26,7 @@ import type {
   Me,
   Message,
   Ok,
+  RegeneratePageInput,
   SendMessageInput,
   SetDomainInput,
   Site,
@@ -743,6 +744,99 @@ export const useRetrySite = <
   TContext
 > => {
   return useMutation(getRetrySiteMutationOptions(options));
+};
+
+/**
+ * Replaces just one page (e.g. `about.html`) in the site's file map by
+re-rendering it from the deterministic page generator using the site's
+existing plan. Fast (~ms), never calls the LLM, and never disturbs
+other pages or shared assets. Use this when a single page rendered
+broken or empty.
+
+ * @summary Re-roll a single page from the deterministic generator
+ */
+export const getRegenerateSitePageUrl = (id: string) => {
+  return `/api/sites/${id}/pages/regenerate`;
+};
+
+export const regenerateSitePage = async (
+  id: string,
+  regeneratePageInput: RegeneratePageInput,
+  options?: RequestInit,
+): Promise<Site> => {
+  return customFetch<Site>(getRegenerateSitePageUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(regeneratePageInput),
+  });
+};
+
+export const getRegenerateSitePageMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof regenerateSitePage>>,
+    TError,
+    { id: string; data: BodyType<RegeneratePageInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof regenerateSitePage>>,
+  TError,
+  { id: string; data: BodyType<RegeneratePageInput> },
+  TContext
+> => {
+  const mutationKey = ["regenerateSitePage"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof regenerateSitePage>>,
+    { id: string; data: BodyType<RegeneratePageInput> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return regenerateSitePage(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RegenerateSitePageMutationResult = NonNullable<
+  Awaited<ReturnType<typeof regenerateSitePage>>
+>;
+export type RegenerateSitePageMutationBody = BodyType<RegeneratePageInput>;
+export type RegenerateSitePageMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Re-roll a single page from the deterministic generator
+ */
+export const useRegenerateSitePage = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof regenerateSitePage>>,
+    TError,
+    { id: string; data: BodyType<RegeneratePageInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof regenerateSitePage>>,
+  TError,
+  { id: string; data: BodyType<RegeneratePageInput> },
+  TContext
+> => {
+  return useMutation(getRegenerateSitePageMutationOptions(options));
 };
 
 /**

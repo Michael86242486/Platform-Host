@@ -142,6 +142,15 @@ export interface EditSiteInput {
   prompt: string;
 }
 
+export interface RegeneratePageInput {
+  /**
+   * Relative page path (e.g. `about.html`).
+   * @minLength 1
+   * @maxLength 200
+   */
+  path: string;
+}
+
 export interface SetDomainInput {
   /**
    * @minLength 3

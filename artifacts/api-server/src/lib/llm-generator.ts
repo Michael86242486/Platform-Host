@@ -19,10 +19,12 @@ import {
 } from "./generator";
 import { logger } from "./logger";
 
-// gpt-5.2 — strong general model with reliable structured streaming output.
-// gpt-4o was producing truncated multi-page sites at 16K tokens.
-const TEXT_MODEL = "gpt-5.2";
-const MAX_TOKENS = 32768;
+// gpt-5.4 — most capable general-purpose model per the OpenAI integration
+// skill. Supports `max_completion_tokens` (NOT `max_tokens` — that param was
+// removed for the gpt-5 family). gpt-4o + 16K previously truncated multi-page
+// sites mid-stream.
+const TEXT_MODEL = "gpt-5.4";
+const MAX_COMPLETION_TOKENS = 32768;
 
 // ---------------------------------------------------------------------------
 // PHASE 1 — Analysis (LLM)
@@ -250,7 +252,7 @@ export async function buildProjectAIStream(
 
     const stream = await openai.chat.completions.create({
       model: TEXT_MODEL,
-      max_tokens: MAX_TOKENS,
+      max_completion_tokens: MAX_COMPLETION_TOKENS,
       stream: true,
       messages: [
         { role: "system", content: BUILD_STREAM_SYSTEM },
@@ -417,7 +419,7 @@ export async function buildProjectAI(
     const completion = await openai.chat.completions.create({
       model: TEXT_MODEL,
       response_format: { type: "json_object" },
-      max_tokens: MAX_TOKENS,
+      max_completion_tokens: MAX_COMPLETION_TOKENS,
       messages: [
         { role: "system", content: BUILD_SYSTEM },
         {
@@ -538,7 +540,7 @@ export async function editProjectAI(
     const completion = await openai.chat.completions.create({
       model: TEXT_MODEL,
       response_format: { type: "json_object" },
-      max_tokens: MAX_TOKENS,
+      max_completion_tokens: MAX_COMPLETION_TOKENS,
       messages: [
         { role: "system", content: EDIT_SYSTEM },
         {

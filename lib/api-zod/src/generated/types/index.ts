@@ -21,6 +21,7 @@ export * from "./messageData";
 export * from "./messageKind";
 export * from "./messageRole";
 export * from "./ok";
+export * from "./regeneratePageInput";
 export * from "./sendMessageInput";
 export * from "./setDomainInput";
 export * from "./site";

@@ -60,6 +60,10 @@ Other routes:
 - `GET /api/sites` / `GET /api/sites/:id` / `DELETE /api/sites/:id`.
 - `POST /api/sites/:id/edit` — re-runs generation with new instructions.
 - `POST /api/sites/:id/retry` — retries a failed build.
+- `POST /api/sites/:id/pages/regenerate { path }` — re-renders a single page
+  from the deterministic generator. Cheap, zero LLM tokens, leaves every
+  other page and shared CSS/JS untouched. Surfaces in the mobile site detail
+  screen as a tap-to-regenerate row per planned page.
 - `POST /api/sites/:id/domain { domain }` — attach a custom domain (CNAME +
   TXT verification). Issues a verification token.
 - `POST /api/sites/:id/domain/verify` — looks up `_webforge.{domain}` TXT and

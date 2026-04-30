@@ -426,6 +426,95 @@ export const RetrySiteResponse = zod.object({
 });
 
 /**
+ * Replaces just one page (e.g. `about.html`) in the site's file map by
+re-rendering it from the deterministic page generator using the site's
+existing plan. Fast (~ms), never calls the LLM, and never disturbs
+other pages or shared assets. Use this when a single page rendered
+broken or empty.
+
+ * @summary Re-roll a single page from the deterministic generator
+ */
+export const RegenerateSitePageParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const regenerateSitePageBodyPathMax = 200;
+
+export const RegenerateSitePageBody = zod.object({
+  path: zod
+    .string()
+    .min(1)
+    .max(regenerateSitePageBodyPathMax)
+    .describe("Relative page path (e.g. `about.html`)."),
+});
+
+export const regenerateSitePageResponseProgressMin = 0;
+export const regenerateSitePageResponseProgressMax = 100;
+
+export const RegenerateSitePageResponse = zod.object({
+  id: zod.string(),
+  name: zod.string(),
+  slug: zod.string(),
+  prompt: zod.string(),
+  status: zod.enum([
+    "queued",
+    "analyzing",
+    "awaiting_confirmation",
+    "building",
+    "ready",
+    "failed",
+  ]),
+  progress: zod
+    .number()
+    .min(regenerateSitePageResponseProgressMin)
+    .max(regenerateSitePageResponseProgressMax),
+  message: zod.string().nullish(),
+  error: zod.string().nullish(),
+  previewUrl: zod.string().nullish(),
+  publicUrl: zod.string().nullish(),
+  coverColor: zod.string().nullish(),
+  files: zod.array(zod.string()),
+  analysis: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      intent: zod.string(),
+      audience: zod.string().nullish(),
+      features: zod.array(zod.string()),
+      pages: zod.array(zod.string()),
+      styleHints: zod.array(zod.string()),
+    })
+    .nullish(),
+  plan: zod
+    .object({
+      type: zod.enum(["website", "bot", "backend", "tool"]),
+      summary: zod.string(),
+      pages: zod.array(
+        zod.object({
+          path: zod.string(),
+          title: zod.string(),
+          purpose: zod.string(),
+          sections: zod.array(zod.string()),
+        }),
+      ),
+      styles: zod.object({
+        palette: zod.string(),
+        mood: zod.string(),
+      }),
+      features: zod.array(zod.string()),
+      notes: zod.array(zod.string()),
+    })
+    .nullish(),
+  customDomain: zod.string().nullish(),
+  customDomainStatus: zod.enum(["pending", "verified", "failed"]).nullish(),
+  customDomainError: zod.string().nullish(),
+  customDomainTxtName: zod.string().nullish(),
+  customDomainTxtValue: zod.string().nullish(),
+  customDomainTarget: zod.string().nullish(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
+});
+
+/**
  * @summary List the chat between the user and the agent for a site
  */
 export const ListSiteMessagesParams = zod.object({
