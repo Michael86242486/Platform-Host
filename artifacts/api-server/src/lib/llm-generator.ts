@@ -19,8 +19,10 @@ import {
 } from "./generator";
 import { logger } from "./logger";
 
-const TEXT_MODEL = "gpt-4o";
-const MAX_TOKENS = 16384;
+// gpt-5.2 — strong general model with reliable structured streaming output.
+// gpt-4o was producing truncated multi-page sites at 16K tokens.
+const TEXT_MODEL = "gpt-5.2";
+const MAX_TOKENS = 32768;
 
 // ---------------------------------------------------------------------------
 // PHASE 1 — Analysis (LLM)
@@ -289,10 +291,15 @@ export async function buildProjectAIStream(
     };
 
     const consumeLine = (rawLine: string): void => {
-      const line = rawLine;
-      const colorMatch = line.match(/^===COLOR:\s*(#[0-9a-fA-F]{6})\s*===\s*$/);
-      const fileMatch = line.match(/^===FILE:\s*(.+?)\s*===\s*$/);
-      const endMatch = line.match(/^===END===\s*$/);
+      // Strip CRLF, BOM, and surrounding whitespace before marker detection so
+      // accidental indentation or stray \r doesn't break the parser.
+      const stripped = rawLine.replace(/^\uFEFF/, "").replace(/\r$/, "");
+      const probe = stripped.trim();
+      const colorMatch = probe.match(
+        /^===COLOR:\s*(#[0-9a-fA-F]{6})\s*===$/,
+      );
+      const fileMatch = probe.match(/^===FILE:\s*(.+?)\s*===$/);
+      const endMatch = probe.match(/^===END===$/);
       if (colorMatch) {
         coverColor = colorMatch[1];
         return;
@@ -307,9 +314,11 @@ export async function buildProjectAIStream(
         currentFile = null;
         return;
       }
+      // Quietly drop markdown code fences if the model wrapped a file in one.
+      if (/^```/.test(probe)) return;
       if (currentFile) {
-        files[currentFile] = (files[currentFile] ?? "") + line + "\n";
-        bytes += line.length + 1;
+        files[currentFile] = (files[currentFile] ?? "") + stripped + "\n";
+        bytes += stripped.length + 1;
       }
     };
 
@@ -452,7 +461,9 @@ function sanitizeFiles(
     const path = k.replace(/^\/+/, "");
     if (path.length === 0 || path.length > 200) continue;
     if (path.includes("..")) continue;
-    out[path] = v;
+    // Strip a UTF-8 BOM the model occasionally prepends.
+    const cleaned = v.replace(/^\uFEFF/, "");
+    out[path] = cleaned;
   }
   // Guarantee an index.html exists.
   if (!out["index.html"]) {
@@ -461,6 +472,43 @@ function sanitizeFiles(
       out["index.html"] = out[homePage.path];
     }
   }
+  return fillMissingFromFallback(out, plan);
+}
+
+/**
+ * Make sure every page in the plan, plus the shared CSS/JS assets, actually
+ * exist. If the LLM truncated mid-stream and never emitted, say, `about.html`,
+ * we render that single page from the deterministic fallback so the home page's
+ * nav link still resolves to a real file instead of a 404. This is the
+ * difference between a "broken AI demo" and a working multi-page site.
+ */
+function fillMissingFromFallback(files: SiteFiles, plan: SitePlan): SiteFiles {
+  const out: SiteFiles = { ...files };
+  let fallback: BuildResult | null = null;
+  const ensureFallback = (): BuildResult => {
+    if (!fallback) fallback = buildProjectFallback(plan, "site");
+    return fallback;
+  };
+
+  for (const page of plan.pages) {
+    const path = page.path;
+    if (!path) continue;
+    const existing = out[path];
+    // Treat empty/whitespace-only or absurdly tiny pages (< 200 bytes) as
+    // truncated — those are almost always the symptom of a mid-stream cut-off.
+    if (!existing || existing.trim().length < 200) {
+      const fb = ensureFallback();
+      if (fb.files[path]) out[path] = fb.files[path];
+    }
+  }
+
+  for (const asset of ["assets/styles.css", "assets/app.js"]) {
+    if (!out[asset] || out[asset].trim().length === 0) {
+      const fb = ensureFallback();
+      if (fb.files[asset]) out[asset] = fb.files[asset];
+    }
+  }
+
   return out;
 }
 

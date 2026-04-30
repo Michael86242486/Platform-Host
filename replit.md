@@ -154,6 +154,33 @@ into `sites.files` every ~220ms. The public route
 so the iframe re-fetches and shows new tokens as they arrive. CSS and JS
 files are streamed as-is.
 
+## LLM model + multi-page guarantees
+
+`lib/llm-generator.ts` uses `gpt-5.2` with `max_tokens: 32768` for both the
+streaming and JSON build paths — the previous `gpt-4o` / 16K combo truncated
+mid-stream and left planned pages (about, services, etc.) as empty stubs,
+which the user reported as "unable to create other pages linked to the
+website". The streaming line parser tolerates BOM, CRLF, and stray markdown
+fences. After the stream finishes, `sanitizeFiles` runs `fillMissingFromFallback`,
+which guarantees every page in the plan and the shared `assets/styles.css`
++ `assets/app.js` exist; any page that's missing or suspiciously small
+(<200 chars) is replaced from the deterministic generator so inter-page nav
+links never 404.
+
+## UI polish (mobile)
+
+- `components/SiteCardSkeleton.tsx` — shimmering placeholder used while
+  `useListSites` is loading. Animation uses a JS driver on web to avoid the
+  RCTAnimation native-module warning.
+- `components/StateCard.tsx` — shared empty / error state card with optional
+  primary action button. Manages a `focused` state via `onFocus`/`onBlur` so
+  keyboard users on web see a visible focus ring.
+- Home (`app/(home)/index.tsx`) and Sites (`app/(home)/sites.tsx`) screens
+  now render skeletons during initial load, an `alert-triangle`-toned error
+  card with retry on failure, and the polished `StateCard` for the
+  zero-state. The home screen's matrix-rain backdrop was toned down
+  (opacity 0.18, intensity 0.32) so headlines have proper contrast.
+
 ## Telegram bot
 
 - The system bot polls automatically when `WEBFORGE_TELEGRAM_BOT_TOKEN` is

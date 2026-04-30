@@ -17,15 +17,21 @@ import {
 
 import { MonoText } from "@/components/MonoText";
 import { SiteCard } from "@/components/SiteCard";
+import { SiteCardSkeleton } from "@/components/SiteCardSkeleton";
+import { StateCard } from "@/components/StateCard";
 import { useColors } from "@/hooks/useColors";
 
 export default function SitesScreen() {
   const colors = useColors();
   const router = useRouter();
-  const { data, refetch, isFetching, isLoading } = useListSites({
-    query: { queryKey: getListSitesQueryKey(), refetchInterval: 2500 },
-  });
+  const { data, refetch, isFetching, isLoading, isError, error } = useListSites(
+    {
+      query: { queryKey: getListSitesQueryKey(), refetchInterval: 2500 },
+    },
+  );
   const sites = data ?? [];
+  const showSkeletons = isLoading && sites.length === 0;
+  const showError = isError && sites.length === 0;
 
   return (
     <SafeAreaView
@@ -78,55 +84,57 @@ export default function SitesScreen() {
         </Pressable>
       </View>
 
-      <FlatList
-        contentContainerStyle={{ padding: 20, gap: 12 }}
-        data={sites}
-        keyExtractor={(s) => s.id}
-        renderItem={({ item }) => (
-          <SiteCard site={item} onPress={() => router.push(`/site/${item.id}`)} />
-        )}
-        refreshControl={
-          <RefreshControl
-            refreshing={isFetching && !isLoading}
-            onRefresh={refetch}
-            tintColor={colors.primary}
+      {showSkeletons ? (
+        <View style={{ padding: 20, gap: 12 }}>
+          <SiteCardSkeleton />
+          <SiteCardSkeleton />
+          <SiteCardSkeleton />
+        </View>
+      ) : showError ? (
+        <View style={{ padding: 20 }}>
+          <StateCard
+            icon="alert-triangle"
+            tone="danger"
+            title="Couldn't load your sites"
+            message={
+              error instanceof Error
+                ? error.message
+                : "The server didn't respond. Check your connection and try again."
+            }
+            action={{ label: "Retry", onPress: () => refetch() }}
           />
-        }
-        ListEmptyComponent={
-          <View
-            style={{
-              borderColor: colors.border,
-              borderWidth: 1,
-              borderRadius: 16,
-              borderStyle: "dashed",
-              padding: 32,
-              alignItems: "center",
-              gap: 10,
-              marginTop: 20,
-            }}
-          >
-            <Feather name="globe" size={28} color={colors.primary} />
-            <Text
-              style={{
-                color: colors.foreground,
-                fontFamily: "Inter_700Bold",
-                fontSize: 18,
+        </View>
+      ) : (
+        <FlatList
+          contentContainerStyle={{ padding: 20, gap: 12 }}
+          data={sites}
+          keyExtractor={(s) => s.id}
+          renderItem={({ item }) => (
+            <SiteCard
+              site={item}
+              onPress={() => router.push(`/site/${item.id}`)}
+            />
+          )}
+          refreshControl={
+            <RefreshControl
+              refreshing={isFetching && !isLoading}
+              onRefresh={refetch}
+              tintColor={colors.primary}
+            />
+          }
+          ListEmptyComponent={
+            <StateCard
+              icon="globe"
+              title="Nothing here yet"
+              message="Tap the + above to forge your first site. It takes about 5 seconds."
+              action={{
+                label: "Forge a site",
+                onPress: () => router.push("/create"),
               }}
-            >
-              Nothing here yet
-            </Text>
-            <Text
-              style={{
-                color: colors.mutedForeground,
-                textAlign: "center",
-                fontSize: 13,
-              }}
-            >
-              Tap the + above to forge your first site.
-            </Text>
-          </View>
-        }
-      />
+            />
+          }
+        />
+      )}
     </SafeAreaView>
   );
 }

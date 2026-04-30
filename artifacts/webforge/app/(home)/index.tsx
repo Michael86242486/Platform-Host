@@ -1,5 +1,3 @@
-import { Feather } from "@expo/vector-icons";
-
 import { useUser } from "@/lib/auth";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -28,6 +26,8 @@ import { MatrixRain } from "@/components/MatrixRain";
 import { MonoText } from "@/components/MonoText";
 import { NeonButton } from "@/components/NeonButton";
 import { SiteCard } from "@/components/SiteCard";
+import { SiteCardSkeleton } from "@/components/SiteCardSkeleton";
+import { StateCard } from "@/components/StateCard";
 import { StatTile } from "@/components/StatTile";
 import { useColors } from "@/hooks/useColors";
 
@@ -78,9 +78,9 @@ export default function Dashboard() {
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <View
         pointerEvents="none"
-        style={[StyleSheet.absoluteFill, { opacity: 0.35 }]}
+        style={[StyleSheet.absoluteFill, { opacity: 0.18 }]}
       >
-        <MatrixRain width={width} height={400} intensity={0.5} />
+        <MatrixRain width={width} height={400} intensity={0.32} />
         <LinearGradient
           colors={[
             "transparent",
@@ -88,7 +88,7 @@ export default function Dashboard() {
             colors.background,
             colors.background,
           ]}
-          locations={[0, 0.4, 0.78, 1]}
+          locations={[0, 0.32, 0.6, 1]}
           style={StyleSheet.absoluteFill}
         />
       </View>
@@ -252,39 +252,35 @@ export default function Dashboard() {
             </View>
           </View>
 
-          {recent.length === 0 ? (
+          {sitesQuery.isLoading && recent.length === 0 ? (
+            <View style={{ paddingHorizontal: 20, gap: 12 }}>
+              <SiteCardSkeleton />
+              <SiteCardSkeleton />
+            </View>
+          ) : sitesQuery.isError && recent.length === 0 ? (
             <View style={{ paddingHorizontal: 20 }}>
-              <View
-                style={{
-                  borderColor: colors.border,
-                  borderWidth: 1,
-                  borderRadius: 16,
-                  borderStyle: "dashed",
-                  padding: 24,
-                  alignItems: "center",
-                  gap: 8,
+              <StateCard
+                icon="alert-triangle"
+                tone="danger"
+                title="Couldn't reach the server"
+                message="We'll retry automatically. You can also pull to refresh."
+                action={{
+                  label: "Retry now",
+                  onPress: () => sitesQuery.refetch(),
                 }}
-              >
-                <Feather name="zap" size={24} color={colors.primary} />
-                <Text
-                  style={{
-                    color: colors.foreground,
-                    fontFamily: "Inter_600SemiBold",
-                    fontSize: 15,
-                  }}
-                >
-                  No sites yet
-                </Text>
-                <Text
-                  style={{
-                    color: colors.mutedForeground,
-                    textAlign: "center",
-                    fontSize: 13,
-                  }}
-                >
-                  Forge your first one — it takes about 5 seconds.
-                </Text>
-              </View>
+              />
+            </View>
+          ) : recent.length === 0 ? (
+            <View style={{ paddingHorizontal: 20 }}>
+              <StateCard
+                icon="zap"
+                title="No sites yet"
+                message="Forge your first one — it takes about 5 seconds."
+                action={{
+                  label: "Forge a site",
+                  onPress: () => router.push("/create"),
+                }}
+              />
             </View>
           ) : (
             <View style={{ paddingHorizontal: 20, gap: 12 }}>
