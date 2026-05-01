@@ -93,6 +93,8 @@ export default function CreateScreen() {
   );
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [activeSiteId, setActiveSiteId] = useState<string | null>(
     typeof params.siteId === "string" ? params.siteId : null,
   );
@@ -186,6 +188,17 @@ export default function CreateScreen() {
     mr.stop();
   }, []);
 
+  // Clean up recording timer + MediaRecorder on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      const mr = mediaRecorderRef.current;
+      if (mr && mr.state !== "inactive") {
+        try { mr.stop(); } catch { /* noop */ }
+      }
+    };
+  }, []);
+
   const transcribe = useCallback(
     async (blob: Blob) => {
       setTranscribing(true);
@@ -199,21 +212,34 @@ export default function CreateScreen() {
           },
           body: blob,
         });
-        if (!res.ok) throw new Error(`Transcribe failed: ${res.status}`);
-        const data = (await res.json()) as { text?: string };
+        const data = (await res.json()) as {
+          text?: string;
+          error?: string;
+          message?: string;
+        };
+        if (!res.ok) {
+          // Use the server's human-readable message when available
+          const msg =
+            data.message ??
+            data.error ??
+            `Transcription failed (${res.status})`;
+          Alert.alert("Voice note", msg);
+          return;
+        }
         const t = (data.text ?? "").trim();
         if (!t) {
-          Alert.alert("Hmm", "I didn't catch any words. Try again.");
+          Alert.alert(
+            "Nothing heard",
+            "I didn't pick up any speech — try again somewhere quieter.",
+          );
           return;
         }
         setDraft((prev) => (prev ? `${prev.trim()} ${t}` : t));
-        void Haptics.notificationAsync(
-          Haptics.NotificationFeedbackType.Success,
-        );
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } catch (err) {
         Alert.alert(
           "Transcription failed",
-          err instanceof Error ? err.message : "Unknown error",
+          err instanceof Error ? err.message : "Network error — check your connection.",
         );
       } finally {
         setTranscribing(false);
@@ -225,45 +251,68 @@ export default function CreateScreen() {
   const startRecording = useCallback(async () => {
     if (Platform.OS !== "web") {
       Alert.alert(
-        "Voice input on web",
-        "Voice capture works in the web preview. On a real device, use the microphone in your keyboard.",
+        "Voice input",
+        "Tap the mic in your keyboard to dictate text on your device.",
       );
       return;
     }
     if (typeof navigator === "undefined" || !navigator.mediaDevices) {
-      Alert.alert("Not supported", "Microphone access is not available.");
+      Alert.alert("Not supported", "Microphone access is not available in this browser.");
       return;
     }
     try {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mime = MediaRecorder.isTypeSupported("audio/webm")
-        ? "audio/webm"
-        : "";
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : "";
       const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
       mediaRecorderRef.current = mr;
       chunksRef.current = [];
+
       mr.ondataavailable = (e: BlobEvent) => {
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
+
       mr.onstop = async () => {
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current);
+          recordingTimerRef.current = null;
+        }
         setRecording(false);
+        setRecordingSeconds(0);
         for (const t of stream.getTracks()) t.stop();
-        const blob = new Blob(chunksRef.current, {
-          type: mime || "audio/webm",
-        });
-        if (blob.size < 1024) {
-          Alert.alert("Too short", "Hold the mic and speak for a moment.");
+        const blob = new Blob(chunksRef.current, { type: mime || "audio/webm" });
+        if (blob.size < 512) {
+          Alert.alert("Too short", "Hold the mic button and speak for a moment, then release.");
           return;
         }
         await transcribe(blob);
       };
-      mr.start();
+
+      // Start the timer
+      setRecordingSeconds(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((s) => {
+          // Auto-stop at 2 minutes to match server limit
+          if (s >= 119) {
+            mr.stop();
+            return 0;
+          }
+          return s + 1;
+        });
+      }, 1000);
+
+      mr.start(250); // fire ondataavailable every 250ms for smoother chunks
       setRecording(true);
     } catch (err) {
       Alert.alert(
         "Microphone error",
-        err instanceof Error ? err.message : "Could not access mic",
+        err instanceof Error
+          ? err.message
+          : "Could not access the microphone. Check your browser permissions.",
       );
     }
   }, [transcribe]);
@@ -335,6 +384,7 @@ export default function CreateScreen() {
           onMicPress={onMicPress}
           recording={recording}
           transcribing={transcribing}
+          recordingSeconds={recordingSeconds}
           disabled={inputDisabled}
           sending={sending}
           placeholder={
@@ -1449,6 +1499,7 @@ function Composer({
   onMicPress,
   recording,
   transcribing,
+  recordingSeconds,
   disabled,
   sending,
   placeholder,
@@ -1460,6 +1511,7 @@ function Composer({
   onMicPress: () => void;
   recording: boolean;
   transcribing: boolean;
+  recordingSeconds: number;
   disabled: boolean;
   sending: boolean;
   placeholder: string;
@@ -1494,24 +1546,52 @@ function Composer({
           disabled={transcribing}
           hitSlop={8}
           style={({ pressed }) => ({
-            width: 30,
-            height: 30,
-            borderRadius: 15,
             alignItems: "center",
             justifyContent: "center",
-            backgroundColor: recording ? "#ef4444" : "transparent",
             opacity: pressed ? 0.7 : 1,
             marginBottom: 5,
+            minWidth: 30,
           })}
         >
           {transcribing ? (
             <ActivityIndicator size="small" color={colors.primary} />
+          ) : recording ? (
+            <View style={{ alignItems: "center", gap: 2 }}>
+              <View
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 15,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "#ef4444",
+                }}
+              >
+                <Feather name="square" size={12} color="#fff" />
+              </View>
+              <Text
+                style={{
+                  color: "#ef4444",
+                  fontSize: 9,
+                  fontFamily: "Inter_600SemiBold",
+                  letterSpacing: 0.4,
+                }}
+              >
+                {`${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`}
+              </Text>
+            </View>
           ) : (
-            <Feather
-              name={recording ? "square" : "mic"}
-              size={16}
-              color={recording ? "#fff" : colors.mutedForeground}
-            />
+            <View
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: 15,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Feather name="mic" size={16} color={colors.mutedForeground} />
+            </View>
           )}
         </Pressable>
 

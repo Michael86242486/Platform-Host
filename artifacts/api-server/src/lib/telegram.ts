@@ -2,6 +2,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { and, desc, eq } from "drizzle-orm";
 
 import { openai } from "@workspace/integrations-openai-ai-server";
+import { speechToText } from "@workspace/integrations-openai-ai-server/audio";
 
 import {
   db,
@@ -181,7 +182,16 @@ class TelegramBotManager {
 
   async startBot(record: DbBot): Promise<TelegramBot> {
     if (this.active.has(record.id)) return this.active.get(record.id)!;
-    const bot = new TelegramBot(record.token, { polling: true });
+
+    // Use a 10-second polling timeout so Telegram drops old connections
+    // faster when the server restarts, eliminating 409 Conflict errors.
+    const bot = new TelegramBot(record.token, {
+      polling: {
+        interval: 300,
+        autoStart: false,
+        params: { timeout: 10, allowed_updates: ["message", "callback_query", "edited_message"] },
+      },
+    });
     this.active.set(record.id, bot);
 
     try {
@@ -200,7 +210,32 @@ class TelegramBotManager {
       logger.warn({ err, botId: record.id }, "getMe failed");
     }
 
+    let conflictRetries = 0;
+    let restarting = false;
+
     bot.on("polling_error", async (err: Error) => {
+      const is409 = err.message.includes("409");
+      if (is409) {
+        conflictRetries++;
+        logger.info({ botId: record.id, attempt: conflictRetries }, "409 conflict; old connection still alive");
+        // After 3 consecutive 409s, stop + restart polling to force a fresh connection
+        if (conflictRetries >= 3 && !restarting) {
+          restarting = true;
+          conflictRetries = 0;
+          try {
+            await bot.stopPolling();
+            await sleep(12_000); // wait > 10s poll timeout
+            await bot.startPolling();
+            logger.info({ botId: record.id }, "polling restarted after 409 conflict");
+          } catch (restartErr) {
+            logger.warn({ err: restartErr, botId: record.id }, "polling restart failed");
+          } finally {
+            restarting = false;
+          }
+        }
+        return;
+      }
+      conflictRetries = 0;
       logger.warn({ err: err.message, botId: record.id }, "polling_error");
       await db
         .update(telegramBotsTable)
@@ -209,6 +244,12 @@ class TelegramBotManager {
     });
 
     this.wireHandlers(record.userId, record.id, bot);
+
+    // Wait longer than Telegram's poll timeout (we use 10s) so any stale
+    // long-poll from a previous process expires before we start the new one.
+    await sleep(12_000);
+    await bot.startPolling();
+
     return bot;
   }
 
@@ -716,6 +757,15 @@ class TelegramBotManager {
       }
     });
 
+    // Voice note handler — must be registered before the text router so
+    // it fires on messages that have no text but DO have a voice attachment.
+    bot.on("message", async (msg) => {
+      if (!msg.voice && !msg.audio) return;
+      await this.handleVoiceNote(ownerUserId, bot, msg).catch((err) => {
+        logger.warn({ err }, "voice note failed");
+      });
+    });
+
     // Free-text message router
     bot.on("message", async (msg) => {
       const text = msg.text?.trim();
@@ -833,6 +883,79 @@ class TelegramBotManager {
   }
   private clearState(chatId: number | string): void {
     this.state.delete(String(chatId));
+  }
+
+  /**
+   * Handle an incoming voice or audio message.
+   * 1. Downloads the OGG/audio file from Telegram.
+   * 2. Transcribes it with Whisper.
+   * 3. Confirms with the user and dispatches via handleFreeText.
+   */
+  private async handleVoiceNote(
+    userId: string,
+    bot: TelegramBot,
+    msg: TelegramBot.Message,
+  ): Promise<void> {
+    const chatId = msg.chat.id;
+    const fileId = msg.voice?.file_id ?? msg.audio?.file_id;
+    if (!fileId) return;
+
+    const duration = msg.voice?.duration ?? msg.audio?.duration ?? 0;
+    if (duration > 120) {
+      await bot.sendMessage(
+        chatId,
+        "🎙 Voice notes over 2 minutes aren't supported yet — please keep it short!",
+      );
+      return;
+    }
+
+    const thinking = await bot.sendMessage(chatId, "🎙 Transcribing your voice note…");
+
+    try {
+      // Download the file bytes from Telegram servers
+      const fileLink = await bot.getFileLink(fileId);
+      const audioRes = await fetch(fileLink, { signal: AbortSignal.timeout(30_000) });
+      if (!audioRes.ok) throw new Error(`Telegram file download ${audioRes.status}`);
+      const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+
+      // Detect format — Telegram voice = OGG Opus, audio = varies
+      const isOgg =
+        audioBuffer[0] === 0x4f &&
+        audioBuffer[1] === 0x67 &&
+        audioBuffer[2] === 0x67 &&
+        audioBuffer[3] === 0x53;
+
+      const transcript = await speechToText(
+        audioBuffer,
+        isOgg ? "webm" : "mp3", // OGG Opus is close enough; Whisper handles it
+      );
+
+      if (!transcript.trim()) {
+        await bot.editMessageText(
+          "🎙 I couldn't make out any speech — try again in a quieter spot!",
+          { chat_id: chatId, message_id: thinking.message_id },
+        );
+        return;
+      }
+
+      // Show what was transcribed so the user can verify
+      await bot.editMessageText(
+        `🎙 _"${escapeMd(transcript.trim())}"_\n\nProcessing…`,
+        { chat_id: chatId, message_id: thinking.message_id, parse_mode: "Markdown" },
+      );
+
+      // Route via the normal free-text pipeline
+      await this.handleFreeText(userId, bot, chatId, transcript.trim());
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: errMsg, chatId }, "voice note transcription failed");
+      await bot
+        .editMessageText(
+          `❌ Voice transcription failed: ${escapeMd(errMsg.slice(0, 180))}\n\nTry typing your message instead.`,
+          { chat_id: chatId, message_id: thinking.message_id },
+        )
+        .catch(() => {});
+    }
   }
 
   /**
@@ -1043,55 +1166,86 @@ Rules:
     chatId: number,
     prompt: string,
   ): Promise<void> {
-    const baseUrl = process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"];
-    const apiKey = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
-    if (!baseUrl || !apiKey) {
-      await bot.sendMessage(
-        chatId,
-        "🎨 Image generation needs an OpenAI key. Ask the operator to set it up.",
-      );
-      return;
-    }
     const placeholder = await bot.sendMessage(
       chatId,
       `🎨 Painting _${escapeMd(prompt)}_…`,
       { parse_mode: "Markdown" },
     );
-    try {
-      const r = await fetch(`${baseUrl.replace(/\/$/, "")}/images/generations`, {
+
+    /** Attempt image generation from a given endpoint + key + model. */
+    const tryGenerate = async (
+      base: string,
+      key: string,
+      model: string,
+    ): Promise<Buffer> => {
+      const r = await fetch(`${base.replace(/\/$/, "")}/images/generations`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${key}`,
         },
-        body: JSON.stringify({
-          model: "gpt-image-1",
-          prompt,
-          size: "1024x1024",
-          n: 1,
-        }),
+        body: JSON.stringify({ model, prompt, size: "1024x1024", n: 1 }),
+        signal: AbortSignal.timeout(60_000),
       });
       if (!r.ok) {
-        throw new Error(`image api ${r.status}: ${await r.text()}`);
+        const body = await r.text().catch(() => "");
+        throw new Error(`image api ${r.status}: ${body.slice(0, 200)}`);
       }
       const data = (await r.json()) as {
         data?: Array<{ b64_json?: string; url?: string }>;
       };
       const item = data.data?.[0];
-      if (!item) throw new Error("no image returned");
+      if (!item) throw new Error("no image in response");
+      if (item.b64_json) return Buffer.from(item.b64_json, "base64");
+      if (item.url) {
+        const ir = await fetch(item.url, { signal: AbortSignal.timeout(30_000) });
+        return Buffer.from(await ir.arrayBuffer());
+      }
+      throw new Error("no image bytes in response");
+    };
+
+    try {
       let buffer: Buffer | null = null;
-      if (item.b64_json) {
-        buffer = Buffer.from(item.b64_json, "base64");
-      } else if (item.url) {
-        const ir = await fetch(item.url);
-        buffer = Buffer.from(await ir.arrayBuffer());
+
+      // 1. Try primary OpenAI integration
+      const primaryBase = process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"];
+      const primaryKey = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+      if (primaryBase && primaryKey) {
+        try {
+          buffer = await tryGenerate(primaryBase, primaryKey, "gpt-image-1");
+        } catch (primaryErr) {
+          logger.warn(
+            { err: String(primaryErr) },
+            "runImage primary failed; trying fallback",
+          );
+        }
       }
-      if (!buffer) throw new Error("no image bytes");
-      try {
-        await bot.deleteMessage(chatId, placeholder.message_id);
-      } catch {
-        /* noop */
+
+      // 2. Fall back to aimodelapi.onrender.com's image-gen model
+      if (!buffer) {
+        const fallbackBase = process.env["FALLBACK_AI_BASE_URL"];
+        const fallbackKey = process.env["FALLBACK_AI_API_KEY"];
+        if (!fallbackBase || !fallbackKey) {
+          throw new Error(
+            "Primary image API failed and no fallback is configured.",
+          );
+        }
+        await bot
+          .editMessageText(
+            `🎨 Painting _${escapeMd(prompt)}_… (using fallback AI)`,
+            {
+              chat_id: chatId,
+              message_id: placeholder.message_id,
+              parse_mode: "Markdown",
+            },
+          )
+          .catch(() => {});
+        buffer = await tryGenerate(fallbackBase, fallbackKey, "image-gen");
       }
+
+      if (!buffer) throw new Error("no image produced");
+
+      await bot.deleteMessage(chatId, placeholder.message_id).catch(() => {});
       await bot.sendPhoto(
         chatId,
         buffer,
@@ -1099,16 +1253,14 @@ Rules:
         { filename: "image.png", contentType: "image/png" },
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: msg }, "runImage failed");
-      try {
-        await bot.editMessageText(
-          `❌ Image generation failed: ${escapeMd(msg.slice(0, 200))}`,
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: errMsg }, "runImage failed");
+      await bot
+        .editMessageText(
+          `❌ Image generation failed: ${escapeMd(errMsg.slice(0, 200))}`,
           { chat_id: chatId, message_id: placeholder.message_id },
-        );
-      } catch {
-        /* noop */
-      }
+        )
+        .catch(() => {});
     }
   }
 

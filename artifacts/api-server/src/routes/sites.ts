@@ -63,7 +63,7 @@ const setDomainSchema = z.object({
     .refine((s) => DOMAIN_RE.test(s), { message: "invalid_domain" }),
 });
 
-function siteToDto(site: Site) {
+export function siteToDto(site: Site) {
   const baseUrl = publicBaseUrl();
   // The internal preview URL is still served by the api-server while the
   // build is in flight (so the mobile app can render partial HTML in real

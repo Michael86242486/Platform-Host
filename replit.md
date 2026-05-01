@@ -229,3 +229,33 @@ links never 404.
   bot immediately replies with the live preview URL so users can watch the
   HTML stream in their browser, then edits a single progress message as
   files are written, and finally posts the "live!" message with the URL.
+- **Voice notes**: Sending a voice message (OGG Opus from Telegram) downloads
+  the file, transcribes it via Whisper, shows the transcript, then routes it
+  through `handleFreeText` — same as a typed message.
+- **409 Conflict handling**: Polling uses `timeout: 10` so old connections
+  expire faster on restart. Self-healing: after 3 consecutive 409s the bot
+  stops polling, waits 12 s, and restarts. The startup delay is 12 s to
+  outlast any stale connection from a previous process.
+- **Image fallback**: `/image` tries the primary OpenAI endpoint first, falls
+  back to `image-gen` on `aimodelapi.onrender.com` when the primary fails.
+
+## AI fallback provider
+
+`lib/integrations-openai-ai-server/src/client.ts` exports a Proxy `openai`
+that transparently retries `chat.completions.create` calls against a fallback
+provider (`FALLBACK_AI_BASE_URL` + `FALLBACK_AI_API_KEY`) when the primary
+returns a `FREE_TIER_BUDGET_EXCEEDED` (403/429) quota error.
+
+- Best fallback model: `grok-3-mini` — 1.7 s TTFT, streaming, `json_object` mode.
+- Primary model params adapted: `max_completion_tokens` → `max_tokens`.
+- Set `FALLBACK_AI_BASE_URL=https://aimodelapi.onrender.com/v1` (already set).
+
+## Voice route (mobile app)
+
+- `POST /api/voice/transcribe` — auto-detects audio format from magic bytes,
+  converts exotic formats (mp4, ogg) via ffmpeg, returns `{ text, detectedFormat }`.
+  Returns structured error JSON (`{ error, message }`) for quota/format issues.
+- `POST /api/voice/build` — transcribes audio + creates a site + enqueues build
+  in one request. Returns `{ text, site }`.
+- Mobile `Composer` component: recording timer (MM:SS shown in red under the
+  mic icon), proper MediaRecorder cleanup on unmount, improved error messages.
