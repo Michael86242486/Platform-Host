@@ -133,6 +133,57 @@ router.get("/auth/me", async (req, res) => {
 });
 
 /**
+ * PATCH /api/auth/me — update profile fields (firstName, lastName).
+ */
+router.patch("/auth/me", async (req, res) => {
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!token) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  const [session] = await db
+    .select()
+    .from(sessionsTable)
+    .where(eq(sessionsTable.token, token))
+    .limit(1);
+  if (!session || session.expiresAt < new Date()) {
+    res.status(401).json({ error: "expired" });
+    return;
+  }
+
+  const { firstName, lastName } = req.body as {
+    firstName?: string;
+    lastName?: string;
+  };
+
+  const patch: Record<string, string | null> = {};
+  if (typeof firstName === "string") patch.firstName = firstName.trim() || null;
+  if (typeof lastName === "string") patch.lastName = lastName.trim() || null;
+
+  if (Object.keys(patch).length === 0) {
+    res.status(400).json({ error: "nothing_to_update" });
+    return;
+  }
+
+  const [updated] = await db
+    .update(usersTable)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(usersTable.id, session.userId))
+    .returning();
+
+  res.json({
+    user: {
+      id: updated.id,
+      email: updated.email,
+      firstName: updated.firstName,
+      lastName: updated.lastName,
+      imageUrl: updated.imageUrl,
+    },
+  });
+});
+
+/**
  * POST /api/auth/sign-out — invalidate the current token.
  */
 router.post("/auth/sign-out", async (req, res) => {

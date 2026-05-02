@@ -28,6 +28,7 @@ interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
   signInWithEmail: (email: string) => Promise<{ ok: true; isNew: boolean } | { ok: false; error: string }>;
+  updateUser: (fields: { firstName?: string; lastName?: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   signOut: () => Promise<void>;
   getToken: () => Promise<string | null>;
 }
@@ -154,6 +155,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const updateUser = useCallback(
+    async (
+      fields: { firstName?: string; lastName?: string },
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!token) return { ok: false, error: "not signed in" };
+      try {
+        const res = await fetch(`${API_URL}/api/auth/me`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(fields),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          return { ok: false, error: body.error ?? `request failed (${res.status})` };
+        }
+        const data = (await res.json()) as { user: AuthUser };
+        setUser(data.user);
+        await storeSet(USER_KEY, JSON.stringify(data.user));
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "network error" };
+      }
+    },
+    [token],
+  );
+
   const signOut = useCallback(async () => {
     if (token) {
       try {
@@ -180,10 +210,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       token,
       signInWithEmail,
+      updateUser,
       signOut,
       getToken,
     }),
-    [isLoaded, user, token, signInWithEmail, signOut, getToken],
+    [isLoaded, user, token, signInWithEmail, updateUser, signOut, getToken],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -51,7 +51,7 @@ const queryClient = new QueryClient({
 });
 
 function OnboardingGate() {
-  const { isSignedIn, isLoaded } = useAuth();
+  const { isSignedIn, isLoaded, updateUser } = useAuth();
   const [showOnboarding, setShowOnboarding] = useState(false);
 
   useEffect(() => {
@@ -61,13 +61,20 @@ function OnboardingGate() {
     });
   }, [isLoaded, isSignedIn]);
 
-  const handleDone = async () => {
+  const handleDone = async (name: string, _choice: string) => {
     setShowOnboarding(false);
     await setOnboardingDone();
+    if (name) {
+      const parts = name.trim().split(/\s+/);
+      await updateUser({
+        firstName: parts[0],
+        lastName: parts.length > 1 ? parts.slice(1).join(" ") : undefined,
+      });
+    }
   };
 
   return (
-    <OnboardingModal visible={showOnboarding} onDone={() => void handleDone()} />
+    <OnboardingModal visible={showOnboarding} onDone={(name, choice) => void handleDone(name, choice)} />
   );
 }
 
