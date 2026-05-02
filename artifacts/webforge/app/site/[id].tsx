@@ -35,6 +35,7 @@ import {
   useRegenerateSitePage,
   useRemoveSiteDomain,
   useRepublishSite,
+  useRestoreCheckpoint,
   useRetrySite,
   useSetSiteDomain,
   useVerifySiteDomain,
@@ -107,6 +108,7 @@ export default function SiteDetailScreen() {
 
   const retry = useRetrySite();
   const republish = useRepublishSite();
+  const restoreCheckpoint = useRestoreCheckpoint();
   const del = useDeleteSite();
   const editSite = useEditSite();
   const setDomain = useSetSiteDomain();
@@ -329,6 +331,17 @@ export default function SiteDetailScreen() {
               await removeDomain.mutateAsync({ id: site.id });
               await siteQuery.refetch();
             }}
+            onRestoreCheckpoint={async (checkpointId) => {
+              try {
+                await restoreCheckpoint.mutateAsync({ id: site.id, checkpointId });
+                await siteQuery.refetch();
+                void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Alert.alert("Restored", "Site files restored from checkpoint.");
+              } catch (e) {
+                Alert.alert("Restore failed", e instanceof Error ? e.message : "Unknown error");
+              }
+            }}
+            restoreCheckpointPending={restoreCheckpoint.isPending}
           />
         )}
 
@@ -484,6 +497,8 @@ function OverviewTab({
   onSetDomain,
   onVerifyDomain,
   onRemoveDomain,
+  onRestoreCheckpoint,
+  restoreCheckpointPending,
 }: {
   site: Site;
   width: number;
@@ -495,6 +510,7 @@ function OverviewTab({
   setDomainPending: boolean;
   removeDomainPending: boolean;
   verifyDomainPending: boolean;
+  restoreCheckpointPending: boolean;
   onShare: () => void;
   onCopy: () => void;
   onRetry: () => void;
@@ -503,6 +519,7 @@ function OverviewTab({
   onSetDomain: (domain: string) => Promise<void>;
   onVerifyDomain: () => Promise<void>;
   onRemoveDomain: () => Promise<void>;
+  onRestoreCheckpoint: (checkpointId: string) => Promise<void>;
 }) {
   const colors = useColors();
   return (
@@ -629,7 +646,12 @@ function OverviewTab({
       ) : null}
 
       {checkpoints.length > 0 ? (
-        <CheckpointsSection checkpoints={checkpoints} accent={accent} />
+        <CheckpointsSection
+          checkpoints={checkpoints}
+          accent={accent}
+          onRestore={onRestoreCheckpoint}
+          restorePending={restoreCheckpointPending}
+        />
       ) : null}
     </ScrollView>
   );
@@ -642,12 +664,27 @@ function OverviewTab({
 function CheckpointsSection({
   checkpoints,
   accent,
+  onRestore,
+  restorePending,
 }: {
   checkpoints: SiteCheckpointDto[];
   accent: string;
+  onRestore: (checkpointId: string) => Promise<void>;
+  restorePending: boolean;
 }) {
   const colors = useColors();
   const sorted = [...checkpoints].reverse();
+  const [restoringId, setRestoringId] = React.useState<string | null>(null);
+
+  const handleRestore = async (cpId: string) => {
+    setRestoringId(cpId);
+    try {
+      await onRestore(cpId);
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
   return (
     <Surface padded style={{ marginTop: 16, gap: 12 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -710,6 +747,40 @@ function CheckpointsSection({
             <MonoText style={{ color: colors.mutedForeground, fontSize: 11 }}>
               {cp.progress}%
             </MonoText>
+            {cp.hasFiles ? (
+              <Pressable
+                onPress={() => {
+                  Alert.alert(
+                    "Restore checkpoint",
+                    `Restore site files to "${cp.label}"? Current files will be replaced.`,
+                    [
+                      { text: "Cancel", style: "cancel" },
+                      {
+                        text: "Restore",
+                        style: "destructive",
+                        onPress: () => void handleRestore(cp.id),
+                      },
+                    ]
+                  );
+                }}
+                disabled={restorePending}
+                style={({ pressed }) => ({
+                  opacity: pressed || restorePending ? 0.5 : 1,
+                  paddingHorizontal: 8,
+                  paddingVertical: 4,
+                  borderRadius: 6,
+                  borderWidth: 1,
+                  borderColor: restoringId === cp.id ? accent : colors.border,
+                  backgroundColor: restoringId === cp.id ? `${accent}1A` : "transparent",
+                })}
+              >
+                {restoringId === cp.id ? (
+                  <ActivityIndicator size="small" color={accent} />
+                ) : (
+                  <Feather name="rotate-ccw" size={13} color={i === 0 ? accent : colors.mutedForeground} />
+                )}
+              </Pressable>
+            ) : null}
           </View>
         ))}
       </View>

@@ -533,6 +533,69 @@ router.post("/sites/:id/retry", requireAuth, async (req, res) => {
 });
 
 /**
+ * POST /sites/:id/checkpoints/:checkpointId/restore
+ *
+ * Restore site files from a previously saved checkpoint snapshot.
+ * Creates a new "restored" checkpoint so the action is reversible.
+ */
+router.post("/sites/:id/checkpoints/:checkpointId/restore", requireAuth, async (req, res) => {
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(eq(sitesTable.id, String(req.params.id)), eq(sitesTable.userId, req.user!.id)),
+    )
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  const checkpoints = (site.checkpoints ?? []) as Array<{
+    id: string; label: string; createdAt: string; progress: number; files?: SiteFiles;
+  }>;
+  const cp = checkpoints.find((c) => c.id === req.params.checkpointId);
+  if (!cp) {
+    res.status(404).json({ error: "checkpoint_not_found" });
+    return;
+  }
+  if (!cp.files || Object.keys(cp.files).length === 0) {
+    res.status(409).json({ error: "no_files", message: "This checkpoint has no saved files." });
+    return;
+  }
+
+  const restoredLabel = `Restored from: ${cp.label} (${new Date(cp.createdAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })})`;
+  const newCp = {
+    id: crypto.randomUUID(),
+    label: restoredLabel,
+    createdAt: new Date().toISOString(),
+    files: cp.files,
+    progress: 100,
+  };
+  const updatedCheckpoints = [...checkpoints, newCp].slice(-10);
+
+  await db
+    .update(sitesTable)
+    .set({
+      files: cp.files,
+      checkpoints: updatedCheckpoints,
+      status: "ready",
+      progress: 100,
+      message: restoredLabel,
+      error: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(sitesTable.id, site.id));
+  siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
+
+  const [updated] = await db
+    .select()
+    .from(sitesTable)
+    .where(eq(sitesTable.id, site.id))
+    .limit(1);
+  res.json(siteToDto(updated));
+});
+
+/**
  * Re-upload an already-built site to Puter. Used to recover sites whose first
  * Puter upload failed (e.g. legacy `wf-` rows from before the API was fixed,
  * or transient network errors). Does NOT regenerate any HTML — it just takes

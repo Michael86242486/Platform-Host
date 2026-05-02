@@ -33,6 +33,7 @@ export type SiteEvent =
       userId: string;
       siteName: string;
       publicUrl: string | null;
+      isEdit?: boolean;
     };
 
 class SiteEventBus extends EventEmitter {

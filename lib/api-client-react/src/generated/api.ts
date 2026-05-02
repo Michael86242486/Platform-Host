@@ -1655,3 +1655,84 @@ export const useStopBot = <
 > => {
   return useMutation(getStopBotMutationOptions(options));
 };
+
+// ---------------------------------------------------------------------------
+// Checkpoint restore
+// ---------------------------------------------------------------------------
+
+export const getRestoreCheckpointUrl = (id: string, checkpointId: string) => {
+  return `/api/sites/${id}/checkpoints/${checkpointId}/restore`;
+};
+
+export const restoreCheckpoint = async (
+  id: string,
+  checkpointId: string,
+  options?: RequestInit,
+): Promise<Site> => {
+  return customFetch<Site>(getRestoreCheckpointUrl(id, checkpointId), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getRestoreCheckpointMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreCheckpoint>>,
+    TError,
+    { id: string; checkpointId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof restoreCheckpoint>>,
+  TError,
+  { id: string; checkpointId: string },
+  TContext
+> => {
+  const mutationKey = ["restoreCheckpoint"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof restoreCheckpoint>>,
+    { id: string; checkpointId: string }
+  > = (props) => {
+    const { id, checkpointId } = props ?? {};
+    return restoreCheckpoint(id, checkpointId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RestoreCheckpointMutationResult = NonNullable<
+  Awaited<ReturnType<typeof restoreCheckpoint>>
+>;
+export type RestoreCheckpointMutationError = ErrorType<unknown>;
+
+export const useRestoreCheckpoint = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreCheckpoint>>,
+    TError,
+    { id: string; checkpointId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof restoreCheckpoint>>,
+  TError,
+  { id: string; checkpointId: string },
+  TContext
+> => {
+  return useMutation(getRestoreCheckpointMutationOptions(options));
+};

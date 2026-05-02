@@ -130,7 +130,7 @@ class TelegramBotManager {
 
     siteEventBus.on("site:*", (ev: SiteEvent) => {
       if (ev.type !== "site_ready") return;
-      this.notifySiteReady(ev.userId, ev.siteName, ev.publicUrl).catch((err) => {
+      this.notifySiteReady(ev.userId, ev.siteName, ev.publicUrl, ev.isEdit).catch((err) => {
         logger.warn({ err, siteId: ev.siteId }, "notifySiteReady failed");
       });
     });
@@ -140,6 +140,7 @@ class TelegramBotManager {
     userId: string,
     siteName: string,
     publicUrl: string | null,
+    isEdit?: boolean,
   ): Promise<void> {
     const recipients: Array<{ bot: TelegramBot; chatId: number }> = [];
 
@@ -155,9 +156,9 @@ class TelegramBotManager {
     if (recipients.length === 0) return;
 
     const urlLine = publicUrl ? `\n🌐 ${publicUrl}` : "";
-    const text =
-      `✅ *${escapeMd(siteName)}* is ready!${urlLine}\n\n` +
-      `Tap /sites to manage your projects.`;
+    const text = isEdit
+      ? `✏️ *${escapeMd(siteName)}* was updated!${urlLine}\n\nYour changes are live. Tap /sites to manage your projects.`
+      : `✅ *${escapeMd(siteName)}* is ready!${urlLine}\n\nTap /sites to manage your projects.`;
 
     for (const { bot, chatId } of recipients) {
       await bot

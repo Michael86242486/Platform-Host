@@ -1,29 +1,31 @@
 /**
- * WebForge Agent Skills — the agent's accumulated experience and domain
- * knowledge. This gets injected into every build prompt so the AI
- * "knows" what great looks like before it starts building.
+ * WebForge Agent Skills — the agent's accumulated experience and creative intelligence.
  *
- * Think of this file as the agent's training manual. Add to it over time
- * to continuously improve output quality without touching any other code.
+ * The agent should feel FREE to build anything: artistic portfolios, Three.js experiences,
+ * brutalist grids, terminal UIs, magazine layouts, interactive music players, game landing
+ * pages, minimalist one-pagers, immersive scrollytelling — whatever serves the user best.
+ *
+ * These skills are guidelines, not templates. The agent reads the brief, picks the right
+ * approach, and builds something that genuinely impresses.
  */
 
 import type { SitePlan } from "./db";
 import type { ResearchBrief } from "./llm-generator";
 
 // ---------------------------------------------------------------------------
-// Core design principles
+// Core design principles (guidelines, not rules)
 // ---------------------------------------------------------------------------
 
 export const DESIGN_PRINCIPLES = `
-DESIGN PRINCIPLES (always apply):
-• Every page needs visual hierarchy: one dominant element, 2-3 supporting, rest are accents.
-• Negative space is content. Dense walls of text = bad design.
-• Color contrast: text on dark bg must be ≥4.5:1. Use rgba(255,255,255,0.85) not rgba(255,255,255,0.4).
-• Type scale: use clamp() for fluid sizing. Never fixed px for font-size on headings.
-• Spacing: use a 8px base grid. 8, 16, 24, 32, 48, 64, 96, 128px.
-• Every interactive element must have :hover, :focus-visible, and :active states.
-• Images: always picsum.photos with a UNIQUE seed per image + descriptive alt text.
-• Motion: entrance animations ≤600ms. Hover transitions ≤250ms.
+DESIGN PRINCIPLES:
+• Visual hierarchy: one dominant element per screen, supporting elements, accents.
+• Negative space is a design element — dense walls of text are bad design.
+• Color contrast: readable text on all backgrounds (4.5:1 minimum WCAG).
+• Type scale: use clamp() for fluid fluid sizing, never fixed px for headings.
+• Every interactive element deserves :hover, :focus-visible, :active states.
+• Motion: entrance ≤600ms, hover ≤250ms. Always respect prefers-reduced-motion.
+• Images: picsum.photos with unique seed per image + descriptive alt text.
+• When in doubt: go bolder. Timid design rarely impresses.
 `;
 
 // ---------------------------------------------------------------------------
@@ -31,15 +33,14 @@ DESIGN PRINCIPLES (always apply):
 // ---------------------------------------------------------------------------
 
 export const SEO_SKILLS = `
-SEO REQUIREMENTS (every page, no exceptions):
+SEO (every page):
 • <title>: 50-60 chars, keyword-first. Format: "Keyword — Brand Name"
-• <meta name="description">: 140-160 chars. Benefit-led, no keyword stuffing.
-• <meta property="og:title">, og:description, og:image (picsum URL), og:type, og:url
-• <link rel="canonical"> pointing to the page's own URL
-• One <h1> per page. H1 → H2 → H3 hierarchy — never skip levels.
-• Inline JSON-LD: Organization schema on index.html, BreadcrumbList on inner pages.
-• All <img> have descriptive alt= attributes. Decorative images: alt="".
-• <meta name="robots" content="index, follow"> on all pages.
+• <meta name="description">: 140-160 chars, benefit-led.
+• og:title, og:description, og:image, og:type, og:url
+• <link rel="canonical"> on every page
+• One <h1> per page. H1→H2→H3 hierarchy never skipped.
+• JSON-LD: Organization on index.html, BreadcrumbList on inner pages.
+• All images: descriptive alt= (or alt="" for purely decorative).
 • <html lang="en">
 `;
 
@@ -48,33 +49,95 @@ SEO REQUIREMENTS (every page, no exceptions):
 // ---------------------------------------------------------------------------
 
 export const A11Y_SKILLS = `
-ACCESSIBILITY REQUIREMENTS (WCAG 2.1 AA):
-• <a href="#main-content">Skip to main content</a> as first element in <body>.
-• All images: non-empty alt text (or alt="" for decorative only).
-• All form inputs: <label for="id"> linked to <input id="id">. No placeholder-only labels.
-• All buttons: aria-label if they contain only an icon, or visible text.
-• All interactive elements reachable via Tab key. Visible :focus-visible ring.
-• Color: never communicate meaning by color alone (add icon/text too).
-• <nav> has aria-label="Main navigation". <main> has role="main" or is <main>.
-• <header>, <main>, <footer> as semantic landmarks.
-• Dialogs: <dialog> with role="dialog" aria-modal="true" aria-labelledby.
-• [x-cloak] { display: none !important; } MUST be in CSS for Alpine.js.
-• Animated elements: respect prefers-reduced-motion media query.
+ACCESSIBILITY (WCAG 2.1 AA):
+• <a href="#main-content">Skip to main content</a> as first body element.
+• All images: non-empty alt text (or alt="" decorative only).
+• Inputs: <label for="id"> linked. No placeholder-only labels.
+• Buttons: aria-label if icon-only. All interactive elements keyboard-reachable.
+• Color: never communicate meaning by color alone.
+• <nav aria-label="Main navigation">. Semantic <header>, <main>, <footer>.
+• [x-cloak] { display: none !important; } if using Alpine.js.
+• Animated elements: @media (prefers-reduced-motion: reduce).
 `;
 
 // ---------------------------------------------------------------------------
-// Performance knowledge
+// Expanded tech stack knowledge
 // ---------------------------------------------------------------------------
 
-export const PERFORMANCE_SKILLS = `
-PERFORMANCE REQUIREMENTS:
-• All <img> tags: loading="lazy" (except above-fold hero image which gets loading="eager").
-• CDN scripts in <head>: Chart.js, Lucide with no defer needed (they're fast).
-• Alpine.js: use defer attribute: <script defer src="...alpinejs..."></script>
-• Custom <script> at bottom of <body> or use defer.
-• assets/app.js: one JS file, keep dependencies minimal, use event delegation.
-• CSS: avoid @import inside stylesheet (use <link> tags instead).
-• Animate with transform/opacity only (GPU-composited). Avoid animating width/height/top/left.
+export const TECH_STACK_SKILLS = `
+AVAILABLE TECHNOLOGIES (pick what fits the project):
+
+ANIMATION & 3D:
+• GSAP 3 (CDN) — professional timeline animations, ScrollTrigger, SplitText
+• Three.js r160 (CDN) — 3D scenes, WebGL, particles, shaders
+• p5.js 1.9 (CDN) — generative art, creative coding, canvas art
+• Anime.js 3 (CDN) — lightweight DOM/SVG animation
+• Lottie (CDN) — JSON animation playback
+• CSS-only: @keyframes, clip-path, custom properties, scroll-driven animations (2024)
+
+DATA & INTERACTIVITY:
+• Chart.js 4 (CDN) — bar, line, pie, radar, scatter charts
+• D3.js 7 (CDN) — data-driven SVG visualizations, custom charts
+• Alpine.js 3 (CDN) — lightweight reactivity, x-data, x-show, x-for
+• React 18 (CDN + Babel CDN) — component-based UI in browser without build step
+• Vue 3 (CDN) — createApp, ref, reactive, v-for, v-if — no build step needed
+• Htmx (CDN) — HTML-first interactivity, hx-get, hx-swap
+
+AUDIO & CREATIVE:
+• Tone.js (CDN) — Web Audio API, synthesizers, samplers
+• Howler.js (CDN) — audio playback with spatial audio
+• Web Audio API (native) — no CDN needed, available in all browsers
+
+ICONS & UI:
+• Lucide icons (CDN) — clean SVG icon system
+• Font Awesome 6 (CDN) — extensive icon library  
+• Phosphor Icons (CDN) — flexible icon weights
+• Hero Icons — inline SVG, no CDN needed
+• Emoji — valid, zero-dependency icon choice for playful sites
+
+FONTS (Google Fonts CDN):
+• Any Google Font — Inter, Space Grotesk, DM Sans, Playfair Display, JetBrains Mono, Syne, Cabinet Grotesk, etc.
+• Variable fonts preferred for performance
+
+CHOOSE based on the project's mood and needs. Don't add libraries you won't use.
+`;
+
+// ---------------------------------------------------------------------------
+// Creative modes
+// ---------------------------------------------------------------------------
+
+export const CREATIVE_MODES = `
+CREATIVE APPROACHES — read the brief and choose:
+
+STANDARD (business, SaaS, service sites):
+  Sticky nav → hero → sections → footer. Polished, professional, converts well.
+
+MINIMAL (portfolio, personal, editorial):
+  Lots of whitespace. Typography-led. Maybe no nav at all. Let content breathe.
+
+IMMERSIVE (games, entertainment, music, events):
+  Full-viewport sections. Parallax. Sound. Video. GSAP scroll animations.
+
+EDITORIAL (blog, magazine, publication, journalism):
+  Magazine grid. Drop caps. Pull quotes. Reading progress indicator. Dark/light toggle.
+
+ARTISTIC (art portfolio, creative studio, experimental):
+  Break the grid. p5.js or Three.js canvas. Unexpected layouts. Be unconventional.
+
+TERMINAL (developer tool, CLI, hacker aesthetic):
+  Monospace fonts. Green-on-black or phosphor colors. Typewriter effects. Code blocks.
+
+BRUTALIST (fashion, bold agency, counter-culture):
+  Oversized type. Bold colors. No padding. Raw grid. Borders as design elements.
+
+3D / IMMERSIVE (product showcase, metaverse, tech):
+  Three.js hero scene. WebGL shaders. 3D product viewer. Particle effects.
+
+GAME LANDING (game release, app launch, event):
+  Cinematic header. Trailer video embed. Countdown timer. Discord/social widgets.
+
+SCROLLYTELLING (story, narrative, journalism, case study):
+  Long-form scroll. Sections that animate in on scroll. Narrative pacing.
 `;
 
 // ---------------------------------------------------------------------------
@@ -83,44 +146,45 @@ PERFORMANCE REQUIREMENTS:
 
 export const CODE_PATTERNS = `
 CODE PATTERNS THAT WORK:
-• Nav hamburger: data-open attribute on <nav>, CSS [data-open] shows menu. JS toggles attribute.
-• Smooth scroll: scroll-behavior:smooth on :root + JS with scrollIntoView({behavior:'smooth',block:'start'}).
-• IntersectionObserver: threshold:0.15, rootMargin:'0px 0px -60px 0px'. Add class 'visible'.
-• Count-up: requestAnimationFrame loop, easeOutQuart easing, trigger on intersect.
-• Chart.js: always set responsive:true, maintainAspectRatio:false, and wrap canvas in a div with fixed height.
-• Alpine.js: x-cloak on hidden elements, x-data on container, x-show with transitions.
-• Tab pattern: x-data="{tab:'home'}" with x-show="tab==='home'" x-transition on panels.
-• Modal: <dialog id="myModal"> + btn.addEventListener('click', () => modal.showModal()).
-• Form: validate on 'submit' event. Show inline errors. Store success to localStorage.
-• Filter: data-category attribute on cards. JS hides/shows based on filter value.
-• Sort: map → sort → append pattern on a container's children.
-• LocalStorage: always try/catch (private browsing throws).
+• Nav hamburger: data-open attribute on <nav>, CSS [data-open] shows menu.
+• Smooth scroll: scroll-behavior:smooth on :root.
+• IntersectionObserver: threshold:0.15, rootMargin:'-60px'. Add class 'visible'.
+• Count-up: requestAnimationFrame loop, easeOutQuart, trigger on intersect.
+• Chart.js: responsive:true, maintainAspectRatio:false, fixed-height wrapper div.
+• Alpine.js: x-cloak on hidden elements, x-data on container.
+• Tab: x-data="{tab:'home'}" x-show="tab==='home'" x-transition on panels.
+• Modal: <dialog id="m"> + btn.addEventListener('click', () => m.showModal()).
+• Form: validate on 'submit'. Inline errors. localStorage save.
+• Filter: data-category on cards, JS toggles display.
+• GSAP ScrollTrigger: gsap.from(el, {y:60,opacity:0,scrollTrigger:{trigger:el,start:'top 85%'}})
+• Three.js minimal: renderer, scene, camera, animate loop, resize handler.
+• p5.js: new p5(sketch, containerEl) for embedded canvas (not fullscreen).
+• Vue 3 CDN: const {createApp,ref,computed} = Vue; createApp({setup(){...}}).mount('#app')
+• React CDN: const {useState,useEffect} = React; — works with Babel CDN in <script type="text/babel">
 `;
 
 // ---------------------------------------------------------------------------
-// Lessons learned — what to AVOID
+// Lessons learned — absolute hard rules
 // ---------------------------------------------------------------------------
 
 export const LESSONS_LEARNED = `
-LESSONS LEARNED — NEVER DO THESE:
-✗ Lorem ipsum, placeholder text, [COMPANY NAME], [YOUR NAME], TBD, Coming Soon stubs.
-✗ Generic copy: "We are a leading company offering solutions." Write specific, benefit-led copy.
-✗ Empty sections: every section must have real content, not just a heading.
-✗ index.html under 400 lines — it will fail QA and be rejected.
-✗ assets/styles.css under 400 lines — use ALL the component classes the JS depends on.
-✗ Missing :root CSS variables — they make theming consistent and are required.
-✗ Root-relative paths: "/assets/styles.css" — ALWAYS use relative: "assets/styles.css".
-✗ Inline CSS on every element — use CSS classes from the stylesheet.
-✗ Missing nav on inner pages — every page shares the same sticky nav.
-✗ Fixed pixel widths > 600px in mobile CSS — use max-width or %.
-✗ Charts without canvas elements — Chart.js NEEDS a <canvas id="myChart">.
-✗ Alpine.js without x-cloak CSS rule — content flashes on load.
-✗ Buttons with no accessible text — screen readers will announce "button" with no context.
-✗ Images with no alt= attribute — accessibility failure.
-✗ JSON-LD with invalid schema — always use "@context":"https://schema.org".
-✗ console.log in production JS — remove all debug logs.
-✗ CSS transitions on width/height — use transform:scaleX/scaleY instead.
-✗ Missing WebForge credit in footer — it's legally required.
+NEVER DO THESE — they break the build or embarrass the user:
+✗ Lorem ipsum, placeholder text, [COMPANY NAME], [YOUR NAME], TBD stubs.
+✗ Generic copy: "We offer world-class solutions." Write specific, real, benefit-led copy.
+✗ Empty sections with only a heading and no body content.
+✗ Root-relative paths "/assets/styles.css" — always use relative "assets/styles.css".
+✗ Inline CSS on every element instead of stylesheet classes.
+✗ Missing doctype <!doctype html>.
+✗ Broken inter-page links (wrong filename, leading slash).
+✗ Charts without a canvas element — Chart.js needs <canvas>.
+✗ Alpine.js without [x-cloak] CSS rule — content flashes.
+✗ Icon-only buttons without aria-label.
+✗ Images without alt attribute.
+✗ JSON-LD without "@context":"https://schema.org".
+✗ console.log() left in production JS.
+✗ CSS transitions on width/height — use transform instead.
+✗ Missing WebForge credit in footer.
+✗ Adding CDN libraries you never actually use in the code.
 `;
 
 // ---------------------------------------------------------------------------
@@ -136,6 +200,8 @@ export interface AgentEnvironment {
   mood: string;
   techStack: string[];
   buildAttempt: number;
+  creativeMode?: string;
+  structureStyle?: string;
   previousIssues?: string[];
 }
 
@@ -148,6 +214,8 @@ export function buildEnvironmentContext(env: AgentEnvironment): string {
     `  Features: ${env.features.join(", ")}`,
     `  Visual mood: ${env.mood}`,
     `  Tech stack: ${env.techStack.join(", ")}`,
+    `  Creative mode: ${env.creativeMode ?? "standard"}`,
+    `  Structure: ${env.structureStyle ?? "multi-page"}`,
     `  Build attempt: ${env.buildAttempt}`,
   ];
   if (env.previousIssues && env.previousIssues.length > 0) {
@@ -164,76 +232,234 @@ export function buildEnvironmentContext(env: AgentEnvironment): string {
 export function getFullSkillsContext(
   plan: SitePlan,
   research: ResearchBrief,
-  env?: Partial<AgentEnvironment>,
+  _env?: Partial<AgentEnvironment>,
 ): string {
-  const usesCharts = research.techStack.some((s) => s.includes("Chart"));
-  const usesAlpine = research.techStack.some((s) => s.includes("Alpine"));
-
   const sections: string[] = [
     DESIGN_PRINCIPLES,
     SEO_SKILLS,
     A11Y_SKILLS,
-    PERFORMANCE_SKILLS,
+    TECH_STACK_SKILLS,
+    CREATIVE_MODES,
     CODE_PATTERNS,
     LESSONS_LEARNED,
   ];
 
-  if (usesCharts) {
-    sections.push(`
-CHART.JS EXPERIENCE:
-• Always: <canvas id="uniqueId" style="max-height:300px"></canvas> inside a div.
-• Always: { responsive: true, maintainAspectRatio: false } in options.
-• Call Chart.js AFTER the DOM is ready (DOMContentLoaded or end of body).
-• Multiple charts: each needs its own canvas ID.
-• Dark mode: use rgba(255,255,255,0.1) for gridlines, rgba(255,255,255,0.7) for labels.
-• Real data: generate 6-12 realistic data points. Name months/labels specifically.
-`);
-  }
-
-  if (usesAlpine) {
-    sections.push(`
-ALPINE.JS EXPERIENCE:
-• [x-cloak] { display: none !important; } MUST be in CSS.
-• Tab pattern: x-data="{active:'tab1'}" on container, x-show="active==='tab1'" on panels.
-• Click handlers: x-on:click="active='tab2'" or shorthand @click.
-• Conditionals: x-if removes from DOM. x-show only hides (prefer x-show for animations).
-• Loops: x-for="item in items" :key="item.id" on <template>.
-• Two-way binding: x-model on inputs.
-• Lifecycle: x-init runs on mount.
-• Keep x-data objects on parent, reference in children with $data.
-`);
-  }
-
-  const typeSpecific = getTypeSpecificSkills(plan.type);
+  const typeSpecific = getTypeSpecificSkills(plan.type, research);
   if (typeSpecific) sections.push(typeSpecific);
 
   return sections.join("\n");
 }
 
-function getTypeSpecificSkills(type: string): string {
+function getTypeSpecificSkills(type: string, research: ResearchBrief): string {
+  const mode = research.creativeMode ?? "standard";
+  const base = getBaseTypeSkills(type);
+  const modeSkills = getModeSkills(mode);
+  return [base, modeSkills].filter(Boolean).join("\n");
+}
+
+function getBaseTypeSkills(type: string): string {
   switch (type) {
+    case "saas":
     case "website":
       return `
-WEBSITE EXPERIENCE:
-• Brochure sites need social proof (logos, testimonials, case studies) to build trust.
-• CTAs must be specific: "Start free trial" > "Get started" > "Learn more" > "Click here".
-• Pricing tables: show yearly/monthly toggle. Highlight the recommended plan.
-• FAQ reduces support burden — include real questions users would actually ask.
+SAAS / STARTUP EXPERIENCE:
+• Social proof is everything: logos, testimonials, case study snippets, press quotes.
+• CTAs must be specific: "Start free trial" > "Get started" > "Learn more".
+• Pricing tables: yearly/monthly toggle (Alpine.js). Highlight recommended plan.
+• FAQ: cover real objections users have before buying.
+• Show the dashboard/product — don't just describe it.
+`;
+    case "portfolio":
+      return `
+PORTFOLIO EXPERIENCE:
+• Let the WORK speak — large images, minimal UI chrome.
+• Case study format: problem → approach → solution → outcome.
+• Typography is the personality. Choose fonts that reflect the creator's aesthetic.
+• The "About" section should feel personal, not corporate.
+• Contact section: make it easy and human. No "send message" corporate forms.
+`;
+    case "restaurant":
+    case "food":
+      return `
+RESTAURANT / FOOD EXPERIENCE:
+• Food photography is everything — large, appetizing images dominate.
+• Menu must be scannable: categories, items, prices, dietary icons.
+• Reservations: link to OpenTable or build a simple date-picker form.
+• Hours, address, phone — above the fold, always visible.
+• Use warm color palettes. Food looks best with warm tones.
+`;
+    case "ecommerce":
+    case "shop":
+      return `
+ECOMMERCE EXPERIENCE:
+• Product grid: image, name, price, add-to-cart. Clean, scannable.
+• Product detail: multiple angles, description, reviews, trust badges.
+• Trust signals: secure checkout badge, return policy, reviews count.
+• Alpine.js cart: x-data cart state, add/remove/total — no backend needed for demo.
+• Show real products with plausible prices, not "Product Name - $XX.XX".
+`;
+    case "event":
+    case "conference":
+      return `
+EVENT EXPERIENCE:
+• Countdown timer to event date is mandatory.
+• Speaker grid: photo, name, title, company, talk title.
+• Schedule: day/track grid with session times.
+• Ticket tiers: early bird, standard, VIP with clear value differentiation.
+• Venue: embedded map or illustrated location card.
+`;
+    case "editorial":
+    case "blog":
+    case "publication":
+      return `
+EDITORIAL / BLOG EXPERIENCE:
+• Reading experience: optimal line length (60-75ch), generous line-height (1.7).
+• Article cards: image, category tag, title, excerpt, author, read time.
+• Dark/light toggle — readers prefer choice.
+• Progress bar on article pages (CSS or JS scroll tracker).
+• Typography hierarchy: pull quotes, drop caps, subheadings that aid scanning.
+`;
+    case "art":
+    case "creative":
+    case "experimental":
+      return `
+CREATIVE / ART EXPERIENCE:
+• Break conventional layout rules intentionally and skillfully.
+• Use the canvas (Three.js, p5.js, WebGL) as the hero if it fits.
+• Typography can be oversized, rotated, layered, or masked.
+• Color can be brutal, monochrome, or carefully curated.
+• Let the user feel something — surprise, delight, intrigue.
+• Navigation can be unconventional (floating, minimal, hidden until hover).
+`;
+    case "music":
+    case "audio":
+      return `
+MUSIC / AUDIO EXPERIENCE:
+• Audio visualizer: Web Audio API or p5.js frequency analysis.
+• Album art: full-bleed, high-impact visuals.
+• Track listing: play/pause controls, progress bar, track info.
+• Tone.js for in-browser audio playback demos.
+• Dark themes work best for music — the music is the light.
+`;
+    case "game":
+      return `
+GAME / INTERACTIVE EXPERIENCE:
+• Cinematic header: video background or Three.js particle scene.
+• Trailer section: embedded YouTube/iframe, autoplay muted, lazy load.
+• Feature breakdown: illustrated cards for game mechanics.
+• Community: Discord widget or link, player count stats.
+• Release countdown or launch CTA with Steam/App Store links.
 `;
     case "tool":
+    case "app":
       return `
-TOOL/APP EXPERIENCE:
-• Show the tool actually WORKING on the homepage — not just a screenshot.
-• Use Alpine.js to build a live interactive demo with sample data.
-• Onboarding: "How it works" section with 3-4 numbered steps is essential.
-• Show different user roles or views if applicable (free/pro, admin/user).
+TOOL / APP EXPERIENCE:
+• Show the tool WORKING — live interactive demo on the homepage (Alpine.js / Vue).
+• "How it works" with 3-4 numbered steps, specific and clear.
+• Show before/after or input/output to demonstrate value instantly.
+• User roles or use cases — show different people using it differently.
 `;
     case "bot":
       return `
 BOT EXPERIENCE:
-• Show example conversations in a chat-bubble UI on the homepage.
-• List the specific use cases / commands the bot handles.
-• Integration logos: show which platforms it connects to (Slack, Discord, etc).
+• Example conversation in a chat-bubble UI — show it working.
+• Commands/capabilities: specific list of what it does.
+• Integration logos: which platforms (Slack, Discord, Telegram, etc.).
+• Pricing: free tier, usage limits, paid plan features.
+`;
+    case "docs":
+    case "documentation":
+      return `
+DOCUMENTATION EXPERIENCE:
+• Sidebar navigation: collapsible sections, current page indicator.
+• Code blocks: syntax highlighted (Prism.js CDN or highlight.js CDN), copy button.
+• Breadcrumbs, next/prev navigation at bottom of each page.
+• Search bar (even if visual-only for static sites).
+• Clear version indicator if versioned product.
+`;
+    case "nonprofit":
+    case "charity":
+      return `
+NONPROFIT EXPERIENCE:
+• Lead with impact: numbers, stories, faces of people helped.
+• Donation CTA: prominent, frequent, emotionally framed.
+• Transparency: show where money goes (pie chart or illustrated breakdown).
+• Volunteer section: low-friction sign-up, show volunteer stories.
+• Mission statement: clear, specific, not generic.
+`;
+    default:
+      return `
+GENERAL EXPERIENCE:
+• Build what the user actually asked for, not a generic template.
+• Read the prompt carefully — the user's words contain the design direction.
+• If in doubt about what sections to include, ask "does this help the user achieve their goal?"
+`;
+  }
+}
+
+function getModeSkills(mode: string): string {
+  switch (mode) {
+    case "immersive":
+      return `
+IMMERSIVE MODE:
+• Full-viewport sections (100vh). Smooth scroll snapping.
+• GSAP ScrollTrigger for section entrance animations.
+• Parallax backgrounds on hero and section dividers.
+• Sound design consideration: provide play/mute toggle if using audio.
+`;
+    case "minimal":
+      return `
+MINIMAL MODE:
+• Typography IS the design. Choose one beautiful font family and use it masterfully.
+• Maximum 2 colors + white/black. Every pixel earns its place.
+• Generous whitespace — sections can be 120px+ padding.
+• No decorative elements that don't carry meaning.
+`;
+    case "3d":
+      return `
+3D MODE:
+• Three.js scene as hero: basic renderer, scene, camera, animate loop.
+• Keep polygon count manageable — use BoxGeometry, SphereGeometry, TorusGeometry.
+• OrbitControls for interactive rotation if appropriate.
+• Particle system: Points with BufferGeometry for starfields or data viz.
+• Resize handler: renderer.setSize + camera.aspect update.
+`;
+    case "artistic":
+      return `
+ARTISTIC MODE:
+• p5.js sketch embedded in the hero — generative art that responds to mouse/time.
+• SVG animations using CSS custom properties as animation drivers.
+• Clip-path: polygon() for unusual shapes and reveals.
+• Mix-blend-mode for creative color overlapping effects.
+• Cursor: custom cursor that reacts to hovering elements.
+`;
+    case "terminal":
+      return `
+TERMINAL MODE:
+• JetBrains Mono or similar monospace throughout.
+• Background: #0d1117 or true #000000. Text: #00ff41 or #d4d4d4.
+• Typewriter effect on key text elements (JS setInterval).
+• Fake terminal prompts for section headers: "$ cat about.txt"
+• ASCII art or box-drawing characters for decorative elements.
+• Scanline CSS overlay for CRT effect.
+`;
+    case "brutalist":
+      return `
+BRUTALIST MODE:
+• Oversized type. Font-size: clamp(4rem, 15vw, 14rem) for main headings.
+• Bold borders (4px+ solid), raw grid, no border-radius.
+• Limited palette: black, white, one bold accent (red, yellow, electric blue).
+• No drop shadows. No gradients. Flat and confrontational.
+• Asymmetric layouts: text over images, overlapping elements.
+`;
+    case "editorial":
+      return `
+EDITORIAL MODE:
+• Magazine grid: CSS grid with irregular column/row spans.
+• Drop cap on first paragraph: float:left, font-size:4.5em, line-height:0.85.
+• Pull quotes: large (2rem+), accented border-left, italic.
+• Reading progress bar: fixed top, width driven by scroll%.
+• Category tags: uppercase, letter-spacing:0.12em, small.
 `;
     default:
       return "";
@@ -241,7 +467,7 @@ BOT EXPERIENCE:
 }
 
 // ---------------------------------------------------------------------------
-// Build output validator
+// Build output validator — content-quality focused, not line-count focused
 // ---------------------------------------------------------------------------
 
 export interface QualityIssue {
@@ -256,7 +482,7 @@ export interface BuildQualityReport {
   score: number; // 0–100
   totalBytes: number;
   issues: QualityIssue[];
-  weakPages: string[]; // pages that need to be regenerated
+  weakPages: string[]; // pages that need regeneration
   summary: string;
 }
 
@@ -267,7 +493,7 @@ export function validateBuildOutput(
   const issues: QualityIssue[] = [];
   const weakPages: string[] = [];
 
-  // Check each page
+  // Check each page — content quality, not line count
   for (const page of plan.pages) {
     const filename =
       page.path === "index"
@@ -276,75 +502,91 @@ export function validateBuildOutput(
           ? page.path
           : `${page.path}.html`;
     const content = files[filename] ?? "";
-    const lines = content.split("\n").length;
-    const minLines = page.path === "index" ? 350 : 200;
+    const bytes = content.length;
 
-    if (!content || content.trim().length < 100) {
+    // Absolute minimum: must exist and have substance
+    const minBytes = page.path === "index" ? 6_000 : 3_000;
+
+    if (!content || bytes < 500) {
       issues.push({
         type: "missing_file",
         file: filename,
-        detail: `Page was not generated (${content.length} bytes)`,
+        detail: `Page was not generated (${bytes} bytes)`,
         severity: "critical",
       });
       weakPages.push(filename);
-    } else if (lines < minLines) {
+      continue;
+    }
+
+    if (bytes < minBytes) {
       issues.push({
         type: "stub_page",
         file: filename,
-        detail: `Only ${lines} lines — minimum ${minLines} required`,
+        detail: `Only ${(bytes / 1024).toFixed(1)} KB — this page needs more content`,
         severity: "critical",
       });
       weakPages.push(filename);
-    } else {
-      // Check for placeholder content
-      const hasLorem = /lorem ipsum/i.test(content);
-      const hasPlaceholder =
-        /\[COMPANY\]|\[NAME\]|\[PLACEHOLDER\]|\[YOUR/i.test(content) ||
-        /TBD\b|Coming Soon|Placeholder|TODO/i.test(content);
-      const hasMissingDoctype = !content.toLowerCase().startsWith("<!doctype");
-      const hasMissingH1 = !/<h1[\s>]/i.test(content);
+      continue;
+    }
 
-      if (hasLorem) {
-        issues.push({ type: "placeholder_content", file: filename, detail: "Lorem ipsum found", severity: "high" });
-        if (lines < minLines * 1.5) weakPages.push(filename);
-      }
-      if (hasPlaceholder) {
-        issues.push({ type: "placeholder_content", file: filename, detail: "Placeholder text [BRACKETS] found", severity: "high" });
-      }
-      if (hasMissingDoctype) {
-        issues.push({ type: "broken_pattern", file: filename, detail: "Missing <!doctype html>", severity: "critical" });
-        weakPages.push(filename);
-      }
-      if (hasMissingH1 && page.path === "index") {
-        issues.push({ type: "missing_meta", file: filename, detail: "No <h1> found on home page", severity: "high" });
-      }
+    // Content quality checks
+    const hasLorem = /lorem ipsum/i.test(content);
+    const hasPlaceholder = /\[COMPANY\]|\[NAME\]|\[PLACEHOLDER\]|\[YOUR/i.test(content)
+      || /\bTBD\b|Coming Soon\.|Placeholder Content|TODO:/i.test(content);
+    const hasMissingDoctype = !content.toLowerCase().startsWith("<!doctype");
+    const hasMissingH1 = !/<h1[\s>]/i.test(content);
+
+    if (hasLorem) {
+      issues.push({ type: "placeholder_content", file: filename, detail: "Lorem ipsum found — replace with real content", severity: "high" });
+      if (bytes < minBytes * 1.5) weakPages.push(filename);
+    }
+    if (hasPlaceholder) {
+      issues.push({ type: "placeholder_content", file: filename, detail: "Unfilled placeholder text [BRACKETS] found", severity: "high" });
+    }
+    if (hasMissingDoctype) {
+      issues.push({ type: "broken_pattern", file: filename, detail: "Missing <!doctype html>", severity: "critical" });
+      weakPages.push(filename);
+    }
+    if (hasMissingH1 && page.path === "index") {
+      issues.push({ type: "missing_meta", file: filename, detail: "No <h1> on home page", severity: "high" });
     }
   }
 
-  // Check CSS
+  // Check CSS — must exist and have substance
   const css = files["assets/styles.css"] ?? "";
-  const cssLines = css.split("\n").length;
-  if (cssLines < 150) {
-    issues.push({ type: "too_small", file: "assets/styles.css", detail: `Only ${cssLines} lines — minimum 400 required`, severity: "critical" });
+  if (css.length < 1_500) {
+    issues.push({
+      type: "too_small",
+      file: "assets/styles.css",
+      detail: `Only ${(css.length / 1024).toFixed(1)} KB — stylesheet is too thin`,
+      severity: "critical",
+    });
     weakPages.push("assets/styles.css");
-  } else if (cssLines < 300) {
-    issues.push({ type: "too_small", file: "assets/styles.css", detail: `Only ${cssLines} lines — should be 600+`, severity: "high" });
   }
 
-  // Check JS
+  // Check JS — must exist
   const js = files["assets/app.js"] ?? "";
-  const jsLines = js.split("\n").length;
-  if (jsLines < 50) {
-    issues.push({ type: "too_small", file: "assets/app.js", detail: `Only ${jsLines} lines — minimum 120 required`, severity: "critical" });
+  if (js.length < 300) {
+    issues.push({
+      type: "too_small",
+      file: "assets/app.js",
+      detail: `Only ${js.length} bytes — JS file is missing or stub`,
+      severity: "critical",
+    });
   }
 
-  // Total bytes
+  // Total size sanity check
   const totalBytes = Object.values(files).reduce((s, v) => s + v.length, 0);
-  if (totalBytes < 20_000) {
-    issues.push({ type: "too_small", file: "all files", detail: `Total ${(totalBytes / 1024).toFixed(1)} KB — minimum 20 KB. Site is too thin.`, severity: "critical" });
+  if (totalBytes < 15_000) {
+    issues.push({
+      type: "too_small",
+      file: "all files",
+      detail: `Total ${(totalBytes / 1024).toFixed(1)} KB — site is too thin`,
+      severity: "critical",
+    });
   }
 
-  // Score: start at 100, deduct per issue severity
+  // Score
   let deduction = 0;
   for (const issue of issues) {
     if (issue.severity === "critical") deduction += 25;
@@ -364,7 +606,7 @@ export function validateBuildOutput(
 }
 
 // ---------------------------------------------------------------------------
-// Self-inspection: read logs + environment state
+// Agent build log
 // ---------------------------------------------------------------------------
 
 export interface BuildLogEntry {

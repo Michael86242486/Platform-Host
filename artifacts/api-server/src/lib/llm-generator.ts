@@ -39,29 +39,37 @@ const CODEX_MODEL = "gpt-4o-mini";
 // PHASE 0 — Research / design inspiration
 // ---------------------------------------------------------------------------
 
-const RESEARCH_SYSTEM = `You are WebForge's creative director. Given a project brief and its analysis, produce a RICH DESIGN BRIEF that will guide the build engine to create a stunning, award-winning website.
+const RESEARCH_SYSTEM = `You are WebForge's creative director. Given a project brief, produce a RICH DESIGN BRIEF that makes this site genuinely remarkable — not another cookie-cutter template.
+
+Be bold. Be specific. Think about what would actually impress someone who sees this site.
+Consider: What makes this site category interesting? What visual metaphor fits the brand?
+What tech stack would elevate the experience? What layout would be unexpected but right?
 
 Return ONLY a JSON object — no prose, no markdown:
 {
-  "mood": string,            // 1 sentence vibe: "Electric and bold — think neon terminals meet Stripe's precision"
+  "mood": string,            // 1 vivid sentence: "Raw and kinetic — Figma meets a Berlin techno poster"
+  "creativeMode": string,    // ONE of: "standard" | "minimal" | "immersive" | "editorial" | "artistic" | "terminal" | "brutalist" | "3d" | "scrollytelling"
+  "structureStyle": string,  // ONE of: "multi-page" | "single-page-scroll" | "fullscreen-sections" | "magazine-grid" | "canvas-based"
   "palette": {
-    "background": "#hex",   // dark or light base
+    "background": "#hex",   // dark or light base — be decisive, don't default to black
     "surface": "#hex",      // card / elevated surface
-    "primary": "#hex",      // dominant brand accent
+    "primary": "#hex",      // dominant brand accent (make it memorable)
     "secondary": "#hex",    // complementary accent
     "text": "#hex",         // body text
     "muted": "#hex"         // subdued labels
   },
-  "typography": string,      // "Display: clamp(3.5rem,8vw,7rem) 800-weight gradient clip. Body: 1.125rem Inter."
-  "layout": string,          // "Full-bleed hero, card-grid sections, asymmetric image-text rows, sticky frosted glass nav"
-  "competitors": string[],   // 3-4 real sites with similar aesthetic: ["linear.app", "vercel.com", "stripe.com"]
-  "heroImagePrompt": string, // Vivid 1-sentence image generation prompt for the hero visual
-  "uniqueTwist": string,     // "What sets the visual apart: a live animated dashboard panel on the homepage"
-  "techStack": string[]      // CDN libs to use: ["Chart.js 4", "Alpine.js 3", "Lucide icons"] or subset
+  "typography": string,      // Specific font choices from Google Fonts + size scale. E.g. "Display: Syne 900 clamp(4rem,10vw,9rem). Body: DM Sans 400/500 1.1rem."
+  "layout": string,          // Specific layout description — be unusual if it fits. "Three-column editorial grid breaks into full-bleed hero sections"
+  "competitors": string[],   // 3-4 real reference sites for this aesthetic
+  "heroImagePrompt": string, // Vivid 1-sentence image prompt for the AI image generator
+  "uniqueTwist": string,     // The one thing that makes this site different: specific, implementable
+  "techStack": string[]      // CDN libs to actually use — only include what you'll USE. Examples: "GSAP 3 + ScrollTrigger", "Three.js r160", "Alpine.js 3", "Chart.js 4", "p5.js 1.9", "D3.js 7", "Vue 3 CDN", "React 18 CDN + Babel CDN", "Tone.js", "Lucide icons", etc.
 }`;
 
 export interface ResearchBrief {
   mood: string;
+  creativeMode?: string;
+  structureStyle?: string;
   palette: {
     background: string; surface: string; primary: string;
     secondary: string; text: string; muted: string;
@@ -97,8 +105,12 @@ export async function researchInspirationAI(
     const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty research");
     const parsed = JSON.parse(text) as Partial<ResearchBrief>;
+    const VALID_CREATIVE_MODES = ["standard","minimal","immersive","editorial","artistic","terminal","brutalist","3d","scrollytelling"];
+    const VALID_STRUCTURES = ["multi-page","single-page-scroll","fullscreen-sections","magazine-grid","canvas-based"];
     return {
       mood: parsed.mood ?? fallback.mood,
+      creativeMode: VALID_CREATIVE_MODES.includes(parsed.creativeMode ?? "") ? parsed.creativeMode : "standard",
+      structureStyle: VALID_STRUCTURES.includes(parsed.structureStyle ?? "") ? parsed.structureStyle : "multi-page",
       palette: { ...fallback.palette, ...(parsed.palette ?? {}) },
       typography: parsed.typography ?? fallback.typography,
       layout: parsed.layout ?? fallback.layout,
@@ -117,24 +129,28 @@ export async function researchInspirationAI(
 // PHASE 1 — Analysis
 // ---------------------------------------------------------------------------
 
-const ANALYSIS_SYSTEM = `You are WebForge, a senior product designer + engineer that ships beautiful, modern, fully-functional one-page-or-multi-page websites for indie founders.
+const ANALYSIS_SYSTEM = `You are WebForge, a creative director and senior engineer. You build ANY kind of website — from brutal portfolio sites to interactive music experiences, from three.js art to restaurant menus, from SaaS dashboards to scrollytelling stories.
 
-You will be given a short user prompt describing a project. Return a JSON object that classifies the project, names it, and outlines its structure. ONLY return JSON. No prose.
+Given a user prompt, classify the project and design its structure. ONLY return JSON. No prose.
 
 Schema:
 {
-  "type": "website" | "bot" | "backend" | "tool",
-  "intent": string,                 // a clean human title (max 60 chars)
+  "type": string,                   // Best-fit category — choose from: "saas" | "portfolio" | "restaurant" | "ecommerce" | "event" | "editorial" | "art" | "music" | "game" | "tool" | "bot" | "docs" | "nonprofit" | "personal" | "agency" | "directory" | "website"
+  "intent": string,                 // Clean human title (max 60 chars)
   "audience": string | null,        // e.g. "indie game developers", or null
-  "features": string[],             // 3-8 concrete features (e.g. "Online booking with date picker")
-  "pages": string[],                // page slugs: ["index","about","menu","contact"]
-  "styleHints": string[]            // ["minimal","bold","playful","developer","editorial","luxury", ...]
+  "features": string[],             // 3-8 SPECIFIC features this site will have
+  "pages": string[],                // page slugs — must include "index". Choose pages that make sense for this specific project.
+  "styleHints": string[]            // ["minimal","bold","editorial","brutalist","dark","playful","luxury","terminal","3d","artistic","retro", ...]
 }
 
-Guidelines:
-- Pages must always include "index". Other pages should match the project (e.g. menu for restaurants, gallery for photographers, services + pricing for SaaS).
-- Use 3-6 pages typically. Avoid generic "about/services/contact" stuffing if it doesn't fit.
-- Features should be specific and concrete, not generic ("Hero section" is too generic).`;
+IMPORTANT GUIDELINES:
+- Pages must always include "index". Other pages should be specific to this project type.
+- Single-page sites: just ["index"] is valid if the project suits it.
+- Creative sites can have unusual page names: ["index","manifesto","work","contact"]
+- Restaurants: ["index","menu","reservations","about"]
+- Portfolio: ["index","work","about","contact"] or just ["index"] for minimal
+- Features must be SPECIFIC: not "Hero section" but "Live audio waveform visualizer in hero"
+- Let the user's prompt guide the creative direction — read it carefully.`;
 
 export async function analyzeProjectAI(
   prompt: string,
@@ -157,7 +173,10 @@ export async function analyzeProjectAI(
 }
 
 function normalizeAnalysis(raw: Partial<SiteAnalysis>, prompt: string, name?: string): SiteAnalysis {
-  const validTypes = ["website", "bot", "backend", "tool"] as const;
+  const validTypes = [
+    "saas","portfolio","restaurant","ecommerce","event","editorial","art","music",
+    "game","tool","bot","docs","nonprofit","personal","agency","directory","website","backend",
+  ] as const;
   const type = (validTypes as readonly string[]).includes(raw.type as string)
     ? (raw.type as SiteAnalysis["type"]) : "website";
   const features = Array.isArray(raw.features) && raw.features.length > 0
@@ -216,81 +235,82 @@ export async function refinePlanAI(
 // PHASE 2 — Parallel build: shared assets first, then pages concurrently
 // ---------------------------------------------------------------------------
 
-const SHARED_ASSETS_SYSTEM = `You are WebForge's CSS/JS architect. Generate ONLY the two shared asset files for a multi-page website. No HTML.
+const SHARED_ASSETS_SYSTEM = `You are WebForge's CSS/JS architect. Generate the two shared asset files for this specific project — not a generic template.
+
+Read the design brief carefully. The CSS and JS you generate should be precisely tailored to:
+  • The site's creative mode (minimal, immersive, brutalist, terminal, 3D, editorial, artistic...)
+  • The color palette and typography chosen
+  • The components the HTML pages will actually use
+  • The tech stack (GSAP, Three.js, Alpine.js, Vue, Chart.js, p5.js, etc.)
 
 OUTPUT FORMAT (markers on their OWN line):
 ===COLOR: #RRGGBB===
 ===FILE: assets/styles.css===
-[minimum 700 lines of comprehensive CSS]
+[comprehensive CSS for THIS project — 400+ lines]
 ===FILE: assets/app.js===
-[minimum 250 lines of JavaScript]
+[focused JavaScript for THIS project — 150+ lines]
 ===END===
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CSS REQUIREMENTS (700+ lines mandatory)
+CSS — DESIGN WHAT THIS SITE NEEDS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-:root with 30+ CSS custom properties (colors, spacing, radii, shadows, transitions, typography scale).
-Reset + base styles.
-Typography scale: display (7vw clamped), h1-h4, body, mono, small — all with fluid clamp() sizes.
-Layout utilities: .container, .grid-2, .grid-3, .grid-4, .flex-center, .stack, .cluster.
-Component library (style EVERY one of these):
-  .btn, .btn-primary, .btn-secondary, .btn-ghost — with hover, active, focus-visible, disabled states.
-  .card, .card-glass (glassmorphism), .card-hover (3D tilt), .card-feature.
-  .nav, .nav-sticky, .nav-glass, .nav-link, .nav-cta, .mobile-menu, .hamburger.
-  .hero, .hero-content, .hero-badge, .hero-headline, .hero-sub, .hero-cta-group.
-  .section, .section-alt, .section-dark.
-  .badge, .tag, .chip.
-  .logo-cloud, .logo-item.
-  .feature-grid, .feature-card, .feature-icon.
-  .testimonial-grid, .testimonial-card, .testimonial-avatar, .testimonial-quote.
-  .pricing-grid, .pricing-card, .pricing-card--featured, .pricing-price, .pricing-features.
-  .stats-band, .stat-item, .stat-number, .stat-label.
-  .faq, .faq-item.
-  .form-group, .form-label, .form-input, .form-textarea, .form-error, .form-success.
-  .footer, .footer-grid, .footer-col, .footer-link, .footer-brand, .footer-divider.
-  .tag-filter, .filter-bar.
-  .modal, .modal-overlay, .modal-content, .modal-close.
-  .progress-bar, .progress-fill.
-  .alert, .alert-success, .alert-error, .alert-info.
-  .table, .table-header, .table-row, .table-cell.
-  .dashboard-grid, .stat-card, .chart-container.
-  .timeline, .timeline-item, .timeline-dot.
-  .gallery-grid, .gallery-item, .gallery-overlay.
-Animations: @keyframes fadeUp, slideIn, gradientShift, pulse, countUp, shimmer, float, glowPulse.
-Stagger: .stagger-children > * with nth-child delays.
-3D card tilt: .card-hover:hover with perspective(900px) rotateX/rotateY.
-Custom scrollbar: 6px, accent thumb.
-Scroll parallax: .hero-bg at 0.4x speed.
-Neon glow utilities: .glow-primary, .glow-accent, .glow-text.
-Glassmorphism: .glass — rgba(255,255,255,0.06) + backdrop-filter:blur(14px).
-Gradient text: .gradient-text — background-clip:text, text-fill-color:transparent.
-Mobile responsive: breakpoints at 768px and 480px. Every component adapts.
-Dark / light theme via [data-theme].
-Print styles.
+Always include:
+  :root with CSS custom properties (colors from the palette, spacing scale, font stacks)
+  Reset + base styles (box-sizing, margin 0, font-family, line-height)
+  Typography scale with clamp() for fluid sizing
+  Mobile responsive — breakpoints at 768px and 480px minimum
+  :focus-visible rings for all interactive elements
+  prefers-reduced-motion media query for animations
+
+Then build components specific to THIS creative brief:
+  For STANDARD/SAAS: nav (sticky, glass), hero, cards, buttons, testimonials, pricing, footer
+  For MINIMAL/PORTFOLIO: clean typography, lots of whitespace, grid for work, minimal nav
+  For EDITORIAL: magazine grid, drop caps, pull quotes, reading progress, article cards
+  For BRUTALIST: raw grid, oversized type, stark borders, limited palette
+  For TERMINAL: monospace throughout, scanline effect, cursor animation, code blocks
+  For IMMERSIVE: full-viewport sections, parallax, scroll-driven animations
+  For ARTISTIC: canvas container, generative art classes, unconventional layout
+  For 3D: Three.js canvas container, overlay UI classes, loading screen
+
+Use CSS features appropriate to the mood:
+  Glassmorphism: backdrop-filter:blur() + rgba() background
+  Gradient text: background-clip:text, -webkit-text-fill-color:transparent
+  Grid: complex CSS grid for editorial/brutalist layouts
+  Custom scrollbar if using dark theme
+  @keyframes for entrance animations, shimmer, pulse, float, typewriter
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-JS REQUIREMENTS (250+ lines mandatory)
+JS — WRITE WHAT THE PAGES WILL CALL
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Nav: hamburger toggle, scroll shadow, active link detection.
-- Smooth scroll with offset for sticky nav.
-- IntersectionObserver stagger fade-in for .stagger-children.
-- Count-up animation: animateCount(el, target, duration).
-- 3D card tilt on mousemove (perspective rotateX/Y, snap back).
-- Form validation: required fields, email format, character count, localStorage save.
-- Modal open/close via showModal() / close() on <dialog> elements.
-- Filter bar: filter items by category attribute.
-- Sortable table: click header to sort rows.
-- Tab switcher: generic function for [data-tab] / [data-panel] patterns.
-- Chart init stubs (initCharts()) that Chart.js pages will call.
-- LocalStorage helpers: lsGet(key), lsSet(key, val).
-- Toast notification system: showToast(msg, type).
-- Lazy image loading with IntersectionObserver.
-- Copy-to-clipboard utility.
-- Scroll-to-top button.
-- Theme toggle (data-theme).
-- Alpine.js x-data helpers for common patterns.`;
+Write JavaScript that the HTML pages will actually use. Examples:
+  Nav: hamburger toggle, scroll shadow
+  IntersectionObserver for scroll animations (stagger entrance)
+  Count-up numbers on scroll
+  Form validation with real feedback
+  Modal / dialog open/close
+  Filter/sort interactions
+  Tab switcher pattern
+  Theme toggle
+  LocalStorage helpers (with try/catch for private browsing)
+  Copy to clipboard
 
-const PAGE_BUILD_SYSTEM = `You are WebForge's HTML page builder. Generate ONE complete, production-quality HTML page.
+If using GSAP: set up ScrollTrigger defaults, common animation helpers
+If using Three.js: initialize renderer, scene, camera; export helpers
+If using p5.js: sketch factory function, exported for pages to call
+If using Alpine.js: register shared component factories
+If using Vue 3: register shared composables
+If using Chart.js: initChart(id, config) helper, theme colors
+
+Always: remove all console.log. Use event delegation where possible.
+Keep only what the HTML pages will call — no dead code.`;
+
+const PAGE_BUILD_SYSTEM = `You are WebForge's creative builder. Generate ONE complete HTML page for this project.
+
+You have full creative freedom over structure, layout, and content. Read the design brief carefully:
+  • creativeMode tells you the aesthetic approach
+  • structureStyle tells you the layout pattern
+  • techStack tells you what libraries to use
+  • mood, palette, typography, uniqueTwist guide every visual decision
 
 OUTPUT FORMAT:
 ===FILE: {FILENAME}===
@@ -299,59 +319,67 @@ OUTPUT FORMAT:
 ===END===
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MANDATORY RULES
+REQUIRED — every page, no exceptions
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Complete <!doctype html> with <head> containing:
-   - <meta charset="UTF-8">
-   - <meta name="viewport" content="width=device-width, initial-scale=1.0">
-   - <meta name="description" content="[specific 150-char description]">
-   - <meta property="og:title">, og:description, og:type, og:image (picsum.photos)
-   - <meta name="theme-color" content="[brand primary]">
-   - <link rel="icon" href="data:image/svg+xml,..."> (inline SVG favicon)
-   - <link rel="canonical" href="[page URL]">
-   - <title>[Page Title] — [Site Name]</title>
-   - <link rel="stylesheet" href="assets/styles.css">
-   - CDN libraries if needed (Chart.js, Alpine.js, Lucide — from the tech stack)
-   - <script src="assets/app.js" defer></script>
-   - JSON-LD schema markup for the page type
-
-2. Use RELATIVE paths for all assets (no leading slash). href="assets/styles.css" not "/assets/styles.css".
-3. Inter-page links: href="about.html" not "/about.html".
-4. Use EXACT CSS class names from the shared stylesheet.
-5. REAL content — no Lorem Ipsum. Invent plausible names, numbers, quotes.
-6. Every interactive element has aria-label, role, tabindex where needed.
-7. All images: <img src="https://picsum.photos/seed/[unique-word]/800/500" alt="[specific description]" loading="lazy">
-8. WebForge credit in footer: <div class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:24px">made with <strong style="color:inherit">WebForge</strong></div>
+• <!doctype html> with <html lang="en">
+• <meta charset="UTF-8">, <meta name="viewport" content="width=device-width, initial-scale=1.0">
+• <title>[Page] — [Site]</title> (50-60 chars, keyword-first)
+• <meta name="description" content="[specific 140-160 char benefit-led description]">
+• og:title, og:description, og:image (picsum.photos URL), og:type, og:url
+• <link rel="canonical"> pointing to this page's URL
+• <meta name="theme-color" content="[primary color]">
+• Inline SVG favicon: <link rel="icon" href="data:image/svg+xml,[your SVG]">
+• <link rel="stylesheet" href="assets/styles.css"> (RELATIVE path, no leading slash)
+• CDN libraries from the tech stack (GSAP, Three.js, Alpine, Vue, Chart.js, p5, etc.)
+• <script src="assets/app.js" defer></script>
+• JSON-LD schema (Organization on index, BreadcrumbList on inner pages)
+• <a href="#main-content">Skip to main content</a> as first body element
+• REAL content — invent specific, plausible details. No placeholders, no Lorem ipsum.
+• All images: picsum.photos/seed/[unique-word]/800/500 with descriptive alt=""
+• WebForge credit in footer: <p style="text-align:center;padding:16px;font-size:11px;color:rgba(120,120,140,0.7)">made with <strong>WebForge</strong></p>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HOME PAGE (index.html) — ALL 10 SECTIONS (MANDATORY, minimum 500 lines total)
+CREATIVE DIRECTION — be specific, be bold
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Section 1: HERO — Full-bleed, animated gradient bg, badge pill, headline clamp(3.5rem,8vw,7rem), subhead (2-3 sentences), two CTA buttons, hero visual (right side image or animated Alpine.js component).
-Section 2: SOCIAL PROOF — Logo cloud of 8-10 believable company names, muted, flex-wrap.
-Section 3: FEATURE GRID — 6+ feature cards with Lucide icon + bold title + 3-sentence description each. Real features from the plan.
-Section 4: HOW IT WORKS — Numbered 3-step or 4-step flow with icons, rich copy (2-3 sentences per step).
-Section 5: INTERACTIVE SHOWCASE — For apps/tools: live working demo panel (Alpine.js + Chart.js). For brochure: 3 alternating image-text rows with picsum photos + 150-word copy each.
-Section 6: TESTIMONIALS — 4+ cards with 2-3 sentence quotes, name, job title, company. Avatar CSS circles with initials.
-Section 7: PRICING / STATS BAND — Either 3 pricing tiers (free/pro/enterprise with feature lists) OR a 4-number stats band with count-up animation.
-Section 8: FAQ — 8+ items with <details><summary>. Cover real questions about the product.
-Section 9: FINAL CTA BAND — 2-headline + subhead + primary button. Bold and full-width.
-Section 10: FOOTER — 4-column grid: brand + tagline, navigation links, resources, social icons. WebForge credit.
+Read the brief. Design the page structure that ACTUALLY SERVES this project.
+
+HOME PAGE (index.html): The homepage should make someone say "wow" in the first 3 seconds.
+  Design sections that demonstrate the product/brand/art — not generic marketing sections.
+  Use the uniqueTwist described in the brief.
+  Apply the creativeMode faithfully:
+    • STANDARD: polished hero → value prop → features → social proof → CTA → footer
+    • MINIMAL: bold typography, negative space, let the work speak
+    • IMMERSIVE: fullscreen sections, scroll-driven reveals, parallax, atmospheric
+    • EDITORIAL: magazine grid, multiple content types, reading-first experience
+    • ARTISTIC: break convention — p5.js/Three.js canvas, unexpected layout, visual poetry
+    • TERMINAL: monospace, typewriter effects, command-prompt aesthetics
+    • BRUTALIST: raw grid, oversized type, confrontational, stark
+    • 3D: Three.js scene as hero, interactive 3D product/art
+    • SCROLLYTELLING: narrative flow, sections that tell a story as you scroll
+
+INNER PAGES: Build what this page actually needs.
+  • Portfolio pages: large work grid, case study layout
+  • Menu pages: scannable categories and items, visual food presentation  
+  • About pages: team, story, mission — human and personal
+  • Contact pages: human, accessible form + alternative contact methods
+  • Docs pages: clear navigation, code blocks, examples
+  Be creative with the layout — inner pages don't need to be boring.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-INNER PAGES — minimum 350 lines each
+INTERACTIVITY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Each inner page must have:
-- Sticky nav with all page links (active state on current page)
-- Page hero (smaller than home, 120px padding, title + subtitle)
-- 3+ substantial content sections using shared CSS components
-- Footer matching home
+If tech stack includes:
+  Alpine.js: x-data, x-show, x-for, x-transition — tabs, toggles, modals, live demos
+  Vue 3 CDN: createApp({setup(){...}}).mount('#app') — reactive UI, computed, watch
+  React 18 CDN: <script type="text/babel"> with useState, useEffect — component UI
+  Chart.js: responsive:true, maintainAspectRatio:false, fixed-height wrapper
+  GSAP: timeline animations, ScrollTrigger for scroll-driven reveals
+  Three.js: renderer, scene, camera, animate loop, resize handler
+  p5.js: new p5(sketch, document.getElementById('canvas-container'))
+  D3.js: data-driven SVG with scales, axes, transitions
+  Tone.js: Synth, Player with play/stop UI controls`;
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-INTERACTIVITY (for app/tool pages)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Use Alpine.js x-data for: tabs, toggles, modals, accordions, cart counters, quiz flows.
-Use Chart.js for: dashboards, analytics, results, comparisons.
-All data must be realistic hardcoded JSON inline in <script> or app.js.`;
+
 
 // Old streaming system (kept for edit/fallback)
 const BUILD_STREAM_SYSTEM = `You are WebForge, a top-tier frontend engineer + designer. You build REAL, PRODUCTION-QUALITY, FULLY INTERACTIVE multi-page web experiences. Stream using a simple delimiter format.
@@ -406,6 +434,8 @@ async function generateSharedAssetsStream(
     mood: research.mood,
     techStack: research.techStack,
     buildAttempt: attempt,
+    creativeMode: research.creativeMode ?? "standard",
+    structureStyle: research.structureStyle ?? "multi-page",
   };
 
   const skillsContext = getFullSkillsContext(plan, research);
@@ -418,7 +448,19 @@ async function generateSharedAssetsStream(
     },
     {
       role: "user",
-      content: `Site name: ${intentName}\nProject: ${originalPrompt}\nPlan summary: ${plan.summary}\nFeatures: ${plan.features.join(", ")}\nPages: ${plan.pages.map(p => p.path).join(", ")}${paletteNote}${techStackNote}\n\nGenerate the shared assets/styles.css and assets/app.js now. Remember: minimum 700 lines CSS, 250 lines JS.`,
+      content: `Site name: ${intentName}
+Project: ${originalPrompt}
+Plan summary: ${plan.summary}
+Features: ${plan.features.join(", ")}
+Pages: ${plan.pages.map(p => p.path).join(", ")}
+Creative mode: ${research.creativeMode ?? "standard"}
+Structure: ${research.structureStyle ?? "multi-page"}
+Unique twist to implement: ${research.uniqueTwist}
+${paletteNote}${techStackNote}
+
+Generate the shared assets/styles.css and assets/app.js tailored to this specific creative brief.
+CSS: comprehensive for this project's needs (400+ lines typical, more if complex).
+JS: focused and practical — only what the pages will actually use.`,
     },
   ];
 
@@ -464,6 +506,8 @@ async function generatePageAI(
     techStack: research.techStack,
     buildAttempt: attempt,
     previousIssues,
+    creativeMode: research.creativeMode ?? "standard",
+    structureStyle: research.structureStyle ?? "multi-page",
   };
 
   const skillsContext = getFullSkillsContext(plan, research);
@@ -494,8 +538,11 @@ THIS PAGE:
   Sections: ${page.sections.join(" | ")}
 
 All pages (for nav): ${navLinks}
+Creative mode: ${research.creativeMode ?? "standard"}
+Structure style: ${research.structureStyle ?? "multi-page"}
+Unique twist: ${research.uniqueTwist}
 Features to mention: ${plan.features.slice(0, 6).join(", ")}
-${isHome ? "\nThis is the HOME page — include ALL 10 mandatory sections. Minimum 500 lines of HTML." : `\nThis is an inner page — include nav, page hero, 3+ content sections, footer. Minimum 350 lines.`}
+${isHome ? `\nThis is the HOME page. Apply the creative mode faithfully. Make it impressive — use the uniqueTwist, the palette, the tech stack. Build sections that serve THIS project specifically.` : `\nThis is the ${page.title} inner page. Design it for its purpose — not a generic template.`}
 ${retryNote}
 
 Output the FILE marker then the complete HTML, then ===END===.`,

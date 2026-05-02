@@ -558,7 +558,7 @@ class JobQueue {
     }
 
     siteEventBus.emitSite({ type: "site_updated", siteId });
-    siteEventBus.emitSite({ type: "site_ready", siteId, userId: job.userId, siteName: site.name, publicUrl: puterPublicUrl });
+    siteEventBus.emitSite({ type: "site_ready", siteId, userId: job.userId, siteName: site.name, publicUrl: puterPublicUrl, isEdit });
 
     void streamNarration({
       userId: job.userId, siteId, intent: "done",
