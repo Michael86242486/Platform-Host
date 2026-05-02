@@ -15,11 +15,15 @@ import {
   sitesTable,
   usersTable,
   type Site,
+  type SiteAnalysis,
+  type SitePlan,
   type SiteFiles,
 } from "../lib/db";
 import { jobQueue } from "../lib/queue";
 import { siteEventBus, type SiteEvent } from "../lib/eventBus";
-import { buildProject } from "../lib/generator";
+import { buildProject, buildPlan } from "../lib/generator";
+import { refinePlanAI } from "../lib/llm-generator";
+import { logger } from "../lib/logger";
 import {
   deleteSite as puterDeleteSite,
   PUTER_CONFIGURED,
@@ -720,6 +724,85 @@ router.post("/sites/:id/messages", requireAuth, async (req, res) => {
       })
       .where(eq(sitesTable.id, site.id));
     await jobQueue.enqueue(job.id);
+  } else if (site.status === "awaiting_confirmation" && !wantsBuild) {
+    // Plan refinement loop — user wants to tweak the plan before building.
+    // We do this in the background so the HTTP response isn't held up.
+    void (async () => {
+      try {
+        // Acknowledge the feedback immediately.
+        await db.insert(messagesTable).values({
+          userId: req.user!.id,
+          siteId: site.id,
+          role: "agent",
+          kind: "log",
+          content: "Got it — updating the plan…",
+          data: null,
+        });
+        siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
+
+        const currentAnalysis = site.analysis as SiteAnalysis | null;
+        if (!currentAnalysis) return;
+
+        // Ask the AI to apply the requested changes.
+        const updatedAnalysis = await refinePlanAI(
+          currentAnalysis,
+          content,
+          site.model ?? undefined,
+        );
+        const updatedPlan = buildPlan(updatedAnalysis) as SitePlan;
+
+        // Persist the revised plan.
+        await db
+          .update(sitesTable)
+          .set({
+            analysis: updatedAnalysis,
+            plan: updatedPlan,
+            updatedAt: new Date(),
+          })
+          .where(eq(sitesTable.id, site.id));
+
+        // Build a readable summary for the chat bubble.
+        const lines: string[] = [`Updated plan: ${updatedPlan.summary}`, "", "Pages:"];
+        for (const p of updatedPlan.pages) {
+          lines.push(`  • ${p.title} — ${p.purpose}`);
+        }
+        lines.push("", `Style: ${updatedPlan.styles.palette} (${updatedPlan.styles.mood})`);
+        if (updatedPlan.features.length > 0) {
+          lines.push(`Features: ${updatedPlan.features.join(", ")}`);
+        }
+
+        // Post the updated plan + re-show the awaiting_confirmation prompt.
+        await db.insert(messagesTable).values({
+          userId: req.user!.id,
+          siteId: site.id,
+          role: "agent",
+          kind: "plan",
+          content: lines.join("\n"),
+          data: updatedPlan as unknown as Record<string, unknown>,
+        });
+        await db.insert(messagesTable).values({
+          userId: req.user!.id,
+          siteId: site.id,
+          role: "agent",
+          kind: "awaiting_confirmation",
+          content: "Plan updated! Anything else to tweak, or ready to build?",
+          data: null,
+        });
+
+        siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
+      } catch (err) {
+        logger.warn({ err }, "plan refinement background task failed");
+        await db.insert(messagesTable).values({
+          userId: req.user!.id,
+          siteId: site.id,
+          role: "agent",
+          kind: "text",
+          content: "Hmm, I had trouble updating the plan. Try rephrasing, or tap Build to proceed.",
+          data: null,
+        });
+        siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
+      }
+    })();
   } else if (site.status === "ready") {
     // Treat any chat after ready state as an edit request.
     const [job] = await db
