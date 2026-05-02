@@ -50,7 +50,7 @@ import { Surface } from "@/components/Surface";
 import { useColors } from "@/hooks/useColors";
 import { useSiteStream } from "@/lib/useSiteStream";
 
-type Tab = "overview" | "chat" | "preview";
+type Tab = "overview" | "chat" | "preview" | "console";
 
 type AgentMessage = {
   id: string;
@@ -92,7 +92,7 @@ export default function SiteDetailScreen() {
 
   const messagesQuery = useListSiteMessages(String(id), {
     query: {
-      enabled: activeTab === "chat",
+      enabled: activeTab === "chat" || activeTab === "console",
       queryKey: getListSiteMessagesQueryKey(String(id)),
       refetchInterval: (q) => {
         const s = siteQuery.data as Site | undefined;
@@ -297,7 +297,7 @@ export default function SiteDetailScreen() {
         </View>
 
         {/* ── Tab bar ── */}
-        <TabBar activeTab={activeTab} onSelect={setActiveTab} accent={accent} colors={colors} />
+        <TabBar activeTab={activeTab} onSelect={setActiveTab} accent={accent} colors={colors} isWorking={isWorking} />
 
         {/* ── Tab content ── */}
         {activeTab === "overview" && (
@@ -351,6 +351,17 @@ export default function SiteDetailScreen() {
         {activeTab === "preview" && (
           <PreviewTab site={site} accent={accent} colors={colors} />
         )}
+
+        {activeTab === "console" && (
+          <ConsoleTab
+            site={site}
+            messages={messages}
+            accent={accent}
+            colors={colors}
+            isWorking={isWorking}
+            currentFile={stream.currentFile}
+          />
+        )}
       </SafeAreaView>
     </View>
   );
@@ -365,16 +376,19 @@ function TabBar({
   onSelect,
   accent,
   colors,
+  isWorking,
 }: {
   activeTab: Tab;
   onSelect: (t: Tab) => void;
   accent: string;
   colors: ReturnType<typeof useColors>;
+  isWorking: boolean;
 }) {
-  const tabs: { key: Tab; label: string; icon: keyof typeof Feather.glyphMap }[] = [
+  const tabs: { key: Tab; label: string; icon: keyof typeof Feather.glyphMap; badge?: boolean }[] = [
     { key: "overview", label: "Overview", icon: "info" },
     { key: "chat", label: "Chat", icon: "message-circle" },
     { key: "preview", label: "Preview", icon: "monitor" },
+    { key: "console", label: "Console", icon: "terminal", badge: isWorking },
   ];
   return (
     <View
@@ -398,27 +412,42 @@ function TabBar({
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "center",
-              gap: 6,
+              gap: 5,
               paddingVertical: 9,
               marginBottom: -1,
               borderBottomWidth: 2.5,
               borderBottomColor: active ? accent : "transparent",
               backgroundColor: active ? `${accent}12` : "transparent",
               borderRadius: active ? 8 : 0,
-              borderBottomLeftRadius: active ? 0 : 0,
-              borderBottomRightRadius: active ? 0 : 0,
+              borderBottomLeftRadius: 0,
+              borderBottomRightRadius: 0,
               opacity: pressed ? 0.7 : 1,
             })}
           >
-            <Feather
-              name={t.icon}
-              size={15}
-              color={active ? accent : colors.mutedForeground}
-            />
+            <View style={{ position: "relative" }}>
+              <Feather
+                name={t.icon}
+                size={15}
+                color={active ? accent : colors.mutedForeground}
+              />
+              {t.badge && (
+                <View
+                  style={{
+                    position: "absolute",
+                    top: -3,
+                    right: -3,
+                    width: 6,
+                    height: 6,
+                    borderRadius: 3,
+                    backgroundColor: accent,
+                  }}
+                />
+              )}
+            </View>
             <Text
               style={{
                 color: active ? accent : colors.mutedForeground,
-                fontSize: 13,
+                fontSize: 12,
                 fontFamily: active ? "Inter_700Bold" : "Inter_400Regular",
                 letterSpacing: 0.1,
               }}
@@ -1139,6 +1168,500 @@ function ThinkingBar({ accent }: { accent: string }) {
         }}
       />
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Console tab — real-time build log
+// ---------------------------------------------------------------------------
+
+const PIPELINE_PHASES = [
+  { n: 1, label: "Research & Inspiration" },
+  { n: 2, label: "Parallel Page Build" },
+  { n: 3, label: "SEO & Accessibility Audit" },
+  { n: 4, label: "Self-Review" },
+  { n: 5, label: "Auto-Fix" },
+  { n: 6, label: "Hero Image" },
+  { n: 7, label: "Publish to Puter" },
+] as const;
+
+type QualityReport = {
+  score: number;
+  passed: boolean;
+  issues: { severity: string; file: string; detail: string }[];
+  totalBytes: number;
+  summary?: string;
+};
+
+function ConsoleTab({
+  site,
+  messages,
+  accent,
+  colors,
+  isWorking,
+  currentFile,
+}: {
+  site: Site;
+  messages: AgentMessage[];
+  accent: string;
+  colors: ReturnType<typeof useColors>;
+  isWorking: boolean;
+  currentFile: string | null;
+}) {
+  const scrollRef = useRef<ScrollView>(null);
+
+  const logMessages = useMemo(
+    () =>
+      messages.filter(
+        (m) =>
+          m.kind === "build_started" ||
+          m.kind === "build_progress" ||
+          m.kind === "build_done" ||
+          m.kind === "build_failed",
+      ),
+    [messages],
+  );
+
+  const completedPhases = useMemo(() => {
+    const done = new Set<number>();
+    for (const m of logMessages) {
+      const match = m.content.match(/✓ Step (\d+)\/7/);
+      if (match) done.add(parseInt(match[1], 10));
+    }
+    return done;
+  }, [logMessages]);
+
+  const activePhase = useMemo(() => {
+    const match = (site.message ?? "").match(/Step (\d+)\/7/);
+    return match ? parseInt(match[1], 10) : null;
+  }, [site.message]);
+
+  const latestQualityReport = useMemo<QualityReport | null>(() => {
+    for (let i = logMessages.length - 1; i >= 0; i--) {
+      const qr = (logMessages[i].data as Record<string, unknown> | null)?.qualityReport;
+      if (qr) return qr as QualityReport;
+    }
+    return null;
+  }, [logMessages]);
+
+  const builtFiles = useMemo(() => {
+    const seen = new Set<string>();
+    const result: { file: string; bytes?: number }[] = [];
+    for (const m of logMessages) {
+      const d = m.data as Record<string, unknown> | null;
+      const file = d?.file as string | undefined;
+      if (file && !seen.has(file)) {
+        seen.add(file);
+        result.push({ file });
+      }
+    }
+    if (site.files) {
+      for (const f of site.files) {
+        if (!seen.has(f)) {
+          seen.add(f);
+          result.push({ file: f });
+        }
+      }
+    }
+    return result;
+  }, [logMessages, site.files]);
+
+  const totalKb = latestQualityReport
+    ? (latestQualityReport.totalBytes / 1024).toFixed(1)
+    : null;
+
+  useEffect(() => {
+    const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
+    return () => clearTimeout(t);
+  }, [logMessages.length]);
+
+  const isEmpty = logMessages.length === 0 && !isWorking;
+
+  return (
+    <ScrollView
+      ref={scrollRef}
+      style={{ flex: 1 }}
+      contentContainerStyle={{
+        paddingHorizontal: 14,
+        paddingTop: 14,
+        paddingBottom: 32,
+        gap: 14,
+      }}
+    >
+      {isEmpty ? (
+        <View style={{ alignItems: "center", paddingTop: 60, gap: 12 }}>
+          <Feather name="terminal" size={36} color={colors.mutedForeground} />
+          <Text style={{ color: colors.mutedForeground, fontSize: 14, textAlign: "center" }}>
+            No build log yet.{"\n"}Start a build to see the agent work in real time.
+          </Text>
+        </View>
+      ) : (
+        <>
+          {/* ── Pipeline steps ── */}
+          <Surface padded style={{ gap: 0 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <Feather name="cpu" size={13} color={colors.mutedForeground} />
+                <MonoText style={{ color: colors.mutedForeground, fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase" }}>
+                  7-Phase Pipeline
+                </MonoText>
+              </View>
+              {isWorking && (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: accent }} />
+                  <MonoText style={{ color: accent, fontSize: 10 }}>LIVE</MonoText>
+                </View>
+              )}
+            </View>
+            {PIPELINE_PHASES.map((phase) => {
+              const done = completedPhases.has(phase.n);
+              const active = !done && activePhase === phase.n;
+              const pending = !done && !active;
+              const phaseColor = done ? colors.success : active ? accent : colors.mutedForeground;
+              return (
+                <View
+                  key={phase.n}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 10,
+                    paddingVertical: 7,
+                    borderTopWidth: phase.n > 1 ? 1 : 0,
+                    borderTopColor: colors.border + "44",
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: 11,
+                      borderWidth: done ? 0 : 1.5,
+                      borderColor: phaseColor,
+                      backgroundColor: done ? phaseColor + "22" : active ? accent + "18" : "transparent",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {done ? (
+                      <Feather name="check" size={12} color={colors.success} />
+                    ) : active ? (
+                      <ActivityIndicator size="small" color={accent} style={{ transform: [{ scale: 0.6 }] }} />
+                    ) : (
+                      <MonoText style={{ color: colors.mutedForeground, fontSize: 9 }}>{phase.n}</MonoText>
+                    )}
+                  </View>
+                  <Text
+                    style={{
+                      flex: 1,
+                      color: pending ? colors.mutedForeground : colors.foreground,
+                      fontSize: 13,
+                      fontFamily: done ? "Inter_600SemiBold" : active ? "Inter_500Medium" : "Inter_400Regular",
+                    }}
+                  >
+                    {phase.label}
+                  </Text>
+                  {done && (
+                    <MonoText style={{ color: colors.success, fontSize: 10 }}>✓</MonoText>
+                  )}
+                  {active && (
+                    <MonoText style={{ color: accent, fontSize: 10 }}>running</MonoText>
+                  )}
+                </View>
+              );
+            })}
+          </Surface>
+
+          {/* ── Quality gate card ── */}
+          {latestQualityReport && (
+            <Surface padded style={{ gap: 10 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Feather
+                    name={latestQualityReport.passed ? "shield" : "alert-triangle"}
+                    size={13}
+                    color={latestQualityReport.passed ? colors.success : "#FEBC2E"}
+                  />
+                  <MonoText style={{ color: colors.mutedForeground, fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase" }}>
+                    Quality Gate
+                  </MonoText>
+                </View>
+                <View
+                  style={{
+                    paddingHorizontal: 8,
+                    paddingVertical: 2,
+                    borderRadius: 999,
+                    backgroundColor: latestQualityReport.passed ? colors.success + "22" : "#FEBC2E22",
+                    borderWidth: 1,
+                    borderColor: latestQualityReport.passed ? colors.success + "55" : "#FEBC2E55",
+                  }}
+                >
+                  <MonoText
+                    style={{
+                      color: latestQualityReport.passed ? colors.success : "#FEBC2E",
+                      fontSize: 10,
+                      fontWeight: "700",
+                    }}
+                  >
+                    {latestQualityReport.passed ? "PASSED" : "RETRYING"}
+                  </MonoText>
+                </View>
+              </View>
+
+              {/* Score bar */}
+              <View style={{ gap: 4 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                  <MonoText style={{ color: colors.mutedForeground, fontSize: 11 }}>Score</MonoText>
+                  <MonoText
+                    style={{
+                      color: latestQualityReport.score >= 80
+                        ? colors.success
+                        : latestQualityReport.score >= 60
+                          ? "#FEBC2E"
+                          : colors.destructive,
+                      fontSize: 13,
+                      fontWeight: "700",
+                    }}
+                  >
+                    {latestQualityReport.score}/100
+                  </MonoText>
+                </View>
+                <View style={{ height: 6, backgroundColor: colors.border, borderRadius: 3, overflow: "hidden" }}>
+                  <View
+                    style={{
+                      width: `${latestQualityReport.score}%`,
+                      height: "100%",
+                      borderRadius: 3,
+                      backgroundColor: latestQualityReport.score >= 80
+                        ? colors.success
+                        : latestQualityReport.score >= 60
+                          ? "#FEBC2E"
+                          : colors.destructive,
+                    }}
+                  />
+                </View>
+              </View>
+
+              {totalKb && (
+                <View style={{ flexDirection: "row", gap: 16 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                    <Feather name="hard-drive" size={11} color={colors.mutedForeground} />
+                    <MonoText style={{ color: colors.mutedForeground, fontSize: 11 }}>
+                      {totalKb} KB total
+                    </MonoText>
+                  </View>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                    <Feather name="file" size={11} color={colors.mutedForeground} />
+                    <MonoText style={{ color: colors.mutedForeground, fontSize: 11 }}>
+                      {builtFiles.length} file{builtFiles.length !== 1 ? "s" : ""}
+                    </MonoText>
+                  </View>
+                </View>
+              )}
+
+              {/* Issues */}
+              {latestQualityReport.issues.length > 0 && (
+                <View style={{ gap: 4 }}>
+                  {latestQualityReport.issues.slice(0, 6).map((issue, i) => (
+                    <View
+                      key={i}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "flex-start",
+                        gap: 6,
+                        paddingHorizontal: 8,
+                        paddingVertical: 5,
+                        borderRadius: 6,
+                        backgroundColor:
+                          issue.severity === "critical"
+                            ? colors.destructive + "14"
+                            : issue.severity === "high"
+                              ? "#FEBC2E14"
+                              : colors.cardElevated,
+                        borderLeftWidth: 2,
+                        borderLeftColor:
+                          issue.severity === "critical"
+                            ? colors.destructive
+                            : issue.severity === "high"
+                              ? "#FEBC2E"
+                              : colors.border,
+                      }}
+                    >
+                      <MonoText
+                        style={{
+                          color:
+                            issue.severity === "critical"
+                              ? colors.destructive
+                              : issue.severity === "high"
+                                ? "#FEBC2E"
+                                : colors.mutedForeground,
+                          fontSize: 9,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.8,
+                          marginTop: 1,
+                          width: 36,
+                        }}
+                      >
+                        {issue.severity.slice(0, 4)}
+                      </MonoText>
+                      <View style={{ flex: 1, gap: 1 }}>
+                        <MonoText style={{ color: colors.foreground, fontSize: 11 }} numberOfLines={1}>
+                          {issue.file}
+                        </MonoText>
+                        <Text style={{ color: colors.mutedForeground, fontSize: 11, lineHeight: 16 }} numberOfLines={2}>
+                          {issue.detail}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </Surface>
+          )}
+
+          {/* ── Built files ── */}
+          {builtFiles.length > 0 && (
+            <Surface padded style={{ gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Feather name="folder" size={13} color={colors.mutedForeground} />
+                  <MonoText style={{ color: colors.mutedForeground, fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase" }}>
+                    Output Files
+                  </MonoText>
+                </View>
+                <MonoText style={{ color: colors.mutedForeground, fontSize: 11 }}>
+                  {builtFiles.length} files
+                </MonoText>
+              </View>
+              <View style={{ gap: 3 }}>
+                {builtFiles.map((f, i) => (
+                  <View
+                    key={f.file + i}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 8,
+                      paddingVertical: 4,
+                    }}
+                  >
+                    <Feather
+                      name={
+                        f.file.endsWith(".css")
+                          ? "code"
+                          : f.file.endsWith(".js")
+                            ? "zap"
+                            : f.file.endsWith(".html")
+                              ? "globe"
+                              : "file"
+                      }
+                      size={11}
+                      color={accent + "99"}
+                    />
+                    <MonoText
+                      numberOfLines={1}
+                      style={{ color: colors.foreground, fontSize: 12, flex: 1 }}
+                    >
+                      {f.file}
+                    </MonoText>
+                  </View>
+                ))}
+              </View>
+            </Surface>
+          )}
+
+          {/* ── Raw log stream ── */}
+          <Surface
+            style={{
+              borderRadius: 12,
+              overflow: "hidden",
+              borderWidth: 1,
+              borderColor: colors.border,
+            }}
+          >
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                backgroundColor: colors.cardElevated,
+                borderBottomWidth: 1,
+                borderBottomColor: colors.border,
+              }}
+            >
+              <View style={{ flexDirection: "row", gap: 5 }}>
+                {["#FF5F57", "#FEBC2E", "#28C840"].map((c) => (
+                  <View key={c} style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: c }} />
+                ))}
+              </View>
+              <MonoText style={{ color: colors.mutedForeground, fontSize: 10, flex: 1, letterSpacing: 0.5 }}>
+                agent build log
+              </MonoText>
+              {isWorking && (
+                <ThinkingDots accent={accent} />
+              )}
+            </View>
+            <View style={{ padding: 12, gap: 4, backgroundColor: "#080C10" }}>
+              {logMessages.map((m, i) => {
+                const isDone = m.kind === "build_done";
+                const isFailed = m.kind === "build_failed";
+                const isStarted = m.kind === "build_started";
+                const lineColor = isDone
+                  ? colors.success
+                  : isFailed
+                    ? colors.destructive
+                    : isStarted
+                      ? accent
+                      : m.content.startsWith("✓")
+                        ? colors.success
+                        : m.content.startsWith("⚠")
+                          ? "#FEBC2E"
+                          : colors.mutedForeground;
+                return (
+                  <View key={m.id + i} style={{ flexDirection: "row", gap: 6 }}>
+                    <MonoText style={{ color: accent + "55", fontSize: 10, lineHeight: 17 }}>
+                      {String(i + 1).padStart(2, "0")}
+                    </MonoText>
+                    <MonoText
+                      style={{
+                        color: lineColor,
+                        fontSize: 11,
+                        lineHeight: 17,
+                        flex: 1,
+                      }}
+                    >
+                      {m.content}
+                    </MonoText>
+                  </View>
+                );
+              })}
+              {isWorking && currentFile && (
+                <View style={{ flexDirection: "row", gap: 6 }}>
+                  <MonoText style={{ color: accent + "55", fontSize: 10, lineHeight: 17 }}>
+                    {String(logMessages.length + 1).padStart(2, "0")}
+                  </MonoText>
+                  <MonoText style={{ color: accent, fontSize: 11, lineHeight: 17, flex: 1 }}>
+                    {"›_ "}writing {currentFile}
+                    <Text style={{ color: accent }}>▍</Text>
+                  </MonoText>
+                </View>
+              )}
+              {isWorking && !currentFile && (
+                <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+                  <MonoText style={{ color: accent + "55", fontSize: 10 }}>
+                    {String(logMessages.length + 1).padStart(2, "0")}
+                  </MonoText>
+                  <MonoText style={{ color: colors.mutedForeground, fontSize: 11 }}>
+                    {"›_ "}{site.message ?? "working…"}
+                    <Text style={{ color: accent }}>▍</Text>
+                  </MonoText>
+                </View>
+              )}
+            </View>
+          </Surface>
+        </>
+      )}
+    </ScrollView>
   );
 }
 
