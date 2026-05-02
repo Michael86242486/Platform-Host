@@ -1,3 +1,5 @@
+import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
@@ -22,6 +24,9 @@ export interface SiteSummary {
   message?: string | null;
   coverColor?: string | null;
   publicUrl?: string | null;
+  createdAt?: string | null;
+  model?: string | null;
+  files?: string[];
 }
 
 interface Props {
@@ -45,15 +50,35 @@ function getStatusMeta(
     case "ready":
       return { label: "LIVE", color: colors.success, showProgress: false };
     case "building":
-      return { label: `BUILDING ${pct}%`, color: colors.primary, showProgress: true };
+      return {
+        label: `BUILDING ${pct}%`,
+        color: colors.primary,
+        showProgress: true,
+      };
     case "analyzing":
-      return { label: `ANALYZING ${pct}%`, color: colors.primary, showProgress: true };
+      return {
+        label: `ANALYZING ${pct}%`,
+        color: colors.primary,
+        showProgress: true,
+      };
     case "awaiting_confirmation":
-      return { label: "REVIEW", color: colors.warning ?? colors.primary, showProgress: false };
+      return {
+        label: "REVIEW",
+        color: colors.warning ?? colors.primary,
+        showProgress: false,
+      };
     case "queued":
-      return { label: "QUEUED", color: colors.mutedForeground, showProgress: true };
+      return {
+        label: "QUEUED",
+        color: colors.mutedForeground,
+        showProgress: true,
+      };
     case "failed":
-      return { label: "FAILED", color: colors.destructive, showProgress: false };
+      return {
+        label: "FAILED",
+        color: colors.destructive,
+        showProgress: false,
+      };
     default:
       return {
         label: (status || "UNKNOWN").toString().toUpperCase().slice(0, 16),
@@ -63,6 +88,20 @@ function getStatusMeta(
   }
 }
 
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
 export function SiteCard({ site, onPress }: Props) {
   const colors = useColors();
   const accent = site.coverColor || colors.primary;
@@ -70,6 +109,14 @@ export function SiteCard({ site, onPress }: Props) {
   const statusMeta = getStatusMeta(site.status, progress, colors);
   const name = site.name?.trim() || "Untitled site";
   const slug = site.slug?.trim() || "draft";
+  const pageCount = site.files?.length ?? 0;
+  const isLive = site.status === "ready";
+
+  const onCopyLink = async (e: { stopPropagation?: () => void }) => {
+    if (!site.publicUrl) return;
+    await Clipboard.setStringAsync(site.publicUrl);
+    void Haptics.selectionAsync();
+  };
 
   return (
     <Pressable
@@ -92,20 +139,18 @@ export function SiteCard({ site, onPress }: Props) {
         end={{ x: 1, y: 1 }}
         style={StyleSheet.absoluteFill}
       />
+
+      {/* Top row: status badge + copy button */}
       <View
         style={{
-          height: 80,
-          justifyContent: "flex-end",
-          padding: 16,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: 14,
+          paddingBottom: 8,
         }}
       >
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
           <View
             style={{
               width: 8,
@@ -128,8 +173,25 @@ export function SiteCard({ site, onPress }: Props) {
             {statusMeta.label}
           </MonoText>
         </View>
+
+        {isLive && site.publicUrl ? (
+          <Pressable
+            onPress={onCopyLink}
+            hitSlop={10}
+            style={({ pressed }) => ({
+              padding: 6,
+              borderRadius: 8,
+              backgroundColor: `${accent}18`,
+              opacity: pressed ? 0.6 : 1,
+            })}
+          >
+            <Feather name="copy" size={13} color={accent} />
+          </Pressable>
+        ) : null}
       </View>
-      <View style={{ paddingHorizontal: 16, paddingBottom: 14 }}>
+
+      {/* Main info */}
+      <View style={{ paddingHorizontal: 14, paddingBottom: 12 }}>
         <Text
           numberOfLines={1}
           style={{
@@ -141,26 +203,60 @@ export function SiteCard({ site, onPress }: Props) {
         >
           {name}
         </Text>
+
+        {/* Slug + page count row */}
         <View
           style={{
             flexDirection: "row",
             alignItems: "center",
-            gap: 6,
-            marginTop: 4,
+            gap: 8,
+            marginTop: 5,
           }}
         >
-          <Feather name="link-2" size={12} color={colors.mutedForeground} />
-          <MonoText
-            numberOfLines={1}
+          <View
             style={{
-              color: colors.mutedForeground,
-              fontSize: 12,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 4,
               flex: 1,
             }}
           >
-            /{slug}
-          </MonoText>
+            <Feather name="link-2" size={11} color={colors.mutedForeground} />
+            <MonoText
+              numberOfLines={1}
+              style={{ color: colors.mutedForeground, fontSize: 11, flex: 1 }}
+            >
+              /{slug}
+            </MonoText>
+          </View>
+
+          {pageCount > 0 && (
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 3,
+              }}
+            >
+              <Feather name="file-text" size={11} color={colors.mutedForeground} />
+              <MonoText
+                style={{ color: colors.mutedForeground, fontSize: 11 }}
+              >
+                {pageCount}p
+              </MonoText>
+            </View>
+          )}
+
+          {site.createdAt ? (
+            <MonoText
+              style={{ color: colors.mutedForeground, fontSize: 11 }}
+            >
+              {timeAgo(site.createdAt)}
+            </MonoText>
+          ) : null}
         </View>
+
+        {/* Progress bar */}
         {statusMeta.showProgress ? (
           <View
             style={{

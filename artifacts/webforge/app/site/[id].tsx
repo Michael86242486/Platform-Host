@@ -510,6 +510,43 @@ function OverviewTab({
         ) : null}
       </Surface>
 
+      {/* ── Export ZIP ── */}
+      {site.status === "ready" && site.files && site.files.length > 0 ? (
+        <Pressable
+          onPress={() => {
+            const url = `/api/sites/${site.id}/export`;
+            void WebBrowser.openBrowserAsync(url);
+          }}
+          style={({ pressed }) => ({
+            marginTop: 12,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            paddingVertical: 13,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: accent + "55",
+            backgroundColor: accent + "12",
+            opacity: pressed ? 0.7 : 1,
+          })}
+        >
+          <Feather name="download" size={15} color={accent} />
+          <Text
+            style={{
+              color: accent,
+              fontFamily: "Inter_600SemiBold",
+              fontSize: 14,
+            }}
+          >
+            Export as ZIP
+          </Text>
+          <MonoText style={{ color: colors.mutedForeground, fontSize: 11 }}>
+            {site.files.length} file{site.files.length !== 1 ? "s" : ""}
+          </MonoText>
+        </Pressable>
+      ) : null}
+
       <PuterHostingSection
         site={site}
         isBusy={republishPending}

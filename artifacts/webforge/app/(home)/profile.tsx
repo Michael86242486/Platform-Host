@@ -3,7 +3,7 @@ import { Feather } from "@expo/vector-icons";
 import { useAuth, useUser } from "@/lib/auth";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -13,6 +13,13 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+import {
+  getListBotsQueryKey,
+  getListSitesQueryKey,
+  useListBots,
+  useListSites,
+} from "@workspace/api-client-react";
 
 import { Brand } from "@/components/Brand";
 import { MonoText } from "@/components/MonoText";
@@ -32,6 +39,32 @@ export default function ProfileScreen() {
   const [saving, setSaving]       = useState(false);
   const [saved, setSaved]         = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  const sitesQuery = useListSites({
+    query: { queryKey: getListSitesQueryKey() },
+  });
+  const botsQuery = useListBots({
+    query: { queryKey: getListBotsQueryKey() },
+  });
+
+  const sites = sitesQuery.data ?? [];
+  const bots = botsQuery.data ?? [];
+
+  const stats = useMemo(() => {
+    const live = sites.filter((s) => s.status === "ready").length;
+    const totalPages = sites
+      .filter((s) => s.status === "ready")
+      .reduce((acc, s) => acc + ((s as unknown as { files?: string[] }).files?.length ?? 0), 0);
+
+    const modelCounts: Record<string, number> = {};
+    for (const s of sites) {
+      const m = (s as unknown as { model?: string }).model;
+      if (m) modelCounts[m] = (modelCounts[m] ?? 0) + 1;
+    }
+    const topModel = Object.entries(modelCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+    return { total: sites.length, live, totalPages, topModel, activeBots: bots.filter(b => b.status === "active").length };
+  }, [sites, bots]);
 
   useEffect(() => {
     if (!editing) {
@@ -75,7 +108,7 @@ export default function ProfileScreen() {
     >
       <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
 
-        {/* Avatar + name */}
+        {/* ── Avatar + name ── */}
         <View style={{ alignItems: "center", gap: 14, marginBottom: 28 }}>
           <View
             style={{
@@ -129,7 +162,76 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Edit name card */}
+        {/* ── Usage stats ── */}
+        <Surface padded style={{ marginBottom: 16, gap: 14 }}>
+          <MonoText
+            style={{
+              color: colors.mutedForeground,
+              fontSize: 11,
+              letterSpacing: 1.4,
+              textTransform: "uppercase",
+            }}
+          >
+            Usage
+          </MonoText>
+
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <StatBox
+              label="Sites built"
+              value={String(stats.total)}
+              accent={colors.primary}
+              colors={colors}
+            />
+            <StatBox
+              label="Live now"
+              value={String(stats.live)}
+              accent={colors.success}
+              colors={colors}
+            />
+            <StatBox
+              label="Pages"
+              value={String(stats.totalPages)}
+              accent={colors.accent}
+              colors={colors}
+            />
+          </View>
+
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <StatBox
+              label="Active bots"
+              value={String(stats.activeBots)}
+              accent="#a78bfa"
+              colors={colors}
+            />
+            <View
+              style={{
+                flex: 2,
+                backgroundColor: colors.cardElevated,
+                borderWidth: 1,
+                borderColor: colors.border,
+                borderRadius: 12,
+                padding: 12,
+                gap: 4,
+              }}
+            >
+              <MonoText style={{ color: colors.mutedForeground, fontSize: 10, letterSpacing: 1 }}>
+                TOP MODEL
+              </MonoText>
+              <Text
+                style={{
+                  color: stats.topModel ? colors.foreground : colors.mutedForeground,
+                  fontFamily: "Inter_600SemiBold",
+                  fontSize: 12,
+                }}
+                numberOfLines={1}
+              >
+                {stats.topModel ?? "—"}
+              </Text>
+            </View>
+          </View>
+        </Surface>
+
+        {/* ── Edit profile ── */}
         <Surface padded style={{ marginBottom: 16, gap: 14 }}>
           <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
             <MonoText
@@ -232,7 +334,13 @@ export default function ProfileScreen() {
                     opacity: pressed ? 0.6 : 1,
                   })}
                 >
-                  <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_500Medium", fontSize: 14 }}>
+                  <Text
+                    style={{
+                      color: colors.mutedForeground,
+                      fontFamily: "Inter_500Medium",
+                      fontSize: 14,
+                    }}
+                  >
                     Cancel
                   </Text>
                 </Pressable>
@@ -254,7 +362,13 @@ export default function ProfileScreen() {
                   {saving ? (
                     <ActivityIndicator size="small" color="#000" />
                   ) : (
-                    <Text style={{ color: "#000", fontFamily: "Inter_600SemiBold", fontSize: 14 }}>
+                    <Text
+                      style={{
+                        color: "#000",
+                        fontFamily: "Inter_600SemiBold",
+                        fontSize: 14,
+                      }}
+                    >
                       {saved ? "✓ Saved" : "Save name"}
                     </Text>
                   )}
@@ -270,7 +384,7 @@ export default function ProfileScreen() {
           )}
         </Surface>
 
-        {/* About */}
+        {/* ── About ── */}
         <Surface padded style={{ marginBottom: 16, gap: 12 }}>
           <MonoText
             style={{
@@ -292,10 +406,10 @@ export default function ProfileScreen() {
                   fontSize: 15,
                 }}
               >
-                v1.0
+                v1.0 — Enterprise edition
               </Text>
               <Text style={{ color: colors.mutedForeground, fontSize: 12 }}>
-                Forge sites from a single prompt.
+                Build entire websites from a single prompt.
               </Text>
             </View>
           </View>
@@ -313,6 +427,48 @@ export default function ProfileScreen() {
   );
 }
 
+function StatBox({
+  label,
+  value,
+  accent,
+  colors,
+}: {
+  label: string;
+  value: string;
+  accent: string;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: colors.cardElevated,
+        borderWidth: 1,
+        borderColor: colors.border,
+        borderRadius: 12,
+        padding: 12,
+        gap: 4,
+      }}
+    >
+      <MonoText
+        style={{ color: colors.mutedForeground, fontSize: 10, letterSpacing: 1 }}
+      >
+        {label.toUpperCase()}
+      </MonoText>
+      <Text
+        style={{
+          color: accent,
+          fontFamily: "Inter_700Bold",
+          fontSize: 22,
+          letterSpacing: -0.5,
+        }}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
 function NameRow({
   label,
   value,
@@ -325,7 +481,13 @@ function NameRow({
   mono?: boolean;
 }) {
   return (
-    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+    <View
+      style={{
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+      }}
+    >
       <MonoText style={{ color: colors.mutedForeground, fontSize: 12 }}>
         {label}
       </MonoText>
@@ -334,7 +496,13 @@ function NameRow({
           {value ?? "—"}
         </MonoText>
       ) : (
-        <Text style={{ color: value ? colors.foreground : colors.mutedForeground, fontFamily: "Inter_500Medium", fontSize: 14 }}>
+        <Text
+          style={{
+            color: value ? colors.foreground : colors.mutedForeground,
+            fontFamily: "Inter_500Medium",
+            fontSize: 14,
+          }}
+        >
           {value ?? "—"}
         </Text>
       )}

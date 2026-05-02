@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import dns from "node:dns/promises";
 import path from "node:path";
 
+import { strToU8, zipSync } from "fflate";
+
 import { Router, type IRouter } from "express";
 import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -1003,6 +1005,51 @@ async function userFromSseAuth(req: import("express").Request) {
     .limit(1);
   return user ?? null;
 }
+
+// GET /sites/:id/export — download all site files as a ZIP archive
+router.get("/sites/:id/export", requireAuth, async (req, res) => {
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(
+      and(
+        eq(sitesTable.id, String(req.params.id)),
+        eq(sitesTable.userId, req.user!.id),
+      ),
+    )
+    .limit(1);
+
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+
+  const files = site.files;
+  if (!files || Object.keys(files).length === 0) {
+    res.status(400).json({ error: "no_files", message: "Site has no files to export yet." });
+    return;
+  }
+
+  const zipEntries: Record<string, Uint8Array> = {};
+  for (const [filePath, content] of Object.entries(files)) {
+    // Normalize path: strip leading slash, ensure safe name
+    const safePath = filePath.replace(/^\/+/, "") || "index.html";
+    zipEntries[safePath] = strToU8(content as string);
+  }
+
+  const zipped = zipSync(zipEntries, { level: 6 });
+  const safeSlug = (site.slug ?? "site").replace(/[^a-z0-9-]/gi, "-");
+
+  res
+    .status(200)
+    .set({
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${safeSlug}.zip"`,
+      "Content-Length": String(zipped.length),
+      "Cache-Control": "no-store",
+    })
+    .send(Buffer.from(zipped));
+});
 
 router.get("/sites/:id/events", async (req, res) => {
   const user = await userFromSseAuth(req);
