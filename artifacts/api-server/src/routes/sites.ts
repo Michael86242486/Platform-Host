@@ -656,6 +656,124 @@ router.get("/sites/:id/checkpoints/diff", requireAuth, async (req, res) => {
 });
 
 /**
+ * GET /sites/:id/checkpoints/file-diff?a=<cpId>&b=<cpId>&file=<path>
+ *
+ * Returns a unified hunk-based line diff for a single file across two
+ * checkpoints. Uses LCS (longest-common-subsequence) diffing with ±3 lines
+ * of context per hunk. Files > 400 lines are truncated to keep it O(n²)-safe.
+ */
+
+/** LCS-based line-by-line differ — returns hunks in unified-diff style */
+function computeLineDiff(
+  before: string,
+  after: string,
+): {
+  hunks: Array<{ startA: number; startB: number; lines: Array<{ type: "add" | "remove" | "context"; text: string; lineA: number | null; lineB: number | null }> }>;
+  stats: { added: number; removed: number };
+  truncated: boolean;
+} {
+  const LIMIT = 400;
+  const rawA = before.split("\n");
+  const rawB = after.split("\n");
+  const truncated = rawA.length > LIMIT || rawB.length > LIMIT;
+  const a = rawA.slice(0, LIMIT);
+  const b = rawB.slice(0, LIMIT);
+  const m = a.length, n = b.length;
+
+  // Build LCS DP table (Uint32Array is far cheaper than nested arrays)
+  const dp: Uint32Array[] = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+
+  // Backtrack into flat diff lines
+  type RawLine = { type: "add" | "remove" | "context"; text: string; lineA: number | null; lineB: number | null };
+  const lines: RawLine[] = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+      lines.unshift({ type: "context", text: a[i - 1], lineA: i, lineB: j });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      lines.unshift({ type: "add", text: b[j - 1], lineA: null, lineB: j });
+      j--;
+    } else {
+      lines.unshift({ type: "remove", text: a[i - 1], lineA: i, lineB: null });
+      i--;
+    }
+  }
+
+  // Group into hunks — ±3 context lines around each run of changes
+  const CONTEXT = 3;
+  const changeIdx = lines.reduce<number[]>((acc, l, k) => { if (l.type !== "context") acc.push(k); return acc; }, []);
+  if (changeIdx.length === 0) return { hunks: [], stats: { added: 0, removed: 0 }, truncated };
+
+  const windows: Array<[number, number]> = [];
+  let ws = Math.max(0, changeIdx[0] - CONTEXT);
+  let we = Math.min(lines.length - 1, changeIdx[0] + CONTEXT);
+  for (let k = 1; k < changeIdx.length; k++) {
+    const ci = changeIdx[k];
+    const ns = Math.max(0, ci - CONTEXT);
+    if (ns <= we + 1) { we = Math.min(lines.length - 1, ci + CONTEXT); }
+    else { windows.push([ws, we]); ws = ns; we = Math.min(lines.length - 1, ci + CONTEXT); }
+  }
+  windows.push([ws, we]);
+
+  const hunks = windows.map(([wStart, wEnd]) => {
+    const hLines = lines.slice(wStart, wEnd + 1);
+    const firstA = hLines.find((l) => l.lineA != null)?.lineA ?? 1;
+    const firstB = hLines.find((l) => l.lineB != null)?.lineB ?? 1;
+    return { startA: firstA, startB: firstB, lines: hLines };
+  });
+
+  return {
+    hunks,
+    stats: { added: lines.filter((l) => l.type === "add").length, removed: lines.filter((l) => l.type === "remove").length },
+    truncated,
+  };
+}
+
+router.get("/sites/:id/checkpoints/file-diff", requireAuth, async (req, res) => {
+  const { a, b, file } = req.query as { a?: string; b?: string; file?: string };
+  if (!a || !b || !file) {
+    res.status(400).json({ error: "missing_params", message: "Provide ?a=<cpId>&b=<cpId>&file=<path>" });
+    return;
+  }
+  const [site] = await db
+    .select().from(sitesTable)
+    .where(and(eq(sitesTable.id, String(req.params.id)), eq(sitesTable.userId, req.user!.id)))
+    .limit(1);
+  if (!site) { res.status(404).json({ error: "not_found" }); return; }
+
+  const checkpoints = (site.checkpoints ?? []) as Array<{ id: string; label: string; createdAt: string; progress: number; files?: SiteFiles }>;
+  const cpA = checkpoints.find((c) => c.id === a);
+  const cpB = checkpoints.find((c) => c.id === b);
+  if (!cpA || !cpB) { res.status(404).json({ error: "checkpoint_not_found" }); return; }
+  if (!cpA.files || !cpB.files) { res.status(409).json({ error: "no_files" }); return; }
+
+  const filesA = cpA.files as Record<string, string>;
+  const filesB = cpB.files as Record<string, string>;
+  const before = filesA[file] ?? "";
+  const afterContent = filesB[file] ?? "";
+
+  if (!before && !afterContent) { res.status(404).json({ error: "file_not_found" }); return; }
+
+  const { hunks, stats, truncated } = computeLineDiff(before, afterContent);
+  res.json({
+    file,
+    from: { id: cpA.id, label: cpA.label },
+    to: { id: cpB.id, label: cpB.label },
+    hunks,
+    stats,
+    truncated,
+  });
+});
+
+/**
  * Re-upload an already-built site to Puter. Used to recover sites whose first
  * Puter upload failed (e.g. legacy `wf-` rows from before the API was fixed,
  * or transient network errors). Does NOT regenerate any HTML — it just takes

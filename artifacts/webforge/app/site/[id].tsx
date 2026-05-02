@@ -1274,6 +1274,22 @@ type DiffResult = {
   modified: DiffFile[];
 } | null;
 
+type FileDiffLine = {
+  type: "add" | "remove" | "context";
+  text: string;
+  lineA: number | null;
+  lineB: number | null;
+};
+type FileDiffHunk = { startA: number; startB: number; lines: FileDiffLine[] };
+type FileDiffResponse = {
+  file: string;
+  from: { id: string; label: string };
+  to: { id: string; label: string };
+  hunks: FileDiffHunk[];
+  stats: { added: number; removed: number };
+  truncated: boolean;
+} | null;
+
 function ConsoleTab({
   site,
   messages,
@@ -1300,7 +1316,35 @@ function ConsoleTab({
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
 
+  const [selectedDiffFile, setSelectedDiffFile] = useState<string | null>(null);
+  const [fileDiff, setFileDiff] = useState<FileDiffResponse>(null);
+  const [fileDiffLoading, setFileDiffLoading] = useState(false);
+  const [fileDiffError, setFileDiffError] = useState<string | null>(null);
+
   const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+
+  const runFileDiff = useCallback(async (path: string) => {
+    if (!diffFromId || !diffToId) return;
+    setSelectedDiffFile(path);
+    setFileDiff(null);
+    setFileDiffLoading(true);
+    setFileDiffError(null);
+    try {
+      const res = await fetch(
+        `${apiBase}/api/sites/${site.id}/checkpoints/file-diff?a=${encodeURIComponent(diffFromId)}&b=${encodeURIComponent(diffToId)}&file=${encodeURIComponent(path)}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) {
+        const j = await res.json() as { message?: string };
+        throw new Error(j.message ?? `HTTP ${res.status}`);
+      }
+      setFileDiff(await res.json() as FileDiffResponse);
+    } catch (e) {
+      setFileDiffError(e instanceof Error ? e.message : "Fetch failed");
+    } finally {
+      setFileDiffLoading(false);
+    }
+  }, [apiBase, site.id, diffFromId, diffToId]);
 
   const runDiff = useCallback(async (fromId: string, toId: string) => {
     setDiffLoading(true);
@@ -1920,15 +1964,24 @@ function ConsoleTab({
                         </View>
                       ))}
                       {diffResult.modified.map((f) => (
-                        <View key={f.path} style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+                        <Pressable
+                          key={f.path}
+                          onPress={() => void runFileDiff(f.path)}
+                          style={({ pressed }) => ({
+                            flexDirection: "row", gap: 6, alignItems: "center",
+                            paddingVertical: 2, paddingHorizontal: 4, borderRadius: 4,
+                            backgroundColor: pressed ? "#FEBC2E0D" : "transparent",
+                          })}
+                        >
                           <MonoText style={{ color: "#FEBC2E", fontSize: 10, width: 10 }}>~</MonoText>
                           <MonoText style={{ color: "#FEBC2E", fontSize: 10, flex: 1 }} numberOfLines={1}>{f.path}</MonoText>
                           {f.before != null && f.after != null && (
                             <MonoText style={{ color: "#FEBC2E88", fontSize: 9 }}>
-                              {(f.before / 1024).toFixed(1)}k → {(f.after / 1024).toFixed(1)}k
+                              {(f.before / 1024).toFixed(1)}k→{(f.after / 1024).toFixed(1)}k
                             </MonoText>
                           )}
-                        </View>
+                          <Feather name="chevron-right" size={10} color="#FEBC2E88" />
+                        </Pressable>
                       ))}
                     </View>
                   </View>
@@ -1937,6 +1990,139 @@ function ConsoleTab({
                   <MonoText style={{ color: colors.mutedForeground, fontSize: 10 }}>
                     select two checkpoints above to compare
                   </MonoText>
+                )}
+              </View>
+            </Surface>
+          )}
+
+          {/* ── File-level line diff viewer ── */}
+          {selectedDiffFile && (
+            <Surface
+              style={{
+                borderRadius: 12,
+                overflow: "hidden",
+                borderWidth: 1,
+                borderColor: "#FEBC2E55",
+              }}
+            >
+              {/* header */}
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 8,
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  backgroundColor: "#FEBC2E0A",
+                  borderBottomWidth: 1,
+                  borderBottomColor: "#FEBC2E33",
+                }}
+              >
+                <Pressable
+                  onPress={() => { setSelectedDiffFile(null); setFileDiff(null); setFileDiffError(null); }}
+                  hitSlop={8}
+                  style={{ marginRight: 2 }}
+                >
+                  <Feather name="arrow-left" size={13} color="#FEBC2E" />
+                </Pressable>
+                <Feather name="file-text" size={11} color="#FEBC2E88" />
+                <MonoText style={{ color: "#FEBC2E", fontSize: 10, flex: 1, letterSpacing: 0.3 }} numberOfLines={1}>
+                  {selectedDiffFile}
+                </MonoText>
+                {fileDiff && (
+                  <View style={{ flexDirection: "row", gap: 6 }}>
+                    {fileDiff.stats.added > 0 && (
+                      <MonoText style={{ color: colors.success, fontSize: 9 }}>+{fileDiff.stats.added}</MonoText>
+                    )}
+                    {fileDiff.stats.removed > 0 && (
+                      <MonoText style={{ color: colors.destructive, fontSize: 9 }}>−{fileDiff.stats.removed}</MonoText>
+                    )}
+                  </View>
+                )}
+              </View>
+
+              <View style={{ backgroundColor: "#040709" }}>
+                {fileDiffLoading && (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 12 }}>
+                    <ActivityIndicator size="small" color="#FEBC2E" />
+                    <MonoText style={{ color: colors.mutedForeground, fontSize: 10 }}>computing diff…</MonoText>
+                  </View>
+                )}
+                {fileDiffError && (
+                  <MonoText style={{ color: colors.destructive, fontSize: 11, padding: 12 }}>✗ {fileDiffError}</MonoText>
+                )}
+                {fileDiff && !fileDiffLoading && (
+                  <>
+                    {fileDiff.truncated && (
+                      <View style={{ paddingHorizontal: 10, paddingVertical: 4, backgroundColor: "#FEBC2E0A", borderBottomWidth: 1, borderBottomColor: "#FEBC2E22" }}>
+                        <MonoText style={{ color: "#FEBC2E99", fontSize: 9 }}>
+                          ⚠ file truncated to 400 lines for performance
+                        </MonoText>
+                      </View>
+                    )}
+                    {fileDiff.hunks.length === 0 && (
+                      <MonoText style={{ color: colors.mutedForeground, fontSize: 10, padding: 12 }}>
+                        No differences found (files are identical).
+                      </MonoText>
+                    )}
+                    {fileDiff.hunks.map((hunk, hi) => (
+                      <View key={hi}>
+                        {/* hunk header */}
+                        <View style={{ paddingHorizontal: 10, paddingVertical: 3, backgroundColor: "#58A6FF0A", borderTopWidth: hi > 0 ? 1 : 0, borderTopColor: "#58A6FF22" }}>
+                          <MonoText style={{ color: "#58A6FF88", fontSize: 9 }}>
+                            {`@@ -${hunk.startA} +${hunk.startB} @@`}
+                          </MonoText>
+                        </View>
+                        {/* diff lines */}
+                        {hunk.lines.map((line, li) => {
+                          const isAdd = line.type === "add";
+                          const isRem = line.type === "remove";
+                          const lineColor = isAdd ? colors.success : isRem ? colors.destructive : colors.mutedForeground;
+                          const lineBg = isAdd ? `${colors.success}0D` : isRem ? `${colors.destructive}0D` : "transparent";
+                          const prefix = isAdd ? "+" : isRem ? "−" : " ";
+                          const lineNo = isAdd ? (line.lineB ?? "") : (line.lineA ?? "");
+                          return (
+                            <View
+                              key={li}
+                              style={{
+                                flexDirection: "row",
+                                backgroundColor: lineBg,
+                                borderLeftWidth: isAdd || isRem ? 2 : 0,
+                                borderLeftColor: lineColor,
+                              }}
+                            >
+                              {/* line number */}
+                              <MonoText
+                                style={{
+                                  color: lineColor + "55",
+                                  fontSize: 9,
+                                  width: 32,
+                                  textAlign: "right",
+                                  paddingRight: 6,
+                                  paddingVertical: 1,
+                                  paddingLeft: 4,
+                                  userSelect: "none",
+                                }}
+                              >
+                                {String(lineNo)}
+                              </MonoText>
+                              {/* +/- prefix */}
+                              <MonoText style={{ color: lineColor, fontSize: 9, width: 12, paddingVertical: 1 }}>
+                                {prefix}
+                              </MonoText>
+                              {/* line content */}
+                              <MonoText
+                                style={{ color: isAdd || isRem ? lineColor : lineColor + "BB", fontSize: 9, flex: 1, paddingVertical: 1, paddingRight: 8 }}
+                                numberOfLines={1}
+                              >
+                                {line.text}
+                              </MonoText>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    ))}
+                  </>
                 )}
               </View>
             </Surface>
