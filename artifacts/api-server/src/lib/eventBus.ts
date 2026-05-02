@@ -34,6 +34,8 @@ export type SiteEvent =
       siteName: string;
       publicUrl: string | null;
       isEdit?: boolean;
+      fileCount?: number;
+      changedFileCount?: number;
     };
 
 class SiteEventBus extends EventEmitter {

@@ -1,12 +1,9 @@
 import { useRouter } from "expo-router";
 import React, { useCallback, useState } from "react";
 import {
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
+  ActivityIndicator,
   StyleSheet,
   Text,
-  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
@@ -14,33 +11,26 @@ import {
 import { Brand } from "@/components/Brand";
 import { MatrixRain } from "@/components/MatrixRain";
 import { MonoText } from "@/components/MonoText";
-import { NeonButton } from "@/components/NeonButton";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/lib/auth";
+import { Pressable } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
 export default function SignInScreen() {
   const colors = useColors();
-  const router = useRouter();
-  const { signInWithEmail } = useAuth();
+  const { login, isLoaded } = useAuth();
   const { width, height } = useWindowDimensions();
-
-  const [email, setEmail] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const accent = "#00FFC2";
 
-  const onSubmit = useCallback(async () => {
-    const trimmed = email.trim().toLowerCase();
-    if (!trimmed) return;
+  const onLogin = useCallback(async () => {
     setLoading(true);
-    setError(null);
-    const result = await signInWithEmail(trimmed);
-    setLoading(false);
-    if (result.ok) {
-      router.replace("/(home)");
-    } else {
-      setError(result.error);
+    try {
+      await login();
+    } finally {
+      setLoading(false);
     }
-  }, [email, signInWithEmail, router]);
+  }, [login]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -51,135 +41,124 @@ export default function SignInScreen() {
         pointerEvents="none"
         style={[
           StyleSheet.absoluteFill,
-          { backgroundColor: "rgba(10,14,20,0.65)" },
+          { backgroundColor: "rgba(10,14,20,0.72)" },
         ]}
       />
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          paddingHorizontal: 28,
+          paddingVertical: 48,
+        }}
       >
-        <ScrollView
-          contentContainerStyle={{
-            flexGrow: 1,
-            justifyContent: "center",
-            paddingHorizontal: 24,
-            paddingVertical: 40,
+        {/* Logo + name */}
+        <Brand size={56} />
+        <Text
+          style={{
+            fontSize: 36,
+            color: colors.foreground,
+            fontFamily: "Inter_700Bold",
+            marginTop: 20,
+            letterSpacing: -1,
           }}
-          keyboardShouldPersistTaps="handled"
         >
-          <View style={{ alignItems: "center", marginBottom: 32 }}>
-            <Brand size={44} />
-          </View>
+          WebForge
+        </Text>
+        <MonoText
+          style={{
+            color: colors.mutedForeground,
+            fontSize: 13,
+            marginTop: 8,
+            textAlign: "center",
+            lineHeight: 20,
+          }}
+        >
+          {"// AI website builder · publish anywhere"}
+        </MonoText>
 
-          <View style={{ marginBottom: 28 }}>
-            <Text
-              style={{
-                fontSize: 32,
-                color: colors.foreground,
-                fontFamily: "Inter_700Bold",
-                letterSpacing: -1,
-                textAlign: "center",
-              }}
-            >
-              Sign in to WebForge
-            </Text>
-            <MonoText
-              style={{
-                color: colors.mutedForeground,
-                textAlign: "center",
-                marginTop: 6,
-                fontSize: 13,
-              }}
-            >
-              {"// magic link · no password · no setup"}
-            </MonoText>
-          </View>
+        {/* Feature pills */}
+        <View
+          style={{
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: 8,
+            justifyContent: "center",
+            marginTop: 32,
+            marginBottom: 40,
+          }}
+        >
+          {["Multi-page sites", "Live preview", "Checkpoint history", "AI chat edits"].map(
+            (f) => (
+              <View
+                key={f}
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: 20,
+                  borderWidth: 1,
+                  borderColor: `${accent}44`,
+                  backgroundColor: `${accent}0A`,
+                }}
+              >
+                <MonoText style={{ color: accent, fontSize: 11 }}>{f}</MonoText>
+              </View>
+            ),
+          )}
+        </View>
 
-          <View style={{ gap: 12, marginTop: 8 }}>
-            <FieldLabel>Email</FieldLabel>
-            <FancyInput
-              value={email}
-              onChangeText={setEmail}
-              placeholder="you@dev.io"
-              autoCapitalize="none"
-              keyboardType="email-address"
-              autoComplete="email"
-              onSubmitEditing={onSubmit}
-              returnKeyType="go"
-            />
-            {error ? <ErrorText>{error}</ErrorText> : null}
+        {/* Login button */}
+        <Pressable
+          onPress={onLogin}
+          disabled={loading || !isLoaded}
+          style={({ pressed }) => ({
+            width: "100%",
+            maxWidth: 320,
+            height: 54,
+            borderRadius: 14,
+            backgroundColor: loading ? `${accent}22` : accent,
+            borderWidth: loading ? 1 : 0,
+            borderColor: accent,
+            alignItems: "center",
+            justifyContent: "center",
+            flexDirection: "row",
+            gap: 10,
+            opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          {loading ? (
+            <ActivityIndicator color={accent} size="small" />
+          ) : (
+            <>
+              <Feather name="log-in" size={18} color="#0A0E14" />
+              <Text
+                style={{
+                  color: "#0A0E14",
+                  fontSize: 16,
+                  fontFamily: "Inter_700Bold",
+                  letterSpacing: -0.3,
+                }}
+              >
+                Log in
+              </Text>
+            </>
+          )}
+        </Pressable>
 
-            <NeonButton
-              title="Continue →"
-              onPress={onSubmit}
-              loading={loading}
-              disabled={!email}
-              fullWidth
-              style={{ marginTop: 8 }}
-            />
-
-            <MonoText
-              style={{
-                color: colors.mutedForeground,
-                textAlign: "center",
-                marginTop: 12,
-                fontSize: 11,
-                lineHeight: 16,
-              }}
-            >
-              {"// we'll create your account on first sign-in.\n// no email is sent — your token lives on this device."}
-            </MonoText>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+        <MonoText
+          style={{
+            color: colors.mutedForeground,
+            fontSize: 11,
+            textAlign: "center",
+            marginTop: 16,
+            lineHeight: 18,
+          }}
+        >
+          {"// secure login · no password needed"}
+        </MonoText>
+      </View>
     </View>
-  );
-}
-
-function FieldLabel({ children }: { children: React.ReactNode }) {
-  const colors = useColors();
-  return (
-    <MonoText
-      style={{
-        color: colors.mutedForeground,
-        fontSize: 11,
-        letterSpacing: 1.4,
-        textTransform: "uppercase",
-      }}
-    >
-      {children}
-    </MonoText>
-  );
-}
-
-function FancyInput(props: React.ComponentProps<typeof TextInput>) {
-  const colors = useColors();
-  return (
-    <TextInput
-      placeholderTextColor={colors.mutedForeground}
-      {...props}
-      style={[
-        {
-          backgroundColor: colors.cardElevated,
-          borderColor: colors.border,
-          borderWidth: 1,
-          borderRadius: 12,
-          paddingHorizontal: 14,
-          paddingVertical: 14,
-          color: colors.foreground,
-          fontFamily: "Inter_500Medium",
-          fontSize: 15,
-        },
-        props.style as object,
-      ]}
-    />
-  );
-}
-
-function ErrorText({ children }: { children: React.ReactNode }) {
-  const colors = useColors();
-  return (
-    <Text style={{ color: colors.destructive, fontSize: 12 }}>{children}</Text>
   );
 }

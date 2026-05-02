@@ -1264,6 +1264,16 @@ type QualityReport = {
   summary?: string;
 };
 
+type DiffFile = { path: string; bytes?: number; before?: number; after?: number };
+type DiffResult = {
+  from: SiteCheckpointDto;
+  to: SiteCheckpointDto;
+  summary: { added: number; removed: number; modified: number; unchanged: number };
+  added: DiffFile[];
+  removed: DiffFile[];
+  modified: DiffFile[];
+} | null;
+
 function ConsoleTab({
   site,
   messages,
@@ -1280,6 +1290,49 @@ function ConsoleTab({
   currentFile: string | null;
 }) {
   const scrollRef = useRef<ScrollView>(null);
+  const checkpoints = ((site as unknown as { checkpoints?: SiteCheckpointDto[] }).checkpoints ?? [])
+    .filter((c) => c.hasFiles)
+    .slice()
+    .reverse();
+  const [diffFromId, setDiffFromId] = useState<string | null>(null);
+  const [diffToId, setDiffToId] = useState<string | null>(null);
+  const [diffResult, setDiffResult] = useState<DiffResult>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+
+  const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+
+  const runDiff = useCallback(async (fromId: string, toId: string) => {
+    setDiffLoading(true);
+    setDiffError(null);
+    setDiffResult(null);
+    try {
+      const res = await fetch(
+        `${apiBase}/api/sites/${site.id}/checkpoints/diff?a=${encodeURIComponent(fromId)}&b=${encodeURIComponent(toId)}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) {
+        const j = await res.json() as { message?: string };
+        throw new Error(j.message ?? `HTTP ${res.status}`);
+      }
+      setDiffResult(await res.json() as DiffResult);
+    } catch (e) {
+      setDiffError(e instanceof Error ? e.message : "Diff failed");
+    } finally {
+      setDiffLoading(false);
+    }
+  }, [apiBase, site.id]);
+
+  const handleDiffFrom = (id: string) => {
+    setDiffFromId(id);
+    setDiffResult(null);
+    if (diffToId && id !== diffToId) void runDiff(id, diffToId);
+  };
+  const handleDiffTo = (id: string) => {
+    setDiffToId(id);
+    setDiffResult(null);
+    if (diffFromId && diffFromId !== id) void runDiff(diffFromId, id);
+  };
 
   const logMessages = useMemo(
     () =>
@@ -1730,6 +1783,164 @@ function ConsoleTab({
               )}
             </View>
           </Surface>
+
+          {/* ── Checkpoint Diff ── */}
+          {checkpoints.length >= 2 && (
+            <Surface
+              style={{
+                borderRadius: 12,
+                overflow: "hidden",
+                borderWidth: 1,
+                borderColor: colors.border,
+              }}
+            >
+              {/* header */}
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 8,
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  backgroundColor: colors.cardElevated,
+                  borderBottomWidth: 1,
+                  borderBottomColor: colors.border,
+                }}
+              >
+                <Feather name="git-commit" size={12} color={colors.mutedForeground} />
+                <MonoText style={{ color: colors.mutedForeground, fontSize: 10, flex: 1, letterSpacing: 0.5 }}>
+                  checkpoint diff
+                </MonoText>
+              </View>
+
+              <View style={{ padding: 12, gap: 10, backgroundColor: "#080C10" }}>
+                {/* pickers row */}
+                <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                  {/* FROM */}
+                  <View style={{ flex: 1 }}>
+                    <MonoText style={{ color: accent + "88", fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>FROM</MonoText>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 5 }}>
+                      {checkpoints.map((cp) => (
+                        <Pressable
+                          key={cp.id}
+                          onPress={() => handleDiffFrom(cp.id)}
+                          style={({ pressed }) => ({
+                            paddingHorizontal: 8,
+                            paddingVertical: 4,
+                            borderRadius: 6,
+                            borderWidth: 1,
+                            borderColor: diffFromId === cp.id ? accent : colors.border,
+                            backgroundColor: diffFromId === cp.id ? `${accent}1A` : colors.cardElevated,
+                            opacity: pressed ? 0.7 : 1,
+                          })}
+                        >
+                          <MonoText style={{ color: diffFromId === cp.id ? accent : colors.mutedForeground, fontSize: 9 }} numberOfLines={1}>
+                            {cp.label.slice(0, 22)}
+                          </MonoText>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+                  <Feather name="arrow-right" size={14} color={colors.mutedForeground} />
+                  {/* TO */}
+                  <View style={{ flex: 1 }}>
+                    <MonoText style={{ color: accent + "88", fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>TO</MonoText>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 5 }}>
+                      {checkpoints.map((cp) => (
+                        <Pressable
+                          key={cp.id}
+                          onPress={() => handleDiffTo(cp.id)}
+                          style={({ pressed }) => ({
+                            paddingHorizontal: 8,
+                            paddingVertical: 4,
+                            borderRadius: 6,
+                            borderWidth: 1,
+                            borderColor: diffToId === cp.id ? accent : colors.border,
+                            backgroundColor: diffToId === cp.id ? `${accent}1A` : colors.cardElevated,
+                            opacity: pressed ? 0.7 : 1,
+                          })}
+                        >
+                          <MonoText style={{ color: diffToId === cp.id ? accent : colors.mutedForeground, fontSize: 9 }} numberOfLines={1}>
+                            {cp.label.slice(0, 22)}
+                          </MonoText>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+                </View>
+
+                {/* diff result */}
+                {diffLoading && (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <ActivityIndicator size="small" color={accent} />
+                    <MonoText style={{ color: colors.mutedForeground, fontSize: 10 }}>computing diff…</MonoText>
+                  </View>
+                )}
+                {diffError && (
+                  <MonoText style={{ color: colors.destructive, fontSize: 11 }}>✗ {diffError}</MonoText>
+                )}
+                {diffResult && !diffLoading && (
+                  <View style={{ gap: 6 }}>
+                    {/* summary badges */}
+                    <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+                      {diffResult.summary.added > 0 && (
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 4, backgroundColor: `${colors.success}22`, borderWidth: 1, borderColor: `${colors.success}55` }}>
+                          <MonoText style={{ color: colors.success, fontSize: 10 }}>+{diffResult.summary.added} added</MonoText>
+                        </View>
+                      )}
+                      {diffResult.summary.removed > 0 && (
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 4, backgroundColor: `${colors.destructive}22`, borderWidth: 1, borderColor: `${colors.destructive}55` }}>
+                          <MonoText style={{ color: colors.destructive, fontSize: 10 }}>−{diffResult.summary.removed} removed</MonoText>
+                        </View>
+                      )}
+                      {diffResult.summary.modified > 0 && (
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 4, backgroundColor: "#FEBC2E22", borderWidth: 1, borderColor: "#FEBC2E55" }}>
+                          <MonoText style={{ color: "#FEBC2E", fontSize: 10 }}>~{diffResult.summary.modified} changed</MonoText>
+                        </View>
+                      )}
+                      {diffResult.summary.unchanged > 0 && (
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 4, backgroundColor: `${colors.mutedForeground}11`, borderWidth: 1, borderColor: `${colors.mutedForeground}33` }}>
+                          <MonoText style={{ color: colors.mutedForeground, fontSize: 10 }}>{diffResult.summary.unchanged} same</MonoText>
+                        </View>
+                      )}
+                    </View>
+                    {/* per-file list */}
+                    <View style={{ gap: 2 }}>
+                      {diffResult.added.map((f) => (
+                        <View key={f.path} style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+                          <MonoText style={{ color: colors.success, fontSize: 10, width: 10 }}>+</MonoText>
+                          <MonoText style={{ color: colors.success, fontSize: 10, flex: 1 }} numberOfLines={1}>{f.path}</MonoText>
+                          {f.bytes != null && <MonoText style={{ color: colors.success + "88", fontSize: 9 }}>{(f.bytes / 1024).toFixed(1)}k</MonoText>}
+                        </View>
+                      ))}
+                      {diffResult.removed.map((f) => (
+                        <View key={f.path} style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+                          <MonoText style={{ color: colors.destructive, fontSize: 10, width: 10 }}>−</MonoText>
+                          <MonoText style={{ color: colors.destructive, fontSize: 10, flex: 1 }} numberOfLines={1}>{f.path}</MonoText>
+                        </View>
+                      ))}
+                      {diffResult.modified.map((f) => (
+                        <View key={f.path} style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+                          <MonoText style={{ color: "#FEBC2E", fontSize: 10, width: 10 }}>~</MonoText>
+                          <MonoText style={{ color: "#FEBC2E", fontSize: 10, flex: 1 }} numberOfLines={1}>{f.path}</MonoText>
+                          {f.before != null && f.after != null && (
+                            <MonoText style={{ color: "#FEBC2E88", fontSize: 9 }}>
+                              {(f.before / 1024).toFixed(1)}k → {(f.after / 1024).toFixed(1)}k
+                            </MonoText>
+                          )}
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
+                {!diffFromId && !diffToId && (
+                  <MonoText style={{ color: colors.mutedForeground, fontSize: 10 }}>
+                    select two checkpoints above to compare
+                  </MonoText>
+                )}
+              </View>
+            </Surface>
+          )}
         </>
       )}
     </ScrollView>

@@ -13,7 +13,6 @@ import {
   db,
   jobsTable,
   messagesTable,
-  sessionsTable,
   sitesTable,
   usersTable,
   type Site,
@@ -596,6 +595,67 @@ router.post("/sites/:id/checkpoints/:checkpointId/restore", requireAuth, async (
 });
 
 /**
+ * GET /sites/:id/checkpoints/diff?a=<cpId>&b=<cpId>
+ *
+ * Compare two checkpoint file snapshots. Returns per-file status:
+ * added | removed | modified | unchanged. Both checkpoints must have files.
+ */
+router.get("/sites/:id/checkpoints/diff", requireAuth, async (req, res) => {
+  const { a, b } = req.query as { a?: string; b?: string };
+  if (!a || !b) {
+    res.status(400).json({ error: "missing_params", message: "Provide ?a=<cpId>&b=<cpId>" });
+    return;
+  }
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(and(eq(sitesTable.id, String(req.params.id)), eq(sitesTable.userId, req.user!.id)))
+    .limit(1);
+  if (!site) { res.status(404).json({ error: "not_found" }); return; }
+
+  const checkpoints = (site.checkpoints ?? []) as Array<{
+    id: string; label: string; createdAt: string; progress: number; files?: SiteFiles;
+  }>;
+  const cpA = checkpoints.find((c) => c.id === a);
+  const cpB = checkpoints.find((c) => c.id === b);
+  if (!cpA || !cpB) { res.status(404).json({ error: "checkpoint_not_found" }); return; }
+  if (!cpA.files || !cpB.files) {
+    res.status(409).json({ error: "no_files", message: "Both checkpoints must have saved files." });
+    return;
+  }
+
+  const filesA = cpA.files as Record<string, string>;
+  const filesB = cpB.files as Record<string, string>;
+  const allPaths = Array.from(new Set([...Object.keys(filesA), ...Object.keys(filesB)])).sort();
+
+  const added: { path: string; bytes: number }[] = [];
+  const removed: { path: string; bytes: number }[] = [];
+  const modified: { path: string; before: number; after: number }[] = [];
+  let unchanged = 0;
+
+  for (const path of allPaths) {
+    const inA = path in filesA;
+    const inB = path in filesB;
+    if (!inA) { added.push({ path, bytes: filesB[path].length }); }
+    else if (!inB) { removed.push({ path, bytes: filesA[path].length }); }
+    else if (filesA[path] !== filesB[path]) {
+      modified.push({ path, before: filesA[path].length, after: filesB[path].length });
+    } else {
+      unchanged++;
+    }
+  }
+
+  res.json({
+    from: { id: cpA.id, label: cpA.label, createdAt: cpA.createdAt, progress: cpA.progress },
+    to: { id: cpB.id, label: cpB.label, createdAt: cpB.createdAt, progress: cpB.progress },
+    summary: { added: added.length, removed: removed.length, modified: modified.length, unchanged },
+    added,
+    removed,
+    modified,
+  });
+});
+
+/**
  * Re-upload an already-built site to Puter. Used to recover sites whose first
  * Puter upload failed (e.g. legacy `wf-` rows from before the API was fixed,
  * or transient network errors). Does NOT regenerate any HTML — it just takes
@@ -1043,32 +1103,6 @@ router.post("/sites/:id/domain/verify", requireAuth, async (req, res) => {
 
 // --- Server-Sent Events: live site activity --------------------------------
 
-// EventSource doesn't support custom headers in browsers, so SSE auth uses
-// a `?token=` query param (same wf_… session token used elsewhere). We also
-// honor the standard Authorization header for native clients that wrap fetch.
-async function userFromSseAuth(req: import("express").Request) {
-  const headerBearer = (() => {
-    const h = req.headers.authorization;
-    return h?.startsWith("Bearer ") ? h.slice(7) : null;
-  })();
-  const queryToken =
-    typeof req.query.token === "string" ? req.query.token : null;
-  const token = headerBearer || queryToken;
-  if (!token || !token.startsWith("wf_")) return null;
-  const [session] = await db
-    .select()
-    .from(sessionsTable)
-    .where(eq(sessionsTable.token, token))
-    .limit(1);
-  if (!session || session.expiresAt < new Date()) return null;
-  const [user] = await db
-    .select()
-    .from(usersTable)
-    .where(eq(usersTable.id, session.userId))
-    .limit(1);
-  return user ?? null;
-}
-
 // GET /sites/:id/export — download all site files as a ZIP archive
 router.get("/sites/:id/export", requireAuth, async (req, res) => {
   const [site] = await db
@@ -1114,12 +1148,10 @@ router.get("/sites/:id/export", requireAuth, async (req, res) => {
     .send(Buffer.from(zipped));
 });
 
-router.get("/sites/:id/events", async (req, res) => {
-  const user = await userFromSseAuth(req);
-  if (!user) {
-    res.status(401).json({ error: "unauthorized" });
-    return;
-  }
+// Cookies are sent automatically by browsers; native clients pass
+// Authorization: Bearer <sid> — handled by authMiddleware on all routes.
+router.get("/sites/:id/events", requireAuth, async (req, res) => {
+  const user = req.user!;
   const [site] = await db
     .select()
     .from(sitesTable)

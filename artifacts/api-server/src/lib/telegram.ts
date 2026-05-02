@@ -130,7 +130,7 @@ class TelegramBotManager {
 
     siteEventBus.on("site:*", (ev: SiteEvent) => {
       if (ev.type !== "site_ready") return;
-      this.notifySiteReady(ev.userId, ev.siteName, ev.publicUrl, ev.isEdit).catch((err) => {
+      this.notifySiteReady(ev.userId, ev.siteName, ev.publicUrl, ev.isEdit, ev.fileCount, ev.changedFileCount).catch((err) => {
         logger.warn({ err, siteId: ev.siteId }, "notifySiteReady failed");
       });
     });
@@ -141,6 +141,8 @@ class TelegramBotManager {
     siteName: string,
     publicUrl: string | null,
     isEdit?: boolean,
+    fileCount?: number,
+    changedFileCount?: number,
   ): Promise<void> {
     const recipients: Array<{ bot: TelegramBot; chatId: number }> = [];
 
@@ -156,9 +158,14 @@ class TelegramBotManager {
     if (recipients.length === 0) return;
 
     const urlLine = publicUrl ? `\n🌐 ${publicUrl}` : "";
+    const statsLine = fileCount != null
+      ? isEdit && changedFileCount != null
+        ? `\n📝 ${changedFileCount} file${changedFileCount !== 1 ? "s" : ""} changed`
+        : `\n📄 ${fileCount} file${fileCount !== 1 ? "s" : ""} generated`
+      : "";
     const text = isEdit
-      ? `✏️ *${escapeMd(siteName)}* was updated!${urlLine}\n\nYour changes are live. Tap /sites to manage your projects.`
-      : `✅ *${escapeMd(siteName)}* is ready!${urlLine}\n\nTap /sites to manage your projects.`;
+      ? `✏️ *${escapeMd(siteName)}* was updated!${urlLine}${statsLine}\n\nYour changes are live\\. Tap /sites to manage your projects\\.`
+      : `✅ *${escapeMd(siteName)}* is ready!${urlLine}${statsLine}\n\nTap /sites to manage your projects\\.`;
 
     for (const { bot, chatId } of recipients) {
       await bot
@@ -198,11 +205,9 @@ class TelegramBotManager {
       const [created] = await db
         .insert(usersTable)
         .values({
-          clerkUserId: "system_telegram_owner",
           email: "telegram@webforge.local",
           firstName: "Telegram",
           lastName: "Bot",
-          imageUrl: null,
         })
         .returning();
       user = created;
