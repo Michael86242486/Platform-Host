@@ -1,157 +1,287 @@
-import { randomBytes } from "node:crypto";
-
-import { Router } from "express";
+import * as oidc from "openid-client";
+import { Router, type IRouter, type Request, type Response } from "express";
+import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import {
+  clearSession,
+  getOidcConfig,
+  getSessionId,
+  createSession,
+  deleteSession,
+  getSession,
+  SESSION_COOKIE,
+  SESSION_TTL,
+  ISSUER_URL,
+  type SessionData,
+  type SessionUser,
+} from "../lib/auth";
 
-import { db, sessionsTable, usersTable } from "../lib/db";
-import { logger } from "../lib/logger";
+const OIDC_COOKIE_TTL = 10 * 60 * 1000;
 
-const router = Router();
+const router: IRouter = Router();
 
-const SESSION_TTL_DAYS = 60;
-
-function ttl(): Date {
-  const d = new Date();
-  d.setDate(d.getDate() + SESSION_TTL_DAYS);
-  return d;
+function getOrigin(req: Request): string {
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  const host =
+    req.headers["x-forwarded-host"] || req.headers["host"] || "localhost";
+  return `${proto}://${host}`;
 }
 
-function newToken(): string {
-  return `wf_${randomBytes(32).toString("base64url")}`;
+function setSessionCookie(res: Response, sid: string) {
+  res.cookie(SESSION_COOKIE, sid, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: SESSION_TTL,
+  });
 }
 
-function nameFromEmail(email: string): { firstName: string; lastName: string } {
-  const handle = email.split("@")[0] ?? email;
-  const parts = handle.split(/[._-]+/).filter(Boolean);
-  const cap = (s: string) =>
-    s.length === 0 ? s : s[0].toUpperCase() + s.slice(1).toLowerCase();
+function setOidcCookie(res: Response, name: string, value: string) {
+  res.cookie(name, value, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: OIDC_COOKIE_TTL,
+  });
+}
+
+function getSafeReturnTo(value: unknown): string {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
+    return "/";
+  }
+  return value;
+}
+
+async function upsertUser(claims: Record<string, unknown>): Promise<SessionUser> {
+  const replitUserId = claims.sub as string;
+  const userData = {
+    replitUserId,
+    email: (claims.email as string) || null,
+    firstName: (claims.first_name as string) || null,
+    lastName: (claims.last_name as string) || null,
+    profileImageUrl: ((claims.profile_image_url || claims.picture) as string) || null,
+  };
+
+  const [user] = await db
+    .insert(usersTable)
+    .values(userData)
+    .onConflictDoUpdate({
+      target: usersTable.replitUserId,
+      set: {
+        ...userData,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+
   return {
-    firstName: cap(parts[0] ?? "Forge"),
-    lastName: cap(parts[1] ?? "User"),
+    id: user.id,
+    email: user.email,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    profileImageUrl: user.profileImageUrl,
   };
 }
 
-/**
- * Magic email sign-in (passwordless).
- *
- * No external email provider is required. The mobile app sends the user's
- * email; we find or create the user and immediately mint a session token.
- * If you later wire up an email provider you can layer in real link
- * verification — the response shape stays the same.
- *
- * POST /api/auth/email-link  { email }  → { token, user }
- */
-router.post("/auth/email-link", async (req, res) => {
-  const raw = (req.body?.email ?? "").toString().trim().toLowerCase();
-  if (!raw || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) {
-    res.status(400).json({ error: "invalid_email" });
-    return;
-  }
-
-  let [user] = await db
-    .select()
-    .from(usersTable)
-    .where(eq(usersTable.email, raw))
-    .limit(1);
-
-  let isNew = false;
-  if (!user) {
-    const { firstName, lastName } = nameFromEmail(raw);
-    const [created] = await db
-      .insert(usersTable)
-      .values({
-        clerkUserId: `magic_${randomBytes(8).toString("hex")}`,
-        email: raw,
-        firstName,
-        lastName,
-        imageUrl: null,
-      })
-      .returning();
-    user = created;
-    isNew = true;
-    logger.info({ userId: user.id, email: raw }, "magic-link: created user");
-  }
-
-  const token = newToken();
-  await db.insert(sessionsTable).values({
-    userId: user.id,
-    token,
-    expiresAt: ttl(),
-  });
-
-  res.json({
-    token,
-    isNew,
-    user: {
-      id: user.id,
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      imageUrl: user.imageUrl,
-    },
-  });
+router.get("/auth/user", (req: Request, res: Response) => {
+  res.json({ user: req.isAuthenticated() ? req.user : null });
 });
 
-/**
- * Validate a session token and return the current user.
- * GET /api/auth/me  (Authorization: Bearer <token>)
- */
-router.get("/auth/me", async (req, res) => {
-  const auth = req.headers.authorization;
-  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
-  if (!token) {
+router.get("/login", async (req: Request, res: Response) => {
+  try {
+    const config = await getOidcConfig();
+    const callbackUrl = `${getOrigin(req)}/api/callback`;
+
+    const returnTo = getSafeReturnTo(req.query.returnTo);
+
+    const state = oidc.randomState();
+    const nonce = oidc.randomNonce();
+    const codeVerifier = oidc.randomPKCECodeVerifier();
+    const codeChallenge = await oidc.calculatePKCECodeChallenge(codeVerifier);
+
+    const redirectTo = oidc.buildAuthorizationUrl(config, {
+      redirect_uri: callbackUrl,
+      scope: "openid email profile offline_access",
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+      prompt: "login consent",
+      state,
+      nonce,
+    });
+
+    setOidcCookie(res, "code_verifier", codeVerifier);
+    setOidcCookie(res, "nonce", nonce);
+    setOidcCookie(res, "state", state);
+    setOidcCookie(res, "return_to", returnTo);
+
+    res.redirect(redirectTo.href);
+  } catch (err) {
+    res.status(500).json({ error: "oidc_init_failed" });
+  }
+});
+
+router.get("/callback", async (req: Request, res: Response) => {
+  try {
+    const config = await getOidcConfig();
+    const callbackUrl = `${getOrigin(req)}/api/callback`;
+
+    const codeVerifier = req.cookies?.code_verifier;
+    const nonce = req.cookies?.nonce;
+    const expectedState = req.cookies?.state;
+
+    if (!codeVerifier || !expectedState) {
+      res.redirect("/api/login");
+      return;
+    }
+
+    const currentUrl = new URL(
+      `${callbackUrl}?${new URL(req.url, `http://${req.headers.host}`).searchParams}`,
+    );
+
+    let tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers;
+    try {
+      tokens = await oidc.authorizationCodeGrant(config, currentUrl, {
+        pkceCodeVerifier: codeVerifier,
+        expectedNonce: nonce,
+        expectedState,
+        idTokenExpected: true,
+      });
+    } catch {
+      res.redirect("/api/login");
+      return;
+    }
+
+    const returnTo = getSafeReturnTo(req.cookies?.return_to);
+
+    res.clearCookie("code_verifier", { path: "/" });
+    res.clearCookie("nonce", { path: "/" });
+    res.clearCookie("state", { path: "/" });
+    res.clearCookie("return_to", { path: "/" });
+
+    const claims = tokens.claims();
+    if (!claims) {
+      res.redirect("/api/login");
+      return;
+    }
+
+    const sessionUser = await upsertUser(claims as unknown as Record<string, unknown>);
+
+    const now = Math.floor(Date.now() / 1000);
+    const sessionData: SessionData = {
+      user: sessionUser,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
+    };
+
+    const sid = await createSession(sessionData);
+    setSessionCookie(res, sid);
+    res.redirect(returnTo);
+  } catch (err) {
+    res.status(500).json({ error: "callback_failed" });
+  }
+});
+
+router.get("/logout", async (req: Request, res: Response) => {
+  try {
+    const config = await getOidcConfig();
+    const origin = getOrigin(req);
+
+    const sid = getSessionId(req);
+    await clearSession(res, sid);
+
+    const endSessionUrl = oidc.buildEndSessionUrl(config, {
+      client_id: process.env.REPL_ID!,
+      post_logout_redirect_uri: origin,
+    });
+
+    res.redirect(endSessionUrl.href);
+  } catch {
+    res.redirect("/");
+  }
+});
+
+router.get("/auth/me", async (req: Request, res: Response) => {
+  const sid = getSessionId(req);
+  if (!sid) {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
-  const [session] = await db
-    .select()
-    .from(sessionsTable)
-    .where(eq(sessionsTable.token, token))
-    .limit(1);
-  if (!session || session.expiresAt < new Date()) {
+  const session = await getSession(sid);
+  if (!session?.user) {
     res.status(401).json({ error: "expired" });
     return;
   }
-  const [user] = await db
-    .select()
-    .from(usersTable)
-    .where(eq(usersTable.id, session.userId))
-    .limit(1);
-  if (!user) {
-    res.status(401).json({ error: "no_user" });
-    return;
-  }
-  res.json({
-    user: {
-      id: user.id,
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      imageUrl: user.imageUrl,
-    },
-  });
+  res.json({ user: session.user });
 });
 
-/**
- * PATCH /api/auth/me — update profile fields (firstName, lastName).
- */
-router.patch("/auth/me", async (req, res) => {
-  const auth = req.headers.authorization;
-  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
-  if (!token) {
+router.post("/mobile-auth/token-exchange", async (req: Request, res: Response) => {
+  const { code, code_verifier, redirect_uri, state, nonce } = req.body ?? {};
+
+  if (!code || !code_verifier || !redirect_uri || !state) {
+    res.status(400).json({ error: "Missing required parameters" });
+    return;
+  }
+
+  try {
+    const config = await getOidcConfig();
+
+    const callbackUrl = new URL(redirect_uri as string);
+    callbackUrl.searchParams.set("code", code as string);
+    callbackUrl.searchParams.set("state", state as string);
+    callbackUrl.searchParams.set("iss", ISSUER_URL);
+
+    const tokens = await oidc.authorizationCodeGrant(config, callbackUrl, {
+      pkceCodeVerifier: code_verifier as string,
+      expectedNonce: nonce ?? undefined,
+      expectedState: state as string,
+      idTokenExpected: true,
+    });
+
+    const claims = tokens.claims();
+    if (!claims) {
+      res.status(401).json({ error: "No claims in ID token" });
+      return;
+    }
+
+    const sessionUser = await upsertUser(claims as unknown as Record<string, unknown>);
+
+    const now = Math.floor(Date.now() / 1000);
+    const sessionData: SessionData = {
+      user: sessionUser,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
+    };
+
+    const sid = await createSession(sessionData);
+    res.json({ token: sid });
+  } catch (err) {
+    res.status(500).json({ error: "Token exchange failed" });
+  }
+});
+
+router.post("/mobile-auth/logout", async (req: Request, res: Response) => {
+  const sid = getSessionId(req);
+  if (sid) {
+    await deleteSession(sid);
+  }
+  res.json({ success: true });
+});
+
+router.post("/auth/sign-out", async (req: Request, res: Response) => {
+  const sid = getSessionId(req);
+  if (sid) await deleteSession(sid);
+  res.json({ ok: true });
+});
+
+router.patch("/auth/me", async (req: Request, res: Response) => {
+  if (!req.isAuthenticated()) {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
-  const [session] = await db
-    .select()
-    .from(sessionsTable)
-    .where(eq(sessionsTable.token, token))
-    .limit(1);
-  if (!session || session.expiresAt < new Date()) {
-    res.status(401).json({ error: "expired" });
-    return;
-  }
-
   const { firstName, lastName } = req.body as {
     firstName?: string;
     lastName?: string;
@@ -169,8 +299,21 @@ router.patch("/auth/me", async (req, res) => {
   const [updated] = await db
     .update(usersTable)
     .set({ ...patch, updatedAt: new Date() })
-    .where(eq(usersTable.id, session.userId))
+    .where(eq(usersTable.id, req.user.id))
     .returning();
+
+  const sid = getSessionId(req);
+  if (sid) {
+    const session = await getSession(sid);
+    if (session) {
+      session.user = {
+        ...session.user,
+        firstName: updated.firstName,
+        lastName: updated.lastName,
+      };
+      await updateSession(sid, session);
+    }
+  }
 
   res.json({
     user: {
@@ -178,21 +321,9 @@ router.patch("/auth/me", async (req, res) => {
       email: updated.email,
       firstName: updated.firstName,
       lastName: updated.lastName,
-      imageUrl: updated.imageUrl,
+      profileImageUrl: updated.profileImageUrl,
     },
   });
-});
-
-/**
- * POST /api/auth/sign-out — invalidate the current token.
- */
-router.post("/auth/sign-out", async (req, res) => {
-  const auth = req.headers.authorization;
-  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
-  if (token) {
-    await db.delete(sessionsTable).where(eq(sessionsTable.token, token));
-  }
-  res.json({ ok: true });
 });
 
 export default router;

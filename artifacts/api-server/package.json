@@ -21,6 +21,7 @@
     "express": "^5",
     "fflate": "^0.8.2",
     "node-telegram-bot-api": "^0.67.0",
+    "openid-client": "^6.8.4",
     "pino": "^9",
     "pino-http": "^10",
     "slugify": "^1.6.9",

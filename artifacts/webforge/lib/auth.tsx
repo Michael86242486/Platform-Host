@@ -1,171 +1,205 @@
-import * as SecureStore from "expo-secure-store";
 import React, {
   createContext,
-  useCallback,
   useContext,
-  useEffect,
-  useMemo,
   useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  type ReactNode,
 } from "react";
+import * as AuthSession from "expo-auth-session";
+import * as WebBrowser from "expo-web-browser";
+import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 
-const TOKEN_KEY = "webforge.session.token";
-const USER_KEY = "webforge.session.user";
+WebBrowser.maybeCompleteAuthSession();
 
-const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
+const AUTH_TOKEN_KEY = "auth_session_token";
+const USER_KEY = "webforge.session.user";
+const ISSUER_URL = "https://replit.com/oidc";
 
 export interface AuthUser {
   id: string;
   email: string | null;
   firstName: string | null;
   lastName: string | null;
-  imageUrl: string | null;
+  profileImageUrl: string | null;
 }
 
 interface AuthContextValue {
   isLoaded: boolean;
   isSignedIn: boolean;
+  isAuthenticated: boolean;
   user: AuthUser | null;
   token: string | null;
-  signInWithEmail: (email: string) => Promise<{ ok: true; isNew: boolean } | { ok: false; error: string }>;
-  updateUser: (fields: { firstName?: string; lastName?: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
+  login: () => Promise<void>;
+  logout: () => Promise<void>;
   signOut: () => Promise<void>;
+  updateUser: (fields: { firstName?: string; lastName?: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   getToken: () => Promise<string | null>;
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null);
+const AuthContext = createContext<AuthContextValue>({
+  isLoaded: false,
+  isSignedIn: false,
+  isAuthenticated: false,
+  user: null,
+  token: null,
+  login: async () => {},
+  logout: async () => {},
+  signOut: async () => {},
+  updateUser: async () => ({ ok: false, error: "not initialized" }),
+  getToken: async () => null,
+});
 
-// SecureStore doesn't exist on web — fall back to localStorage there.
 async function storeGet(key: string): Promise<string | null> {
   if (Platform.OS === "web") {
-    try {
-      return globalThis.localStorage?.getItem(key) ?? null;
-    } catch {
-      return null;
-    }
+    try { return globalThis.localStorage?.getItem(key) ?? null; } catch { return null; }
   }
-  try {
-    return await SecureStore.getItemAsync(key);
-  } catch {
-    return null;
-  }
+  try { return await SecureStore.getItemAsync(key); } catch { return null; }
 }
 
 async function storeSet(key: string, value: string): Promise<void> {
   if (Platform.OS === "web") {
-    try {
-      globalThis.localStorage?.setItem(key, value);
-    } catch {
-      /* noop */
-    }
+    try { globalThis.localStorage?.setItem(key, value); } catch { /* noop */ }
     return;
   }
-  try {
-    await SecureStore.setItemAsync(key, value);
-  } catch {
-    /* noop */
-  }
+  try { await SecureStore.setItemAsync(key, value); } catch { /* noop */ }
 }
 
 async function storeDel(key: string): Promise<void> {
   if (Platform.OS === "web") {
-    try {
-      globalThis.localStorage?.removeItem(key);
-    } catch {
-      /* noop */
-    }
+    try { globalThis.localStorage?.removeItem(key); } catch { /* noop */ }
     return;
   }
-  try {
-    await SecureStore.deleteItemAsync(key);
-  } catch {
-    /* noop */
-  }
+  try { await SecureStore.deleteItemAsync(key); } catch { /* noop */ }
 }
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [isLoaded, setIsLoaded] = useState(false);
+function getApiBaseUrl(): string {
+  if (process.env.EXPO_PUBLIC_DOMAIN) {
+    return `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
+  }
+  return process.env.EXPO_PUBLIC_API_URL ?? "";
+}
+
+function getClientId(): string {
+  return process.env.EXPO_PUBLIC_REPL_ID ?? "";
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Boot: read token from secure storage, validate against /auth/me.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const stored = await storeGet(TOKEN_KEY);
-      if (!stored) {
-        if (!cancelled) setIsLoaded(true);
-        return;
-      }
-      try {
-        const res = await fetch(`${API_URL}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${stored}` },
-        });
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data = (await res.json()) as { user: AuthUser };
-        if (cancelled) return;
-        setToken(stored);
-        setUser(data.user);
-      } catch {
-        // Token expired or backend unreachable — drop it.
-        await storeDel(TOKEN_KEY);
-        await storeDel(USER_KEY);
-      } finally {
-        if (!cancelled) setIsLoaded(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const discovery = AuthSession.useAutoDiscovery(ISSUER_URL);
+  const redirectUri = AuthSession.makeRedirectUri({ scheme: "webforge" });
 
-  const signInWithEmail = useCallback(
-    async (
-      email: string,
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      try {
-        const res = await fetch(`${API_URL}/api/auth/email-link`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email }),
-        });
-        if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as {
-            error?: string;
-          };
-          return {
-            ok: false,
-            error: body.error ?? `request failed (${res.status})`,
-          };
-        }
-        const data = (await res.json()) as { token: string; user: AuthUser; isNew?: boolean };
-        await storeSet(TOKEN_KEY, data.token);
-        await storeSet(USER_KEY, JSON.stringify(data.user));
-        setToken(data.token);
-        setUser(data.user);
-        return { ok: true, isNew: data.isNew ?? false };
-      } catch (err) {
-        return {
-          ok: false,
-          error:
-            err instanceof Error ? err.message : "network error — is the API server running?",
-        };
-      }
+  const [request, response, promptAsync] = AuthSession.useAuthRequest(
+    {
+      clientId: getClientId(),
+      scopes: ["openid", "email", "profile", "offline_access"],
+      redirectUri,
+      prompt: AuthSession.Prompt.Login,
     },
-    [],
+    discovery,
   );
 
-  const updateUser = useCallback(
-    async (
-      fields: { firstName?: string; lastName?: string },
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!token) return { ok: false, error: "not signed in" };
+  const fetchUser = useCallback(async (sessionToken: string) => {
+    const apiBase = getApiBaseUrl();
+    const res = await fetch(`${apiBase}/api/auth/user`, {
+      headers: { Authorization: `Bearer ${sessionToken}` },
+    });
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const data = (await res.json()) as { user: AuthUser | null };
+    if (!data.user) throw new Error("no_user");
+    return data.user;
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      const stored = await storeGet(AUTH_TOKEN_KEY);
+      if (!stored) { setIsLoading(false); return; }
       try {
-        const res = await fetch(`${API_URL}/api/auth/me`, {
+        const u = await fetchUser(stored);
+        setToken(stored);
+        setUser(u);
+        await storeSet(USER_KEY, JSON.stringify(u));
+      } catch {
+        await storeDel(AUTH_TOKEN_KEY);
+        await storeDel(USER_KEY);
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  }, [fetchUser]);
+
+  useEffect(() => {
+    if (response?.type !== "success" || !request?.codeVerifier) return;
+    const { code, state } = response.params;
+    void (async () => {
+      try {
+        const apiBase = getApiBaseUrl();
+        const exchangeRes = await fetch(`${apiBase}/api/mobile-auth/token-exchange`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            code,
+            code_verifier: request.codeVerifier,
+            redirect_uri: redirectUri,
+            state,
+            nonce: request.nonce,
+          }),
+        });
+        if (!exchangeRes.ok) return;
+        const data = (await exchangeRes.json()) as { token: string };
+        if (data.token) {
+          await storeSet(AUTH_TOKEN_KEY, data.token);
+          setToken(data.token);
+          setIsLoading(true);
+          const u = await fetchUser(data.token);
+          setUser(u);
+          await storeSet(USER_KEY, JSON.stringify(u));
+          setIsLoading(false);
+        }
+      } catch {
+        setIsLoading(false);
+      }
+    })();
+  }, [response, request, redirectUri, fetchUser]);
+
+  const login = useCallback(async () => {
+    try { await promptAsync(); } catch { /* noop */ }
+  }, [promptAsync]);
+
+  const logout = useCallback(async () => {
+    try {
+      const storedToken = await storeGet(AUTH_TOKEN_KEY);
+      if (storedToken) {
+        const apiBase = getApiBaseUrl();
+        await fetch(`${apiBase}/api/mobile-auth/logout`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${storedToken}` },
+        });
+      }
+    } catch { /* noop */ } finally {
+      await storeDel(AUTH_TOKEN_KEY);
+      await storeDel(USER_KEY);
+      setToken(null);
+      setUser(null);
+    }
+  }, []);
+
+  const updateUser = useCallback(
+    async (fields: { firstName?: string; lastName?: string }): Promise<{ ok: true } | { ok: false; error: string }> => {
+      const currentToken = token ?? await storeGet(AUTH_TOKEN_KEY);
+      if (!currentToken) return { ok: false, error: "not signed in" };
+      try {
+        const apiBase = getApiBaseUrl();
+        const res = await fetch(`${apiBase}/api/auth/me`, {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
+            Authorization: `Bearer ${currentToken}`,
           },
           body: JSON.stringify(fields),
         });
@@ -184,48 +218,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [token],
   );
 
-  const signOut = useCallback(async () => {
-    if (token) {
-      try {
-        await fetch(`${API_URL}/api/auth/sign-out`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-      } catch {
-        /* noop */
-      }
-    }
-    await storeDel(TOKEN_KEY);
-    await storeDel(USER_KEY);
-    setToken(null);
-    setUser(null);
-  }, [token]);
-
-  const getToken = useCallback(async () => token, [token]);
+  const getToken = useCallback(async () => token ?? storeGet(AUTH_TOKEN_KEY), [token]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      isLoaded,
-      isSignedIn: !!user && !!token,
+      isLoaded: !isLoading,
+      isSignedIn: !!user,
+      isAuthenticated: !!user,
       user,
       token,
-      signInWithEmail,
+      login,
+      logout,
+      signOut: logout,
       updateUser,
-      signOut,
       getToken,
     }),
-    [isLoaded, user, token, signInWithEmail, updateUser, signOut, getToken],
+    [isLoading, user, token, login, logout, updateUser, getToken],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
-  if (!ctx) {
-    throw new Error("useAuth must be used inside <AuthProvider>");
-  }
-  return ctx;
+  return useContext(AuthContext);
 }
 
 export function useUser(): { user: AuthUser | null } {

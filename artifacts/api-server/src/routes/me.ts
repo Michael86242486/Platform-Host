@@ -8,12 +8,11 @@ router.get("/me", requireAuth, (req, res) => {
   const u = req.user!;
   res.json({
     id: u.id,
-    clerkUserId: u.clerkUserId,
     email: u.email,
     firstName: u.firstName,
     lastName: u.lastName,
-    imageUrl: u.imageUrl,
-    createdAt: u.createdAt.toISOString(),
+    profileImageUrl: u.profileImageUrl,
+    createdAt: new Date().toISOString(),
   });
 });
 
