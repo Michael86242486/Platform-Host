@@ -27,7 +27,7 @@ interface AuthContextValue {
   isSignedIn: boolean;
   user: AuthUser | null;
   token: string | null;
-  signInWithEmail: (email: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  signInWithEmail: (email: string) => Promise<{ ok: true; isNew: boolean } | { ok: false; error: string }>;
   signOut: () => Promise<void>;
   getToken: () => Promise<string | null>;
 }
@@ -137,12 +137,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             error: body.error ?? `request failed (${res.status})`,
           };
         }
-        const data = (await res.json()) as { token: string; user: AuthUser };
+        const data = (await res.json()) as { token: string; user: AuthUser; isNew?: boolean };
         await storeSet(TOKEN_KEY, data.token);
         await storeSet(USER_KEY, JSON.stringify(data.user));
         setToken(data.token);
         setUser(data.user);
-        return { ok: true };
+        return { ok: true, isNew: data.isNew ?? false };
       } catch (err) {
         return {
           ok: false,

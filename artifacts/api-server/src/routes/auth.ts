@@ -54,6 +54,7 @@ router.post("/auth/email-link", async (req, res) => {
     .where(eq(usersTable.email, raw))
     .limit(1);
 
+  let isNew = false;
   if (!user) {
     const { firstName, lastName } = nameFromEmail(raw);
     const [created] = await db
@@ -67,6 +68,7 @@ router.post("/auth/email-link", async (req, res) => {
       })
       .returning();
     user = created;
+    isNew = true;
     logger.info({ userId: user.id, email: raw }, "magic-link: created user");
   }
 
@@ -79,6 +81,7 @@ router.post("/auth/email-link", async (req, res) => {
 
   res.json({
     token,
+    isNew,
     user: {
       id: user.id,
       email: user.email,
