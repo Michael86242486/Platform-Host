@@ -1,15 +1,17 @@
 /**
  * LLM-powered WebForge generator — powered by Puter Codex.
- * No OpenAI key required; uses the puter-chat-completion driver
- * with the user's Puter credentials (PUTER_USERNAME / PUTER_PASSWORD).
  *
- * - analyzeProjectAI: classify the project, name it, list features/pages/style hints.
- * - buildProjectAIStream: produce a complete multi-page static site via streaming.
- * - buildProjectAI: non-streaming JSON fallback (used by editProjectAI).
- * - editProjectAI: patch existing files based on edit instructions.
+ * Pipeline phases:
+ *   Phase 0 — researchInspirationAI : design brief from prompt
+ *   Phase 1 — analyzeProjectAI      : classify project, draft plan
+ *   Phase 1b— refinePlanAI          : user-driven plan iteration
+ *   Phase 2 — buildProjectAIParallel: shared assets first, pages in parallel
+ *   Phase 3 — auditProjectAI        : SEO / a11y / mobile / perf audit
+ *   Phase 4 — autoFixProjectAI      : patch files based on audit
+ *   Phase 5 — (queue) hero image    : Puter txt2img or CSS gradient
  */
 
-import type { SiteAnalysis, SiteFiles, SitePlan } from "./db";
+import type { SiteAnalysis, SiteFiles, SitePlan, SitePlanPage } from "./db";
 import {
   analyzeProject as analyzeProjectFallback,
   buildProject as buildProjectFallback,
@@ -23,6 +25,84 @@ import {
 } from "./puter";
 
 const CODEX_MODEL = "gpt-4o-mini";
+
+// ---------------------------------------------------------------------------
+// PHASE 0 — Research / design inspiration
+// ---------------------------------------------------------------------------
+
+const RESEARCH_SYSTEM = `You are WebForge's creative director. Given a project brief and its analysis, produce a RICH DESIGN BRIEF that will guide the build engine to create a stunning, award-winning website.
+
+Return ONLY a JSON object — no prose, no markdown:
+{
+  "mood": string,            // 1 sentence vibe: "Electric and bold — think neon terminals meet Stripe's precision"
+  "palette": {
+    "background": "#hex",   // dark or light base
+    "surface": "#hex",      // card / elevated surface
+    "primary": "#hex",      // dominant brand accent
+    "secondary": "#hex",    // complementary accent
+    "text": "#hex",         // body text
+    "muted": "#hex"         // subdued labels
+  },
+  "typography": string,      // "Display: clamp(3.5rem,8vw,7rem) 800-weight gradient clip. Body: 1.125rem Inter."
+  "layout": string,          // "Full-bleed hero, card-grid sections, asymmetric image-text rows, sticky frosted glass nav"
+  "competitors": string[],   // 3-4 real sites with similar aesthetic: ["linear.app", "vercel.com", "stripe.com"]
+  "heroImagePrompt": string, // Vivid 1-sentence image generation prompt for the hero visual
+  "uniqueTwist": string,     // "What sets the visual apart: a live animated dashboard panel on the homepage"
+  "techStack": string[]      // CDN libs to use: ["Chart.js 4", "Alpine.js 3", "Lucide icons"] or subset
+}`;
+
+export interface ResearchBrief {
+  mood: string;
+  palette: {
+    background: string; surface: string; primary: string;
+    secondary: string; text: string; muted: string;
+  };
+  typography: string;
+  layout: string;
+  competitors: string[];
+  heroImagePrompt: string;
+  uniqueTwist: string;
+  techStack: string[];
+}
+
+export async function researchInspirationAI(
+  prompt: string,
+  analysis: SiteAnalysis,
+  model?: string,
+): Promise<ResearchBrief> {
+  const fallback: ResearchBrief = {
+    mood: "Modern, bold, and professional",
+    palette: { background: "#0a0e14", surface: "#141920", primary: "#00ffc2", secondary: "#58a6ff", text: "#e6edf3", muted: "#8b949e" },
+    typography: "Display: clamp(3rem,7vw,6rem) 800-weight. Body: 1.1rem Inter.",
+    layout: "Full-bleed hero, section grid, sticky nav",
+    competitors: ["vercel.com", "linear.app", "stripe.com"],
+    heroImagePrompt: `Professional ${analysis.type} website hero image, ${analysis.styleHints.join(", ")}`,
+    uniqueTwist: "Animated gradient hero with glassmorphism cards",
+    techStack: ["Chart.js 4", "Alpine.js 3", "Lucide icons"],
+  };
+  try {
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: RESEARCH_SYSTEM },
+      { role: "user", content: `Project: ${prompt}\n\nAnalysis: ${JSON.stringify(analysis, null, 2)}\n\nReturn the JSON design brief.` },
+    ];
+    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    if (!text) throw new Error("empty research");
+    const parsed = JSON.parse(text) as Partial<ResearchBrief>;
+    return {
+      mood: parsed.mood ?? fallback.mood,
+      palette: { ...fallback.palette, ...(parsed.palette ?? {}) },
+      typography: parsed.typography ?? fallback.typography,
+      layout: parsed.layout ?? fallback.layout,
+      competitors: Array.isArray(parsed.competitors) ? parsed.competitors.slice(0, 5) : fallback.competitors,
+      heroImagePrompt: parsed.heroImagePrompt ?? fallback.heroImagePrompt,
+      uniqueTwist: parsed.uniqueTwist ?? fallback.uniqueTwist,
+      techStack: Array.isArray(parsed.techStack) ? parsed.techStack : fallback.techStack,
+    };
+  } catch (err) {
+    logger.warn({ err: String(err) }, "researchInspirationAI failed; using fallback");
+    return fallback;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // PHASE 1 — Analysis
@@ -55,17 +135,9 @@ export async function analyzeProjectAI(
   try {
     const messages: PuterAIMessage[] = [
       { role: "system", content: ANALYSIS_SYSTEM },
-      {
-        role: "user",
-        content: `Project prompt: ${prompt}\n${
-          name ? `Suggested name: ${name}\n` : ""
-        }Return the JSON.`,
-      },
+      { role: "user", content: `Project prompt: ${prompt}\n${name ? `Suggested name: ${name}\n` : ""}Return the JSON.` },
     ];
-    const text = await puterAIComplete(messages, {
-      model: model ?? CODEX_MODEL,
-      jsonMode: true,
-    });
+    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty analysis");
     const parsed = JSON.parse(text) as Partial<SiteAnalysis>;
     return normalizeAnalysis(parsed, prompt, name);
@@ -75,51 +147,30 @@ export async function analyzeProjectAI(
   }
 }
 
-function normalizeAnalysis(
-  raw: Partial<SiteAnalysis>,
-  prompt: string,
-  name?: string,
-): SiteAnalysis {
+function normalizeAnalysis(raw: Partial<SiteAnalysis>, prompt: string, name?: string): SiteAnalysis {
   const validTypes = ["website", "bot", "backend", "tool"] as const;
   const type = (validTypes as readonly string[]).includes(raw.type as string)
-    ? (raw.type as SiteAnalysis["type"])
-    : "website";
-  const features =
-    Array.isArray(raw.features) && raw.features.length > 0
-      ? raw.features.slice(0, 8).map(String)
-      : ["Hero", "About", "Contact"];
-  const pagesRaw =
-    Array.isArray(raw.pages) && raw.pages.length > 0
-      ? raw.pages.map((p) => String(p).toLowerCase().replace(/[^a-z0-9]/g, ""))
-      : ["index", "about", "contact"];
+    ? (raw.type as SiteAnalysis["type"]) : "website";
+  const features = Array.isArray(raw.features) && raw.features.length > 0
+    ? raw.features.slice(0, 8).map(String) : ["Hero", "About", "Contact"];
+  const pagesRaw = Array.isArray(raw.pages) && raw.pages.length > 0
+    ? raw.pages.map((p) => String(p).toLowerCase().replace(/[^a-z0-9]/g, "")) : ["index", "about", "contact"];
   const pages = Array.from(new Set(["index", ...pagesRaw])).slice(0, 8);
-  const styleHints = Array.isArray(raw.styleHints)
-    ? raw.styleHints.slice(0, 5).map(String)
-    : [];
-  const intent =
-    (typeof raw.intent === "string" && raw.intent.trim()) ||
-    name?.trim() ||
-    deriveTitle(prompt);
+  const styleHints = Array.isArray(raw.styleHints) ? raw.styleHints.slice(0, 5).map(String) : [];
+  const intent = (typeof raw.intent === "string" && raw.intent.trim()) || name?.trim() || deriveTitle(prompt);
   return {
-    type,
-    intent: intent.slice(0, 60),
-    audience:
-      typeof raw.audience === "string" && raw.audience.trim()
-        ? raw.audience.trim().slice(0, 80)
-        : null,
-    features,
-    pages,
-    styleHints,
+    type, intent: intent.slice(0, 60),
+    audience: typeof raw.audience === "string" && raw.audience.trim() ? raw.audience.trim().slice(0, 80) : null,
+    features, pages, styleHints,
   };
 }
 
 function deriveTitle(prompt: string): string {
-  const t = prompt.trim().split(/[.,;:!?\n]/)[0].slice(0, 60);
-  return t || "Untitled";
+  return prompt.trim().split(/[.,;:!?\n]/)[0].slice(0, 60) || "Untitled";
 }
 
 // ---------------------------------------------------------------------------
-// PHASE 1b — Plan refinement (called when user tweaks plan before confirming)
+// PHASE 1b — Plan refinement
 // ---------------------------------------------------------------------------
 
 const REFINE_PLAN_SYSTEM = `${ANALYSIS_SYSTEM}
@@ -128,8 +179,7 @@ You are UPDATING an existing plan based on user feedback. Return the COMPLETE up
 
 Rules:
 - Keep everything the user did NOT ask to change.
-- Apply ONLY the requested change(s). If they say "add a pricing page", add it. If they say "make it darker", update styleHints. If they say "remove blog", remove it.
-- Never silently drop pages or features that weren't mentioned.
+- Apply ONLY the requested change(s).
 - "index" MUST always remain in pages.
 - Output ONLY the JSON object. No prose.`;
 
@@ -141,15 +191,9 @@ export async function refinePlanAI(
   try {
     const messages: PuterAIMessage[] = [
       { role: "system", content: REFINE_PLAN_SYSTEM },
-      {
-        role: "user",
-        content: `Current plan:\n${JSON.stringify(currentAnalysis, null, 2)}\n\nUser feedback: "${feedback}"\n\nReturn the updated JSON.`,
-      },
+      { role: "user", content: `Current plan:\n${JSON.stringify(currentAnalysis, null, 2)}\n\nUser feedback: "${feedback}"\n\nReturn the updated JSON.` },
     ];
-    const text = await puterAIComplete(messages, {
-      model: model ?? CODEX_MODEL,
-      jsonMode: true,
-    });
+    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty refinement");
     const parsed = JSON.parse(text) as Partial<SiteAnalysis>;
     return normalizeAnalysis(parsed, currentAnalysis.intent);
@@ -160,17 +204,576 @@ export async function refinePlanAI(
 }
 
 // ---------------------------------------------------------------------------
-// PHASE 2 — Build (non-streaming JSON — used internally by editProjectAI)
+// PHASE 2 — Parallel build: shared assets first, then pages concurrently
+// ---------------------------------------------------------------------------
+
+const SHARED_ASSETS_SYSTEM = `You are WebForge's CSS/JS architect. Generate ONLY the two shared asset files for a multi-page website. No HTML.
+
+OUTPUT FORMAT (markers on their OWN line):
+===COLOR: #RRGGBB===
+===FILE: assets/styles.css===
+[minimum 700 lines of comprehensive CSS]
+===FILE: assets/app.js===
+[minimum 250 lines of JavaScript]
+===END===
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CSS REQUIREMENTS (700+ lines mandatory)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+:root with 30+ CSS custom properties (colors, spacing, radii, shadows, transitions, typography scale).
+Reset + base styles.
+Typography scale: display (7vw clamped), h1-h4, body, mono, small — all with fluid clamp() sizes.
+Layout utilities: .container, .grid-2, .grid-3, .grid-4, .flex-center, .stack, .cluster.
+Component library (style EVERY one of these):
+  .btn, .btn-primary, .btn-secondary, .btn-ghost — with hover, active, focus-visible, disabled states.
+  .card, .card-glass (glassmorphism), .card-hover (3D tilt), .card-feature.
+  .nav, .nav-sticky, .nav-glass, .nav-link, .nav-cta, .mobile-menu, .hamburger.
+  .hero, .hero-content, .hero-badge, .hero-headline, .hero-sub, .hero-cta-group.
+  .section, .section-alt, .section-dark.
+  .badge, .tag, .chip.
+  .logo-cloud, .logo-item.
+  .feature-grid, .feature-card, .feature-icon.
+  .testimonial-grid, .testimonial-card, .testimonial-avatar, .testimonial-quote.
+  .pricing-grid, .pricing-card, .pricing-card--featured, .pricing-price, .pricing-features.
+  .stats-band, .stat-item, .stat-number, .stat-label.
+  .faq, .faq-item.
+  .form-group, .form-label, .form-input, .form-textarea, .form-error, .form-success.
+  .footer, .footer-grid, .footer-col, .footer-link, .footer-brand, .footer-divider.
+  .tag-filter, .filter-bar.
+  .modal, .modal-overlay, .modal-content, .modal-close.
+  .progress-bar, .progress-fill.
+  .alert, .alert-success, .alert-error, .alert-info.
+  .table, .table-header, .table-row, .table-cell.
+  .dashboard-grid, .stat-card, .chart-container.
+  .timeline, .timeline-item, .timeline-dot.
+  .gallery-grid, .gallery-item, .gallery-overlay.
+Animations: @keyframes fadeUp, slideIn, gradientShift, pulse, countUp, shimmer, float, glowPulse.
+Stagger: .stagger-children > * with nth-child delays.
+3D card tilt: .card-hover:hover with perspective(900px) rotateX/rotateY.
+Custom scrollbar: 6px, accent thumb.
+Scroll parallax: .hero-bg at 0.4x speed.
+Neon glow utilities: .glow-primary, .glow-accent, .glow-text.
+Glassmorphism: .glass — rgba(255,255,255,0.06) + backdrop-filter:blur(14px).
+Gradient text: .gradient-text — background-clip:text, text-fill-color:transparent.
+Mobile responsive: breakpoints at 768px and 480px. Every component adapts.
+Dark / light theme via [data-theme].
+Print styles.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+JS REQUIREMENTS (250+ lines mandatory)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Nav: hamburger toggle, scroll shadow, active link detection.
+- Smooth scroll with offset for sticky nav.
+- IntersectionObserver stagger fade-in for .stagger-children.
+- Count-up animation: animateCount(el, target, duration).
+- 3D card tilt on mousemove (perspective rotateX/Y, snap back).
+- Form validation: required fields, email format, character count, localStorage save.
+- Modal open/close via showModal() / close() on <dialog> elements.
+- Filter bar: filter items by category attribute.
+- Sortable table: click header to sort rows.
+- Tab switcher: generic function for [data-tab] / [data-panel] patterns.
+- Chart init stubs (initCharts()) that Chart.js pages will call.
+- LocalStorage helpers: lsGet(key), lsSet(key, val).
+- Toast notification system: showToast(msg, type).
+- Lazy image loading with IntersectionObserver.
+- Copy-to-clipboard utility.
+- Scroll-to-top button.
+- Theme toggle (data-theme).
+- Alpine.js x-data helpers for common patterns.`;
+
+const PAGE_BUILD_SYSTEM = `You are WebForge's HTML page builder. Generate ONE complete, production-quality HTML page.
+
+OUTPUT FORMAT:
+===FILE: {FILENAME}===
+<!doctype html>
+[all HTML content]
+===END===
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MANDATORY RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Complete <!doctype html> with <head> containing:
+   - <meta charset="UTF-8">
+   - <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   - <meta name="description" content="[specific 150-char description]">
+   - <meta property="og:title">, og:description, og:type, og:image (picsum.photos)
+   - <meta name="theme-color" content="[brand primary]">
+   - <link rel="icon" href="data:image/svg+xml,..."> (inline SVG favicon)
+   - <link rel="canonical" href="[page URL]">
+   - <title>[Page Title] — [Site Name]</title>
+   - <link rel="stylesheet" href="assets/styles.css">
+   - CDN libraries if needed (Chart.js, Alpine.js, Lucide — from the tech stack)
+   - <script src="assets/app.js" defer></script>
+   - JSON-LD schema markup for the page type
+
+2. Use RELATIVE paths for all assets (no leading slash). href="assets/styles.css" not "/assets/styles.css".
+3. Inter-page links: href="about.html" not "/about.html".
+4. Use EXACT CSS class names from the shared stylesheet.
+5. REAL content — no Lorem Ipsum. Invent plausible names, numbers, quotes.
+6. Every interactive element has aria-label, role, tabindex where needed.
+7. All images: <img src="https://picsum.photos/seed/[unique-word]/800/500" alt="[specific description]" loading="lazy">
+8. WebForge credit in footer: <div class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:24px">made with <strong style="color:inherit">WebForge</strong></div>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOME PAGE (index.html) — ALL 10 SECTIONS (MANDATORY, minimum 500 lines total)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Section 1: HERO — Full-bleed, animated gradient bg, badge pill, headline clamp(3.5rem,8vw,7rem), subhead (2-3 sentences), two CTA buttons, hero visual (right side image or animated Alpine.js component).
+Section 2: SOCIAL PROOF — Logo cloud of 8-10 believable company names, muted, flex-wrap.
+Section 3: FEATURE GRID — 6+ feature cards with Lucide icon + bold title + 3-sentence description each. Real features from the plan.
+Section 4: HOW IT WORKS — Numbered 3-step or 4-step flow with icons, rich copy (2-3 sentences per step).
+Section 5: INTERACTIVE SHOWCASE — For apps/tools: live working demo panel (Alpine.js + Chart.js). For brochure: 3 alternating image-text rows with picsum photos + 150-word copy each.
+Section 6: TESTIMONIALS — 4+ cards with 2-3 sentence quotes, name, job title, company. Avatar CSS circles with initials.
+Section 7: PRICING / STATS BAND — Either 3 pricing tiers (free/pro/enterprise with feature lists) OR a 4-number stats band with count-up animation.
+Section 8: FAQ — 8+ items with <details><summary>. Cover real questions about the product.
+Section 9: FINAL CTA BAND — 2-headline + subhead + primary button. Bold and full-width.
+Section 10: FOOTER — 4-column grid: brand + tagline, navigation links, resources, social icons. WebForge credit.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INNER PAGES — minimum 350 lines each
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Each inner page must have:
+- Sticky nav with all page links (active state on current page)
+- Page hero (smaller than home, 120px padding, title + subtitle)
+- 3+ substantial content sections using shared CSS components
+- Footer matching home
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INTERACTIVITY (for app/tool pages)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use Alpine.js x-data for: tabs, toggles, modals, accordions, cart counters, quiz flows.
+Use Chart.js for: dashboards, analytics, results, comparisons.
+All data must be realistic hardcoded JSON inline in <script> or app.js.`;
+
+// Old streaming system (kept for edit/fallback)
+const BUILD_STREAM_SYSTEM = `You are WebForge, a top-tier frontend engineer + designer. You build REAL, PRODUCTION-QUALITY, FULLY INTERACTIVE multi-page web experiences. Stream using a simple delimiter format.
+
+OUTPUT FORMAT (each marker on its OWN line):
+===COLOR: #RRGGBB===
+===FILE: assets/styles.css===
+[raw CSS - 700+ lines]
+===FILE: assets/app.js===
+[raw JS - 250+ lines]
+===FILE: index.html===
+<!doctype html>[raw HTML - 500+ lines]
+===FILE: <other-page>.html===
+[raw HTML - 350+ lines each]
+===END===
+
+CDN libraries allowed: Chart.js 4, Alpine.js 3, Lucide icons (same CDN URLs as the page builder).
+FILE SIZE: exceed 120KB total. A 20KB output is a FAILURE.
+All rules same as the page builder above — real content, all 10 home sections, 350+ lines per inner page.`;
+
+export type StreamUpdate = {
+  coverColor: string;
+  files: SiteFiles;
+  currentFile: string | null;
+  bytes: number;
+};
+
+// ---------------------------------------------------------------------------
+// Streaming shared assets generator
+// ---------------------------------------------------------------------------
+
+async function generateSharedAssetsStream(
+  plan: SitePlan,
+  intentName: string,
+  originalPrompt: string,
+  research: ResearchBrief,
+  onUpdate: (u: StreamUpdate) => Promise<void> | void,
+  model?: string,
+): Promise<{ files: SiteFiles; coverColor: string }> {
+  const techStackNote = research.techStack.length > 0
+    ? `\nCDN tech stack to use: ${research.techStack.join(", ")}`
+    : "";
+  const paletteNote = `\nBrand palette: ${JSON.stringify(research.palette)}\nMood: ${research.mood}\nLayout direction: ${research.layout}`;
+
+  const messages: PuterAIMessage[] = [
+    { role: "system", content: SHARED_ASSETS_SYSTEM },
+    {
+      role: "user",
+      content: `Site name: ${intentName}\nProject: ${originalPrompt}\nPlan summary: ${plan.summary}\nFeatures: ${plan.features.join(", ")}\nPages: ${plan.pages.map(p => p.path).join(", ")}${paletteNote}${techStackNote}\n\nGenerate the shared assets/styles.css and assets/app.js now.`,
+    },
+  ];
+
+  return streamParseFiles(messages, {}, onUpdate, model ?? CODEX_MODEL);
+}
+
+// ---------------------------------------------------------------------------
+// Individual page generator (used in parallel)
+// ---------------------------------------------------------------------------
+
+async function generatePageAI(
+  page: SitePlanPage,
+  allPages: SitePlanPage[],
+  plan: SitePlan,
+  intentName: string,
+  originalPrompt: string,
+  research: ResearchBrief,
+  model?: string,
+): Promise<SiteFiles> {
+  const filename = page.path === "index" ? "index.html"
+    : page.path.endsWith(".html") ? page.path : `${page.path}.html`;
+
+  const isHome = page.path === "index";
+  const navLinks = allPages.map(p => {
+    const href = p.path === "index" ? "index.html" : `${p.path}.html`;
+    return `<a href="${href}">${p.title}</a>`;
+  }).join(", ");
+
+  const techNote = research.techStack.length > 0
+    ? `\nCDN libraries to use: ${research.techStack.join(", ")}`
+    : "";
+
+  const paletteNote = `Palette: bg ${research.palette.background}, primary ${research.palette.primary}, secondary ${research.palette.secondary}. Mood: ${research.mood}. Unique twist: ${research.uniqueTwist}.`;
+
+  const messages: PuterAIMessage[] = [
+    { role: "system", content: PAGE_BUILD_SYSTEM },
+    {
+      role: "user",
+      content: `Generate the ${isHome ? "HOME (index.html)" : `"${page.title}" (${filename})`} page.
+
+Site name: ${intentName}
+Project description: ${originalPrompt}
+Plan: ${plan.summary}
+${paletteNote}${techNote}
+
+THIS PAGE:
+  Path: ${filename}
+  Title: ${page.title}
+  Purpose: ${page.purpose}
+  Sections: ${page.sections.join(" | ")}
+
+All pages (for nav): ${navLinks}
+Features to mention: ${plan.features.slice(0, 6).join(", ")}
+${isHome ? "\nThis is the HOME page — include ALL 10 mandatory sections. Minimum 500 lines of HTML." : `\nThis is an inner page — include nav, page hero, 3+ content sections, footer. Minimum 350 lines.`}
+
+Output the FILE marker then the complete HTML, then ===END===.`,
+    },
+  ];
+
+  try {
+    const result = await streamParseFiles(messages, {}, async () => {}, model ?? CODEX_MODEL);
+    const files: SiteFiles = {};
+    for (const [k, v] of Object.entries(result.files)) {
+      if (v && v.trim().length > 100) files[k] = v;
+    }
+    // Remap to correct filename
+    if (files[page.path] && !files[filename]) {
+      files[filename] = files[page.path];
+      delete files[page.path];
+    }
+    return files;
+  } catch (err) {
+    logger.warn({ err: String(err), page: page.path }, "generatePageAI failed for page");
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 2 — Parallel build (main entry point)
+// ---------------------------------------------------------------------------
+
+export async function buildProjectAIParallel(
+  plan: SitePlan,
+  intentName: string,
+  originalPrompt: string,
+  research: ResearchBrief,
+  onUpdate: (u: StreamUpdate) => Promise<void> | void,
+  model?: string,
+): Promise<BuildResult> {
+  try {
+    // Step A: Generate shared CSS + JS
+    const sharedResult = await generateSharedAssetsStream(
+      plan, intentName, originalPrompt, research, onUpdate, model
+    );
+    const coverColor = sharedResult.coverColor;
+    const allFiles: SiteFiles = { ...sharedResult.files };
+    let totalBytes = Object.values(allFiles).reduce((s, v) => s + v.length, 0);
+
+    await onUpdate({ coverColor, files: { ...allFiles }, currentFile: null, bytes: totalBytes });
+
+    // Step B: Generate all pages concurrently
+    await Promise.all(
+      plan.pages.map(async (page) => {
+        const pageFiles = await generatePageAI(
+          page, plan.pages, plan, intentName, originalPrompt, research, model
+        );
+        for (const [k, v] of Object.entries(pageFiles)) {
+          allFiles[k] = v;
+          totalBytes += v.length;
+        }
+        const firstFile = Object.keys(pageFiles)[0] ?? null;
+        await onUpdate({ coverColor, files: { ...allFiles }, currentFile: firstFile, bytes: totalBytes });
+      })
+    );
+
+    const cleaned = sanitizeFiles(allFiles, plan);
+    if (Object.keys(cleaned).length === 0) throw new Error("no files produced");
+
+    return { files: cleaned, coverColor, name: intentName };
+  } catch (err) {
+    logger.warn({ err: String(err) }, "buildProjectAIParallel failed; using streaming fallback");
+    return buildProjectAIStream(plan, intentName, originalPrompt, onUpdate, model);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 2-STREAM — Fallback streaming build (also used by edit)
+// ---------------------------------------------------------------------------
+
+export async function buildProjectAIStream(
+  plan: SitePlan,
+  intentName: string,
+  originalPrompt: string,
+  onUpdate: (u: StreamUpdate) => Promise<void> | void,
+  model?: string,
+): Promise<BuildResult> {
+  try {
+    const planSummary = {
+      name: intentName, type: plan.type, summary: plan.summary,
+      pages: plan.pages.map(p => ({ path: p.path, title: p.title, purpose: p.purpose, sections: p.sections })),
+      features: plan.features, palette: plan.styles.palette, mood: plan.styles.mood,
+    };
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: BUILD_STREAM_SYSTEM },
+      { role: "user", content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}` },
+    ];
+    const result = await streamParseFiles(messages, {}, onUpdate, model ?? CODEX_MODEL);
+    const cleaned = sanitizeFiles(result.files, plan);
+    if (Object.keys(cleaned).length === 0) throw new Error("no files produced");
+    return { files: cleaned, coverColor: result.coverColor, name: intentName };
+  } catch (err) {
+    logger.warn({ err: String(err) }, "buildProjectAIStream failed; using fallback");
+    return buildProjectFallback(plan, intentName);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared streaming parser (used by both shared-assets and stream-build)
+// ---------------------------------------------------------------------------
+
+async function streamParseFiles(
+  messages: PuterAIMessage[],
+  initialFiles: SiteFiles,
+  onUpdate: (u: StreamUpdate) => Promise<void> | void,
+  model: string,
+): Promise<{ files: SiteFiles; coverColor: string }> {
+  let buffer = "";
+  let coverColor = "#7CC7FF";
+  let currentFile: string | null = null;
+  let bytes = 0;
+  const files: Record<string, string> = { ...initialFiles };
+  let lastFlush = 0;
+  let pendingFlush = false;
+
+  const flush = async (force: boolean) => {
+    if (pendingFlush && !force) return;
+    const now = Date.now();
+    if (!force && now - lastFlush < 220) return;
+    pendingFlush = true;
+    try {
+      await onUpdate({ coverColor, files: { ...files }, currentFile, bytes });
+      lastFlush = Date.now();
+    } finally { pendingFlush = false; }
+  };
+
+  const consumeLine = (rawLine: string): void => {
+    const stripped = rawLine.replace(/^\uFEFF/, "").replace(/\r$/, "");
+    const probe = stripped.trim();
+    const colorMatch = probe.match(/^===COLOR:\s*(#[0-9a-fA-F]{6})\s*===$/);
+    const fileMatch = probe.match(/^===FILE:\s*(.+?)\s*===$/);
+    const endMatch = probe.match(/^===END===$/);
+    if (colorMatch) { coverColor = colorMatch[1]; return; }
+    if (fileMatch) {
+      const sanitized = sanitizeOnePath(fileMatch[1]);
+      currentFile = sanitized;
+      if (sanitized && !(sanitized in files)) files[sanitized] = "";
+      return;
+    }
+    if (endMatch) { currentFile = null; return; }
+    if (/^```/.test(probe)) return;
+    if (currentFile) {
+      files[currentFile] = (files[currentFile] ?? "") + stripped + "\n";
+      bytes += stripped.length + 1;
+    }
+  };
+
+  await puterAIStream(
+    messages,
+    (delta: string) => {
+      buffer += delta;
+      let nl = buffer.indexOf("\n");
+      while (nl !== -1) {
+        consumeLine(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+        nl = buffer.indexOf("\n");
+      }
+      if (currentFile) {
+        const transient = (files[currentFile] ?? "") + buffer;
+        const now = Date.now();
+        if (now - lastFlush > 220 && !pendingFlush) {
+          pendingFlush = true;
+          void Promise.resolve(onUpdate({ coverColor, files: { ...files, [currentFile!]: transient }, currentFile, bytes: bytes + buffer.length }))
+            .then(() => { lastFlush = Date.now(); pendingFlush = false; })
+            .catch(() => { pendingFlush = false; });
+        }
+      } else { void flush(false); }
+    },
+    { model },
+  );
+
+  if (buffer.length > 0) { consumeLine(buffer); buffer = ""; }
+  await flush(true);
+  return { files, coverColor };
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 3 — Quality audit
+// ---------------------------------------------------------------------------
+
+export interface AuditIssue {
+  severity: "critical" | "high" | "medium" | "low";
+  category: "seo" | "accessibility" | "mobile" | "performance" | "content" | "code";
+  file: string;
+  issue: string;
+  fix: string;
+}
+
+const AUDIT_SYSTEM = `You are WebForge's senior QA engineer. Review this website's file list and HTML summaries, identify real issues.
+
+Focus on:
+- SEO: missing meta description, og tags, canonical URL, JSON-LD schema, heading hierarchy (h1 → h2 → h3 order)
+- Accessibility: images without alt text, buttons without labels, missing ARIA roles, poor color contrast indicators, no skip-nav link, form inputs without labels
+- Mobile: fixed pixel widths over 100vw, small tap targets (<44px), overflow:hidden missing on body
+- Performance: render-blocking scripts in <head> without defer/async, missing lazy loading on images
+- Content: Lorem ipsum found, placeholder [COMPANY] or [NAME] text, stub sections with < 50 words
+- Code: invalid HTML structure, broken relative links, missing closing tags
+
+Return ONLY a JSON array of up to 12 issues (prioritize critical and high):
+[
+  {
+    "severity": "critical"|"high"|"medium"|"low",
+    "category": "seo"|"accessibility"|"mobile"|"performance"|"content"|"code",
+    "file": "<filename>",
+    "issue": "<specific description of the problem>",
+    "fix": "<specific fix instruction>"
+  }
+]
+
+If no issues found, return [].`;
+
+export async function auditProjectAI(
+  files: SiteFiles,
+  plan: SitePlan,
+  model?: string,
+): Promise<AuditIssue[]> {
+  try {
+    // Build a compact summary (first 3000 chars per HTML file, first 800 chars of CSS)
+    const summary: Record<string, string> = {};
+    for (const [path, content] of Object.entries(files)) {
+      if (path.endsWith(".html")) {
+        summary[path] = content.slice(0, 3000) + (content.length > 3000 ? "\n...[truncated]" : "");
+      } else if (path === "assets/styles.css") {
+        summary[path] = content.slice(0, 800) + "...[truncated]";
+      }
+    }
+
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: AUDIT_SYSTEM },
+      {
+        role: "user",
+        content: `Site: ${plan.summary}\nFiles: ${Object.keys(files).join(", ")}\n\nFile summaries:\n${JSON.stringify(summary, null, 2)}\n\nReturn the JSON issues array.`,
+      },
+    ];
+
+    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    if (!text) return [];
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x: unknown) =>
+      x && typeof x === "object" && "severity" in (x as object) && "issue" in (x as object)
+    ).slice(0, 12) as AuditIssue[];
+  } catch (err) {
+    logger.warn({ err: String(err) }, "auditProjectAI failed");
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 4 — Auto-fix
+// ---------------------------------------------------------------------------
+
+const AUTOFIX_SYSTEM = `You are WebForge's autonomous fixer. You will receive a website's files and a list of specific QA issues.
+
+Fix ALL issues listed. Return a JSON object mapping filename → fixed content.
+Return ONLY the files that need changes. Unchanged files should NOT be included.
+
+Rules:
+- Fix every issue in the list precisely
+- Do NOT remove existing content or functionality
+- Do NOT change visual design
+- For SEO: add proper <meta> tags, JSON-LD, og: tags
+- For accessibility: add aria-label, role, alt text, skip-nav link, focus styles
+- For content issues: replace Lorem Ipsum / placeholder text with real content
+- For mobile: replace fixed px widths with max-width or % equivalents
+- Keep all existing HTML structure; only patch what's needed
+
+Return JSON: { "<filename>": "<complete fixed file content>", ... }`;
+
+export async function autoFixProjectAI(
+  files: SiteFiles,
+  issues: AuditIssue[],
+  model?: string,
+): Promise<SiteFiles> {
+  if (issues.length === 0) return files;
+
+  try {
+    // Group issues by file and only pass those files
+    const affectedFiles = new Set(issues.map((i) => i.file));
+    const filesToFix: SiteFiles = {};
+    for (const f of affectedFiles) {
+      if (files[f]) {
+        // Truncate very large files to avoid token overflow
+        filesToFix[f] = files[f].slice(0, 12000);
+      }
+    }
+
+    const issuesSummary = issues
+      .map((i, n) => `${n + 1}. [${i.severity.toUpperCase()}] ${i.file}: ${i.issue} → Fix: ${i.fix}`)
+      .join("\n");
+
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: AUTOFIX_SYSTEM },
+      {
+        role: "user",
+        content: `Issues to fix:\n${issuesSummary}\n\nFiles to update:\n${JSON.stringify(filesToFix, null, 2)}\n\nReturn JSON with fixed files only.`,
+      },
+    ];
+
+    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    if (!text) return files;
+
+    const fixedFiles = JSON.parse(text) as Record<string, unknown>;
+    const result: SiteFiles = { ...files };
+    for (const [path, content] of Object.entries(fixedFiles)) {
+      if (typeof content === "string" && content.length > 100 && files[path] !== undefined) {
+        result[path] = content;
+      }
+    }
+    return result;
+  } catch (err) {
+    logger.warn({ err: String(err) }, "autoFixProjectAI failed; returning original files");
+    return files;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Build non-streaming (used by editProjectAI)
 // ---------------------------------------------------------------------------
 
 const BUILD_SYSTEM = `You are WebForge, a top-tier frontend engineer + designer. Generate a complete, production-quality static website as JSON.
 
-You receive:
-- name: the brand/site name
-- prompt: the user's original description (use it as the source of truth for tone, content, and details)
-- plan: structured analysis (features, pages, palette/mood)
-
-Return ONLY a JSON object of this shape:
+Return ONLY a JSON object:
 {
   "coverColor": "#RRGGBB",
   "files": {
@@ -183,290 +786,10 @@ Return ONLY a JSON object of this shape:
 
 Hard requirements:
 1. Each HTML file MUST be a complete <!doctype html> document.
-2. Every page links to "assets/styles.css" and "assets/app.js" with relative paths (no leading slash).
-3. Inter-page links use relative paths (e.g. href="about.html"), NEVER root-relative.
-4. Include a shared <header> nav on every page that links every page in the plan.
-5. Mobile-responsive. Modern CSS (flex, grid, clamp). Beautiful gradients, generous spacing, large headings.
-6. Real, specific copy that matches the prompt — no generic Lorem Ipsum, no placeholder names. Reference the user's actual idea.
-7. Add subtle interactivity (form handling, smooth scroll, fade-in via IntersectionObserver) in assets/app.js. Keep JS small and dependency-free.
-8. coverColor is a single hex (the dominant accent for the brand card).
-9. NO external CDN scripts/fonts/images. Use system fonts and CSS-only visuals (gradients, SVG inlined sparingly). Emojis as accents are OK.
-10. Output must be valid JSON. Escape strings properly.
-11. Add a footer to every HTML page with EXACTLY this snippet just before </body>: <footer class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:48px">made with <strong style="color:inherit">WebForge</strong></footer>
-
-Aim for a polished, modern aesthetic — think Linear, Vercel, Stripe, Bolt.new, Apple. Dark or light is fine; pick what fits the prompt.`;
-
-// ---------------------------------------------------------------------------
-// PHASE 2-STREAM — Build with token-by-token streaming
-// ---------------------------------------------------------------------------
-
-const BUILD_STREAM_SYSTEM = `You are WebForge, a top-tier frontend engineer + designer. You build REAL, PRODUCTION-QUALITY, FULLY INTERACTIVE multi-page web experiences — the kind a paying client accepts and a YC team ships. Stream the whole project using a simple delimiter format. NO JSON. NO markdown code fences.
-
-OUTPUT FORMAT (each marker on its OWN line, NO extra text):
-===COLOR: #RRGGBB===
-===FILE: assets/styles.css===
-<raw file contents>
-===FILE: assets/app.js===
-<raw file contents>
-===FILE: index.html===
-<!doctype html>
-<raw file contents>
-===FILE: <other-page>.html===
-...
-===END===
-
-STREAM RULES:
-1. Start with ONE ===COLOR: #XXXXXX=== line — a single hex (the dominant brand accent).
-2. For each file, emit ===FILE: <relative-path>=== on its own line then the raw file contents until the next ===FILE: or ===END=== marker.
-3. ORDER: assets/styles.css → assets/app.js → index.html → other pages alphabetically.
-4. Each HTML file is a complete <!doctype html> document with <head> (title, meta description, og tags, theme-color, favicon as inline data:image/svg+xml).
-5. Pages link to "assets/styles.css" and "assets/app.js" via RELATIVE paths (no leading slash).
-6. Inter-page links use relative paths (e.g. href="about.html"), NEVER root-relative.
-7. Shared sticky <header> nav + shared <footer> with link columns on every page.
-8. Mobile-responsive (clamp, grid, flex).
-9. End with ===END=== on its OWN line.
-10. WebForge credit (inside <footer>, just above </footer>): <div class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:24px">made with <strong style="color:inherit">WebForge</strong></div>
-
-════════════════════════════════════════════════════════════
-CDN LIBRARIES — ALLOWED AND ENCOURAGED FOR FUNCTIONAL SITES
-════════════════════════════════════════════════════════════
-You MAY (and for interactive/app-like projects MUST) use:
-- Chart.js 4: <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-- Alpine.js 3: <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
-- Lucide icons: <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-  Call lucide.createIcons() after DOM load to render <i data-lucide="NAME"></i> icons.
-
-When to use them:
-- Dashboard / analytics / tracker → Chart.js for bar, line, doughnut charts with real hardcoded sample data.
-- App-like UI (tabs, toggles, modals, accordions) → Alpine.js x-data / x-show / x-on:click.
-- Any project → Lucide for clean icon set instead of hand-crafted SVGs.
-NO React, Vue, or other heavy frameworks. CDN scripts go in <head> (Alpine deferred) or before </body>.
-
-════════════════════════════════════════════════════════════
-FUNCTIONAL INTERACTIVITY — MANDATORY FOR APP-LIKE PROJECTS
-════════════════════════════════════════════════════════════
-If the user's prompt describes a tool, dashboard, quiz, tracker, calculator, or any interactive app:
-A. Build a WORKING demo with hardcoded realistic sample data (JSON arrays inline in app.js or script tags).
-B. Implement real tab switching: Alpine.js x-data="{tab:'home'}" x-show="tab==='home'" pattern.
-C. Stat cards with animated count-up: use requestAnimationFrame to count from 0 to the target number on page load.
-D. Progress bars and gauges: CSS width transitions driven by JS, with real percentages from your data.
-E. Interactive charts: Chart.js with real-looking datasets — multiple series, labels, colors.
-F. Working forms: validate on submit, show inline success/error states, store submission to localStorage.
-G. LocalStorage persistence: save user actions (quiz answers, tracker entries, form data) so state survives refresh.
-H. Role / view switching: if the prompt has multiple user types (student/admin, free/pro), build BOTH views with a toggle.
-I. Modal dialogs: vanilla JS showModal() / close() on <dialog> elements.
-J. Sortable / filterable tables or card grids: add filter inputs that hide/show rows in real time.
-
-════════════════════════════════════════════════════════════
-DEPTH & SIZE — NOT NEGOTIABLE
-════════════════════════════════════════════════════════════
-- AT LEAST 4 pages (index + 3+ from plan). 5-7 ideal.
-- index.html sections (all required, in order):
-  1. Hero — headline clamp(3rem,7vw,6rem) 800-weight, subhead, two CTAs, right-side picsum.photos image or inline SVG.
-  2. Logo cloud / social proof — 6-10 fake-but-believable names, muted flex row.
-  3. Feature grid — 6+ cards (Lucide icon + bold title + 2-3 sentence copy each).
-  4. "How it works" — 3-4 numbered steps, rich copy.
-  5. Interactive showcase — for app sites: a live working demo panel (chart, stat cards, mini dashboard). For brochure sites: 2-3 alternating image-text rows with picsum photos.
-  6. Testimonials — 3+ quote cards, name/role/company, CSS avatar circles.
-  7. Pricing OR stats band — 3 tiers or 4 key numbers.
-  8. FAQ — 6+ items with <details><summary>.
-  9. Final CTA band.
-  10. Footer with credit.
-- Other pages: 250+ lines each, never stubs.
-- assets/styles.css: 400+ lines. CSS vars, fluid type, utility classes, every component styled, hover/focus states everywhere.
-- assets/app.js: 120+ lines. Nav toggle, smooth-scroll, IntersectionObserver stagger, form validation, header shadow, chart init (if applicable), count-up animations, localStorage helpers.
-
-════════════════════════════════════════════════════════════
-CONTENT QUALITY
-════════════════════════════════════════════════════════════
-- Every word specific to the user's prompt. Zero Lorem Ipsum. Invent plausible real names, numbers, quotes.
-- Punchy benefit-led headlines. Concrete nouns and verbs. Real-feeling customer names and companies.
-
-════════════════════════════════════════════════════════════
-VISUALS
-════════════════════════════════════════════════════════════
-- picsum.photos for all photographic imagery (unique seed per image, descriptive alt text).
-- Animated gradient hero: @keyframes gradientShift 8-12s ease-in-out infinite.
-- Glassmorphism cards: rgba(255,255,255,0.06) + backdrop-filter:blur(14px) + border rgba(255,255,255,0.12).
-- Bold display type: gradient text via background-clip:text on key headings.
-- 3D card tilt on mousemove: perspective(900px) rotateX/rotateY, cubic-bezier snap back.
-- Neon glow: box-shadow 0 0 28px 4px rgba(ACCENT,0.35) on CTAs and key borders.
-- Stagger fade-ins: IntersectionObserver + 60ms sibling delay.
-- Custom scrollbar: 6px, brand accent thumb.
-- Scroll parallax: hero bg at 0.4x speed.
-
-FILE-SIZE TARGET: full output must exceed 40KB. Aim for 100-160KB across the whole project. A 5KB site is a failure.
-
-ARCHETYPE GUIDE:
-- SaaS / tool / dashboard → Linear/Vercel/Stripe aesthetic + Alpine.js tabs + Chart.js dashboard panel.
-- Quiz / exam / learning app → Multi-step flow, score tracking with localStorage, results page with Chart.js doughnut.
-- Portfolio / agency → Full-bleed picsum case-study cards, large type, Pentagram-style.
-- Restaurant / local biz → Menu cards, gallery grid with picsum, hours, map embed placeholder.
-- Blog / editorial → Ghost/Substack aesthetic, article snippets, bylines, photo panels.
-- E-commerce / marketplace → Product grid with filter bar (Alpine.js), cart count badge (localStorage), product detail modal.`;
-
-
-export type StreamUpdate = {
-  coverColor: string;
-  files: SiteFiles;
-  currentFile: string | null;
-  bytes: number;
-};
-
-export async function buildProjectAIStream(
-  plan: SitePlan,
-  intentName: string,
-  originalPrompt: string,
-  onUpdate: (u: StreamUpdate) => Promise<void> | void,
-  model?: string,
-): Promise<BuildResult> {
-  try {
-    const planSummary = {
-      name: intentName,
-      type: plan.type,
-      summary: plan.summary,
-      pages: plan.pages.map((p) => ({
-        path: p.path,
-        title: p.title,
-        purpose: p.purpose,
-        sections: p.sections,
-      })),
-      features: plan.features,
-      palette: plan.styles.palette,
-      mood: plan.styles.mood,
-    };
-
-    const messages: PuterAIMessage[] = [
-      { role: "system", content: BUILD_STREAM_SYSTEM },
-      {
-        role: "user",
-        content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}`,
-      },
-    ];
-
-    let buffer = "";
-    let coverColor = "#7CC7FF";
-    let currentFile: string | null = null;
-    let bytes = 0;
-    const files: Record<string, string> = {};
-    let lastFlush = 0;
-    let pendingFlush = false;
-
-    const flush = async (force: boolean) => {
-      if (pendingFlush && !force) return;
-      const now = Date.now();
-      if (!force && now - lastFlush < 220) return;
-      pendingFlush = true;
-      try {
-        const snapshot: SiteFiles = {};
-        for (const [k, v] of Object.entries(files)) snapshot[k] = v;
-        await onUpdate({
-          coverColor,
-          files: snapshot,
-          currentFile,
-          bytes,
-        });
-        lastFlush = now;
-      } finally {
-        pendingFlush = false;
-      }
-    };
-
-    const consumeLine = (rawLine: string): void => {
-      const stripped = rawLine.replace(/^\uFEFF/, "").replace(/\r$/, "");
-      const probe = stripped.trim();
-      const colorMatch = probe.match(
-        /^===COLOR:\s*(#[0-9a-fA-F]{6})\s*===$/,
-      );
-      const fileMatch = probe.match(/^===FILE:\s*(.+?)\s*===$/);
-      const endMatch = probe.match(/^===END===$/);
-      if (colorMatch) {
-        coverColor = colorMatch[1];
-        return;
-      }
-      if (fileMatch) {
-        const sanitized = sanitizeOnePath(fileMatch[1]);
-        currentFile = sanitized;
-        if (sanitized && !(sanitized in files)) files[sanitized] = "";
-        return;
-      }
-      if (endMatch) {
-        currentFile = null;
-        return;
-      }
-      if (/^```/.test(probe)) return;
-      if (currentFile) {
-        files[currentFile] = (files[currentFile] ?? "") + stripped + "\n";
-        bytes += stripped.length + 1;
-      }
-    };
-
-    await puterAIStream(
-      messages,
-      (delta: string) => {
-        buffer += delta;
-
-        let nl = buffer.indexOf("\n");
-        while (nl !== -1) {
-          const line = buffer.slice(0, nl);
-          buffer = buffer.slice(nl + 1);
-          consumeLine(line);
-          nl = buffer.indexOf("\n");
-        }
-
-        if (currentFile) {
-          const stable = files[currentFile] ?? "";
-          const transient = stable + buffer;
-          const now = Date.now();
-          if (now - lastFlush > 220 && !pendingFlush) {
-            pendingFlush = true;
-            const snapshot: SiteFiles = { ...files, [currentFile!]: transient };
-            void Promise.resolve(
-              onUpdate({
-                coverColor,
-                files: snapshot,
-                currentFile,
-                bytes: bytes + buffer.length,
-              }),
-            ).then(() => {
-              lastFlush = Date.now();
-              pendingFlush = false;
-            }).catch(() => {
-              pendingFlush = false;
-            });
-          }
-        } else {
-          void flush(false);
-        }
-      },
-      { model: model ?? CODEX_MODEL },
-    );
-
-    if (buffer.length > 0) {
-      consumeLine(buffer);
-      buffer = "";
-    }
-    await flush(true);
-
-    const cleaned = sanitizeFiles(files, plan);
-    if (Object.keys(cleaned).length === 0) throw new Error("no files produced");
-    return { files: cleaned, coverColor, name: intentName };
-  } catch (err) {
-    logger.warn(
-      { err: String(err) },
-      "buildProjectAIStream failed; using fallback",
-    );
-    return buildProjectFallback(plan, intentName);
-  }
-}
-
-function sanitizeOnePath(raw: string): string | null {
-  const p = raw.trim().replace(/^\/+/, "");
-  if (!p || p.length > 200) return null;
-  if (p.includes("..")) return null;
-  if (!/^[a-zA-Z0-9._\-/]+$/.test(p)) return null;
-  return p;
-}
+2. Every page links to "assets/styles.css" and "assets/app.js" with relative paths.
+3. Inter-page links use relative paths. Mobile-responsive. Real content.
+4. All 10 home sections for index.html. 350+ lines per inner page.
+5. coverColor is a single hex. Valid JSON. No Lorem Ipsum.`;
 
 export async function buildProjectAI(
   plan: SitePlan,
@@ -475,42 +798,16 @@ export async function buildProjectAI(
   model?: string,
 ): Promise<BuildResult> {
   try {
-    const planSummary = {
-      name: intentName,
-      type: plan.type,
-      summary: plan.summary,
-      pages: plan.pages.map((p) => ({
-        path: p.path,
-        title: p.title,
-        purpose: p.purpose,
-        sections: p.sections,
-      })),
-      features: plan.features,
-      palette: plan.styles.palette,
-      mood: plan.styles.mood,
-    };
-
+    const planSummary = { name: intentName, type: plan.type, summary: plan.summary, pages: plan.pages, features: plan.features, palette: plan.styles.palette, mood: plan.styles.mood };
     const messages: PuterAIMessage[] = [
       { role: "system", content: BUILD_SYSTEM },
-      {
-        role: "user",
-        content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}`,
-      },
+      { role: "user", content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}` },
     ];
-
-    const text = await puterAIComplete(messages, {
-      model: model ?? CODEX_MODEL,
-      jsonMode: true,
-    });
+    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty build response");
-
-    const parsed = JSON.parse(text) as {
-      coverColor?: string;
-      files?: Record<string, unknown>;
-    };
+    const parsed = JSON.parse(text) as { coverColor?: string; files?: Record<string, unknown> };
     const files = sanitizeFiles(parsed.files, plan);
     if (Object.keys(files).length === 0) throw new Error("no files produced");
-
     const coverColor = isHex(parsed.coverColor) ? parsed.coverColor! : "#7CC7FF";
     return { files, coverColor, name: intentName };
   } catch (err) {
@@ -519,77 +816,19 @@ export async function buildProjectAI(
   }
 }
 
-function isHex(v: unknown): boolean {
-  return typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v);
-}
-
-function sanitizeFiles(
-  raw: Record<string, unknown> | undefined,
-  plan: SitePlan,
-): SiteFiles {
-  if (!raw || typeof raw !== "object") return {};
-  const out: SiteFiles = {};
-  for (const [k, v] of Object.entries(raw)) {
-    if (typeof v !== "string") continue;
-    const path = k.replace(/^\/+/, "");
-    if (path.length === 0 || path.length > 200) continue;
-    if (path.includes("..")) continue;
-    const cleaned = v.replace(/^\uFEFF/, "");
-    out[path] = cleaned;
-  }
-  if (!out["index.html"]) {
-    const homePage = plan.pages[0];
-    if (homePage && out[homePage.path]) {
-      out["index.html"] = out[homePage.path];
-    }
-  }
-  return fillMissingFromFallback(out, plan);
-}
-
-function fillMissingFromFallback(files: SiteFiles, plan: SitePlan): SiteFiles {
-  const out: SiteFiles = { ...files };
-  let fallback: BuildResult | null = null;
-  const ensureFallback = (): BuildResult => {
-    if (!fallback) fallback = buildProjectFallback(plan, "site");
-    return fallback;
-  };
-
-  for (const page of plan.pages) {
-    const path = page.path;
-    if (!path) continue;
-    const existing = out[path];
-    if (!existing || existing.trim().length < 200) {
-      const fb = ensureFallback();
-      if (fb.files[path]) out[path] = fb.files[path];
-    }
-  }
-
-  for (const asset of ["assets/styles.css", "assets/app.js"]) {
-    if (!out[asset] || out[asset].trim().length === 0) {
-      const fb = ensureFallback();
-      if (fb.files[asset]) out[asset] = fb.files[asset];
-    }
-  }
-
-  return out;
-}
-
 // ---------------------------------------------------------------------------
-// PHASE 3 — Edit
+// Edit
 // ---------------------------------------------------------------------------
 
 const EDIT_SYSTEM = `You are WebForge, modifying an existing static website based on a user's edit instructions.
 
-You receive the current files (path -> content) and edit instructions.
-Return ONLY a JSON object with the SAME shape:
-{ "coverColor": "#RRGGBB", "files": { "<path>": "<content>", ... } }
+Return ONLY a JSON object: { "coverColor": "#RRGGBB", "files": { "<path>": "<content>", ... } }
 
 Rules:
-- Return the COMPLETE new file contents for any file you change.
-- Include ALL files (even unchanged ones) so we can replace the site atomically.
-- Keep the same file structure unless the edit clearly requires new pages.
+- Return COMPLETE new file contents for any file you change.
+- Include ALL files (even unchanged) for atomic replacement.
 - Maintain valid HTML5 and the same nav structure across pages.
-- Do not break inter-page links or asset links (relative paths).`;
+- Do not break inter-page links or asset links.`;
 
 export async function editProjectAI(
   currentFiles: SiteFiles,
@@ -600,30 +839,13 @@ export async function editProjectAI(
   try {
     const messages: PuterAIMessage[] = [
       { role: "system", content: EDIT_SYSTEM },
-      {
-        role: "user",
-        content: `name: ${intentName}\n\nedit instructions: ${instructions}\n\ncurrent files:\n${JSON.stringify(currentFiles, null, 2)}`,
-      },
+      { role: "user", content: `name: ${intentName}\n\nedit instructions: ${instructions}\n\ncurrent files:\n${JSON.stringify(currentFiles, null, 2)}` },
     ];
-
-    const text = await puterAIComplete(messages, {
-      model: model ?? CODEX_MODEL,
-      jsonMode: true,
-    });
+    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty edit response");
-
-    const parsed = JSON.parse(text) as {
-      coverColor?: string;
-      files?: Record<string, unknown>;
-    };
-    const files = sanitizeFiles(parsed.files, {
-      type: "website",
-      summary: "",
-      pages: [{ path: "index.html", title: "Home", purpose: "", sections: [] }],
-      styles: { palette: "neon", mood: "" },
-      features: [],
-      notes: [],
-    });
+    const parsed = JSON.parse(text) as { coverColor?: string; files?: Record<string, unknown> };
+    const fallbackPlan: SitePlan = { type: "website", summary: "", pages: [{ path: "index.html", title: "Home", purpose: "", sections: [] }], styles: { palette: "neon", mood: "" }, features: [], notes: [] };
+    const files = sanitizeFiles(parsed.files, fallbackPlan);
     if (Object.keys(files).length === 0) throw new Error("no files in edit");
     const coverColor = isHex(parsed.coverColor) ? parsed.coverColor! : "#7CC7FF";
     return { files, coverColor, name: intentName };
@@ -631,4 +853,57 @@ export async function editProjectAI(
     logger.warn({ err: String(err) }, "editProjectAI failed");
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function isHex(v: unknown): boolean {
+  return typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v);
+}
+
+function sanitizeOnePath(raw: string): string | null {
+  const p = raw.trim().replace(/^\/+/, "");
+  if (!p || p.length > 200) return null;
+  if (p.includes("..")) return null;
+  if (!/^[a-zA-Z0-9._\-/]+$/.test(p)) return null;
+  return p;
+}
+
+function sanitizeFiles(raw: Record<string, unknown> | undefined, plan: SitePlan): SiteFiles {
+  if (!raw || typeof raw !== "object") return {};
+  const out: SiteFiles = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v !== "string") continue;
+    const path = k.replace(/^\/+/, "");
+    if (path.length === 0 || path.length > 200 || path.includes("..")) continue;
+    out[path] = v.replace(/^\uFEFF/, "");
+  }
+  if (!out["index.html"]) {
+    const homePage = plan.pages[0];
+    if (homePage && out[homePage.path]) { out["index.html"] = out[homePage.path]; }
+  }
+  return fillMissingFromFallback(out, plan);
+}
+
+function fillMissingFromFallback(files: SiteFiles, plan: SitePlan): SiteFiles {
+  const out: SiteFiles = { ...files };
+  let fallback: BuildResult | null = null;
+  const ensureFallback = (): BuildResult => { if (!fallback) fallback = buildProjectFallback(plan, "site"); return fallback; };
+  for (const page of plan.pages) {
+    if (!page.path) continue;
+    const existing = out[page.path];
+    if (!existing || existing.trim().length < 200) {
+      const fb = ensureFallback();
+      if (fb.files[page.path]) out[page.path] = fb.files[page.path];
+    }
+  }
+  for (const asset of ["assets/styles.css", "assets/app.js"]) {
+    if (!out[asset] || out[asset].trim().length === 0) {
+      const fb = ensureFallback();
+      if (fb.files[asset]) out[asset] = fb.files[asset];
+    }
+  }
+  return out;
 }
