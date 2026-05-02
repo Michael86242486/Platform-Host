@@ -44,6 +44,9 @@ import {
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import Svg, { Circle } from "react-native-svg";
+
+import { useAuth } from "@/lib/auth";
 import { MatrixRain } from "@/components/MatrixRain";
 import { MonoText } from "@/components/MonoText";
 import { NeonButton } from "@/components/NeonButton";
@@ -51,7 +54,7 @@ import { Surface } from "@/components/Surface";
 import { useColors } from "@/hooks/useColors";
 import { useSiteStream } from "@/lib/useSiteStream";
 
-type Tab = "overview" | "chat" | "preview" | "console";
+type Tab = "overview" | "chat" | "preview" | "console" | "intel";
 
 type AgentMessage = {
   id: string;
@@ -375,6 +378,18 @@ export default function SiteDetailScreen() {
             currentFile={stream.currentFile}
           />
         )}
+
+        {activeTab === "intel" && (
+          <IntelTab
+            site={site}
+            accent={accent}
+            colors={colors}
+            onFixWithAI={(prompt) => {
+              setChatDraft(prompt);
+              setActiveTab("chat");
+            }}
+          />
+        )}
       </SafeAreaView>
     </View>
   );
@@ -402,6 +417,7 @@ function TabBar({
     { key: "chat", label: "Chat", icon: "message-circle" },
     { key: "preview", label: "Preview", icon: "monitor" },
     { key: "console", label: "Console", icon: "terminal", badge: isWorking },
+    { key: "intel", label: "Intel", icon: "activity" },
   ];
   return (
     <View
@@ -2129,6 +2145,435 @@ function ConsoleTab({
           )}
         </>
       )}
+    </ScrollView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Intel tab — animated quality gauges + issue list
+// ---------------------------------------------------------------------------
+
+type SiteIntelReport = {
+  scores: { seo: number; a11y: number; perf: number; mobile: number; code: number };
+  overall: number;
+  grade: "A" | "B" | "C" | "D" | "F";
+  issues: { category: string; severity: "critical" | "warning" | "info"; message: string; fix: string }[];
+  stats: { totalKB: string; fileCount: number; htmlCount: number; cssCount: number; jsCount: number; imgCount: number };
+};
+
+function gradeColor(g: string): string {
+  if (g === "A") return "#00FFC2";
+  if (g === "B") return "#4ADE80";
+  if (g === "C") return "#FEBC2E";
+  if (g === "D") return "#FB923C";
+  return "#FF6B6B";
+}
+function scoreColor(s: number): string {
+  if (s >= 85) return "#00FFC2";
+  if (s >= 70) return "#FEBC2E";
+  return "#FF6B6B";
+}
+
+function ScoreRing({
+  score,
+  size = 90,
+  strokeWidth = 8,
+  delay = 0,
+}: {
+  score: number;
+  size?: number;
+  strokeWidth?: number;
+  delay?: number;
+}) {
+  const [displayed, setDisplayed] = useState(0);
+  const started = useRef(false);
+
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    const timeout = setTimeout(() => {
+      const total = 55;
+      let frame = 0;
+      const tick = setInterval(() => {
+        frame++;
+        const t = frame / total;
+        const eased = 1 - Math.pow(1 - t, 3);
+        setDisplayed(Math.round(score * eased));
+        if (frame >= total) { clearInterval(tick); setDisplayed(score); }
+      }, 1000 / 60);
+    }, delay);
+    return () => clearTimeout(timeout);
+  }, [score, delay]);
+
+  const r = (size - strokeWidth) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - displayed / 100);
+  const cx = size / 2;
+  const cy = size / 2;
+  const color = scoreColor(displayed > 0 ? score : 0);
+
+  return (
+    <Svg width={size} height={size}>
+      <Circle cx={cx} cy={cy} r={r} stroke="#ffffff0D" strokeWidth={strokeWidth} fill="none" />
+      <Circle
+        cx={cx} cy={cy} r={r}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        fill="none"
+        strokeDasharray={circ}
+        strokeDashoffset={offset}
+        strokeLinecap="round"
+        transform={`rotate(-90, ${cx}, ${cy})`}
+      />
+    </Svg>
+  );
+}
+
+const INTEL_CATS: {
+  key: keyof SiteIntelReport["scores"];
+  label: string;
+  icon: keyof typeof Feather.glyphMap;
+  delay: number;
+}[] = [
+  { key: "seo",    label: "SEO",    icon: "search",      delay: 0   },
+  { key: "a11y",   label: "A11y",   icon: "eye",         delay: 120 },
+  { key: "perf",   label: "Speed",  icon: "zap",         delay: 240 },
+  { key: "mobile", label: "Mobile", icon: "smartphone",  delay: 360 },
+  { key: "code",   label: "Code",   icon: "code",        delay: 480 },
+];
+
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+
+const SEV_META = {
+  critical: { label: "Critical", color: "#FF6B6B", icon: "alert-circle" as const },
+  warning:  { label: "Warning",  color: "#FEBC2E", icon: "alert-triangle" as const },
+  info:     { label: "Info",     color: "#58A6FF", icon: "info" as const },
+};
+
+function IntelTab({
+  site,
+  accent,
+  colors,
+  onFixWithAI,
+}: {
+  site: Site;
+  accent: string;
+  colors: ReturnType<typeof useColors>;
+  onFixWithAI: (prompt: string) => void;
+}) {
+  const { getToken } = useAuth();
+  const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+  const [report, setReport] = useState<SiteIntelReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedCat, setExpandedCat] = useState<string | null>(null);
+  const overallAnim = useRef(new Animated.Value(0)).current;
+
+  const runAnalysis = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${apiBase}/api/sites/${site.id}/analyze`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error((j as { message?: string }).message ?? `HTTP ${res.status}`);
+      }
+      const data = await res.json() as SiteIntelReport;
+      setReport(data);
+      Animated.timing(overallAnim, {
+        toValue: data.overall,
+        duration: 1400,
+        delay: 80,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Analysis failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [site.id, getToken, apiBase, overallAnim]);
+
+  useEffect(() => { void runAnalysis(); }, []);
+
+  const buildFixPrompt = useCallback(() => {
+    if (!report) return "";
+    const actionable = report.issues.filter((i) => i.severity !== "info");
+    const lines = [
+      "Please fix the following quality issues in my site:",
+      "",
+      ...actionable.map((i) => `• [${i.category.toUpperCase()}] ${i.message} — ${i.fix}`),
+    ];
+    return lines.join("\n");
+  }, [report]);
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 16, backgroundColor: colors.background }}>
+        <ActivityIndicator size="large" color={accent} />
+        <Text style={{ color: colors.mutedForeground, fontFamily: "monospace", fontSize: 13 }}>
+          Scanning site files…
+        </Text>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 32, gap: 16, backgroundColor: colors.background }}>
+        <Feather name="alert-circle" size={36} color={colors.destructive} />
+        <Text style={{ color: colors.destructive, textAlign: "center", fontSize: 14 }}>{error}</Text>
+        <Pressable
+          onPress={() => void runAnalysis()}
+          style={{ borderWidth: 1, borderColor: accent, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10 }}
+        >
+          <Text style={{ color: accent, fontSize: 14 }}>Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  if (!report) return null;
+
+  const critCount = report.issues.filter((i) => i.severity === "critical").length;
+  const warnCount = report.issues.filter((i) => i.severity === "warning").length;
+  const gc = gradeColor(report.grade);
+  const overallCirc = 2 * Math.PI * 54;
+  const overallOffset = overallAnim.interpolate({ inputRange: [0, 100], outputRange: [overallCirc, 0] });
+
+  return (
+    <ScrollView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      contentContainerStyle={{ paddingBottom: 48 }}
+      showsVerticalScrollIndicator={false}
+    >
+      {/* ── Hero: overall score ── */}
+      <LinearGradient
+        colors={[`${gc}18`, `${gc}06`, "transparent"]}
+        style={{ alignItems: "center", paddingTop: 28, paddingBottom: 24, gap: 4 }}
+      >
+        <View style={{ position: "relative", alignItems: "center", justifyContent: "center" }}>
+          <Svg width={132} height={132}>
+            <Circle cx={66} cy={66} r={54} stroke="#ffffff0D" strokeWidth={10} fill="none" />
+            <AnimatedCircle
+              cx={66} cy={66} r={54}
+              stroke={gc}
+              strokeWidth={10}
+              fill="none"
+              strokeDasharray={overallCirc}
+              strokeDashoffset={overallOffset}
+              strokeLinecap="round"
+              transform="rotate(-90, 66, 66)"
+            />
+          </Svg>
+          <View style={{ position: "absolute", alignItems: "center" }}>
+            <Text style={{ color: gc, fontSize: 38, fontWeight: "800", letterSpacing: -1 }}>{report.grade}</Text>
+            <Text style={{ color: colors.mutedForeground, fontSize: 11 }}>{report.overall}/100</Text>
+          </View>
+        </View>
+        <Text style={{ color: colors.foreground, fontSize: 18, fontWeight: "700", marginTop: 4 }}>
+          Site Intelligence
+        </Text>
+        <Text style={{ color: colors.mutedForeground, fontSize: 12 }}>
+          {report.stats.fileCount} files · {report.stats.totalKB} KB total
+        </Text>
+
+        {/* Stat pills */}
+        <View style={{ flexDirection: "row", gap: 8, marginTop: 8, flexWrap: "wrap", justifyContent: "center" }}>
+          {[
+            { label: `${report.stats.htmlCount} HTML`, color: "#58A6FF" },
+            { label: `${report.stats.cssCount} CSS`,   color: "#B48EFF" },
+            { label: `${report.stats.jsCount} JS`,     color: "#FEBC2E" },
+            { label: `${report.stats.imgCount} img`,   color: "#4ADE80" },
+          ].map((p) => (
+            <View key={p.label} style={{ borderRadius: 999, paddingHorizontal: 10, paddingVertical: 3, backgroundColor: `${p.color}18` }}>
+              <Text style={{ color: p.color, fontSize: 11, fontWeight: "600" }}>{p.label}</Text>
+            </View>
+          ))}
+        </View>
+      </LinearGradient>
+
+      {/* ── Category score grid ── */}
+      <View style={{ paddingHorizontal: 16, marginTop: 4 }}>
+        <Text style={{ color: colors.mutedForeground, fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
+          Categories
+        </Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+          {INTEL_CATS.map((cat) => {
+            const s = report.scores[cat.key];
+            const c = scoreColor(s);
+            const isExpanded = expandedCat === cat.key;
+            const catIssues = report.issues.filter((i) => i.category === cat.key);
+            return (
+              <Pressable
+                key={cat.key}
+                onPress={() => setExpandedCat(isExpanded ? null : cat.key)}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  minWidth: "44%",
+                  backgroundColor: colors.surface,
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: isExpanded ? `${c}60` : colors.border,
+                  padding: 14,
+                  alignItems: "center",
+                  opacity: pressed ? 0.8 : 1,
+                })}
+              >
+                <ScoreRing score={s} size={72} strokeWidth={7} delay={cat.delay} />
+                <View style={{ position: "absolute", top: 17, alignItems: "center" }}>
+                  <Feather name={cat.icon} size={14} color={c} />
+                </View>
+                <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "700", marginTop: 6 }}>{s}</Text>
+                <Text style={{ color: colors.mutedForeground, fontSize: 11, marginTop: 1 }}>{cat.label}</Text>
+                {catIssues.length > 0 && (
+                  <View style={{ marginTop: 6, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: `${c}18` }}>
+                    <Text style={{ color: c, fontSize: 10, fontWeight: "600" }}>
+                      {catIssues.length} issue{catIssues.length > 1 ? "s" : ""}
+                    </Text>
+                  </View>
+                )}
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      {/* ── Expanded category issues ── */}
+      {expandedCat && (() => {
+        const catIssues = report.issues.filter((i) => i.category === expandedCat);
+        const catMeta = INTEL_CATS.find((c) => c.key === expandedCat)!;
+        return (
+          <View style={{ marginHorizontal: 16, marginTop: 12, backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, overflow: "hidden" }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+              <Feather name={catMeta.icon} size={14} color={accent} />
+              <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "700", flex: 1 }}>{catMeta.label} Issues</Text>
+              <Pressable onPress={() => setExpandedCat(null)}>
+                <Feather name="x" size={16} color={colors.mutedForeground} />
+              </Pressable>
+            </View>
+            {catIssues.length === 0 ? (
+              <View style={{ padding: 16, alignItems: "center", gap: 6 }}>
+                <Feather name="check-circle" size={20} color="#00FFC2" />
+                <Text style={{ color: colors.mutedForeground, fontSize: 13 }}>No issues found</Text>
+              </View>
+            ) : (
+              catIssues.map((issue, idx) => {
+                const sev = SEV_META[issue.severity];
+                return (
+                  <View key={idx} style={{ borderTopWidth: idx === 0 ? 0 : 1, borderTopColor: colors.border, padding: 14 }}>
+                    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+                      <Feather name={sev.icon} size={13} color={sev.color} style={{ marginTop: 1 }} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{issue.message}</Text>
+                        <Text style={{ color: colors.mutedForeground, fontSize: 12, marginTop: 4, lineHeight: 17 }}>{issue.fix}</Text>
+                      </View>
+                      <View style={{ borderRadius: 999, paddingHorizontal: 7, paddingVertical: 2, backgroundColor: `${sev.color}18` }}>
+                        <Text style={{ color: sev.color, fontSize: 10, fontWeight: "600" }}>{sev.label}</Text>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </View>
+        );
+      })()}
+
+      {/* ── Full issues list ── */}
+      <View style={{ paddingHorizontal: 16, marginTop: 20 }}>
+        <Text style={{ color: colors.mutedForeground, fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
+          All Issues
+          {critCount > 0 && <Text style={{ color: "#FF6B6B" }}> · {critCount} critical</Text>}
+          {warnCount > 0 && <Text style={{ color: "#FEBC2E" }}> · {warnCount} warning</Text>}
+        </Text>
+
+        {report.issues.length === 0 ? (
+          <View style={{ alignItems: "center", padding: 24, gap: 8, backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border }}>
+            <Feather name="check-circle" size={28} color="#00FFC2" />
+            <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 15 }}>Perfect score!</Text>
+            <Text style={{ color: colors.mutedForeground, fontSize: 13 }}>No issues detected in your site.</Text>
+          </View>
+        ) : (
+          <Surface style={{ borderRadius: 14, overflow: "hidden" }}>
+            {report.issues.map((issue, idx) => {
+              const sev = SEV_META[issue.severity];
+              const catMeta = INTEL_CATS.find((c) => c.key === issue.category);
+              return (
+                <View
+                  key={idx}
+                  style={{
+                    borderTopWidth: idx === 0 ? 0 : 1,
+                    borderTopColor: colors.border,
+                    padding: 14,
+                    flexDirection: "row",
+                    alignItems: "flex-start",
+                    gap: 10,
+                  }}
+                >
+                  <View style={{ width: 28, height: 28, borderRadius: 999, backgroundColor: `${sev.color}18`, alignItems: "center", justifyContent: "center" }}>
+                    <Feather name={sev.icon} size={13} color={sev.color} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                      {catMeta && (
+                        <View style={{ borderRadius: 999, paddingHorizontal: 6, paddingVertical: 1, backgroundColor: `${scoreColor(report.scores[catMeta.key])}18` }}>
+                          <Text style={{ color: scoreColor(report.scores[catMeta.key]), fontSize: 9, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                            {catMeta.label}
+                          </Text>
+                        </View>
+                      )}
+                      <View style={{ borderRadius: 999, paddingHorizontal: 6, paddingVertical: 1, backgroundColor: `${sev.color}14` }}>
+                        <Text style={{ color: sev.color, fontSize: 9, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 }}>{sev.label}</Text>
+                      </View>
+                    </View>
+                    <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{issue.message}</Text>
+                    <Text style={{ color: colors.mutedForeground, fontSize: 12, marginTop: 3, lineHeight: 17 }}>{issue.fix}</Text>
+                  </View>
+                </View>
+              );
+            })}
+          </Surface>
+        )}
+      </View>
+
+      {/* ── Fix with AI ── */}
+      {report.issues.filter((i) => i.severity !== "info").length > 0 && (
+        <View style={{ paddingHorizontal: 16, marginTop: 24 }}>
+          <NeonButton
+            title={`Fix ${report.issues.filter((i) => i.severity !== "info").length} Issues with AI`}
+            icon={<Feather name="zap" size={16} color="#0A0E14" />}
+            onPress={() => {
+              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              onFixWithAI(buildFixPrompt());
+            }}
+            fullWidth
+          />
+          <Text style={{ color: colors.mutedForeground, fontSize: 11, textAlign: "center", marginTop: 8 }}>
+            Switches to Chat and prefills a targeted fix prompt
+          </Text>
+        </View>
+      )}
+
+      {/* Re-scan */}
+      <Pressable
+        onPress={() => { overallAnim.setValue(0); void runAnalysis(); }}
+        style={({ pressed }) => ({
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 6,
+          marginTop: 20,
+          padding: 12,
+          opacity: pressed ? 0.6 : 1,
+        })}
+      >
+        <Feather name="refresh-cw" size={13} color={colors.mutedForeground} />
+        <Text style={{ color: colors.mutedForeground, fontSize: 12 }}>Re-scan site</Text>
+      </Pressable>
     </ScrollView>
   );
 }
