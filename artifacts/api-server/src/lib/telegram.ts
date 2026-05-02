@@ -3,6 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 
 import { puterAIComplete, type PuterAIMessage } from "./puter";
 import { siteEventBus, type SiteEvent } from "./eventBus";
+import { analyzeSiteFiles } from "./analyze.js";
 
 import {
   db,
@@ -107,6 +108,8 @@ class TelegramBotManager {
   private botOwner = new Map<string, string>();
   /** Map of botId → last observed chatId from that bot's messages. */
   private botLastChat = new Map<string, number>();
+  /** Map of userId → timestamp when we last sent a re-engagement nudge. */
+  private lastNudgeSent = new Map<string, number>();
   /** pendingId -> in-memory record before we commit it to DB. */
   private pendingHosted = new Map<
     string,
@@ -130,13 +133,16 @@ class TelegramBotManager {
 
     siteEventBus.on("site:*", (ev: SiteEvent) => {
       if (ev.type !== "site_ready") return;
-      this.notifySiteReady(ev.userId, ev.siteName, ev.publicUrl, ev.isEdit, ev.fileCount, ev.changedFileCount).catch((err) => {
+      this.notifySiteReady(ev.siteId, ev.userId, ev.siteName, ev.publicUrl, ev.isEdit, ev.fileCount, ev.changedFileCount).catch((err) => {
         logger.warn({ err, siteId: ev.siteId }, "notifySiteReady failed");
       });
     });
+
+    this.startReengagementScheduler();
   }
 
   private async notifySiteReady(
+    siteId: string,
     userId: string,
     siteName: string,
     publicUrl: string | null,
@@ -157,6 +163,31 @@ class TelegramBotManager {
 
     if (recipients.length === 0) return;
 
+    // ── Run Intel analysis on the site's files ──────────────────────────
+    let gradeLine = "";
+    try {
+      const [site] = await db
+        .select({ files: sitesTable.files })
+        .from(sitesTable)
+        .where(eq(sitesTable.id, siteId))
+        .limit(1);
+      const files = site?.files as Record<string, string> | null;
+      if (files && Object.keys(files).length > 0) {
+        const report = analyzeSiteFiles(files);
+        const criticalCount = report.issues.filter((i) => i.severity === "critical").length;
+        const warnCount = report.issues.filter((i) => i.severity === "warning").length;
+        const issueCount = criticalCount + warnCount;
+        const issueLabel = issueCount === 0
+          ? "no issues 🎉"
+          : issueCount === 1
+          ? "1 issue"
+          : `${issueCount} issues`;
+        gradeLine = `\n🏆 Grade *${report.grade}* · ${report.overall}/100 · ${issueLabel}`;
+      }
+    } catch (err) {
+      logger.warn({ err, siteId }, "Intel analysis failed for Telegram notify");
+    }
+
     const urlLine = publicUrl ? `\n🌐 ${publicUrl}` : "";
     const statsLine = fileCount != null
       ? isEdit && changedFileCount != null
@@ -164,8 +195,8 @@ class TelegramBotManager {
         : `\n📄 ${fileCount} file${fileCount !== 1 ? "s" : ""} generated`
       : "";
     const text = isEdit
-      ? `✏️ *${escapeMd(siteName)}* was updated!${urlLine}${statsLine}\n\nYour changes are live\\. Tap /sites to manage your projects\\.`
-      : `✅ *${escapeMd(siteName)}* is ready!${urlLine}${statsLine}\n\nTap /sites to manage your projects\\.`;
+      ? `✏️ *${escapeMd(siteName)}* was updated!${urlLine}${statsLine}${gradeLine}\n\nYour changes are live. Tap /sites to manage your projects.`
+      : `✅ *${escapeMd(siteName)}* is ready!${urlLine}${statsLine}${gradeLine}\n\nTap /sites to manage your projects.`;
 
     for (const { bot, chatId } of recipients) {
       await bot
@@ -173,6 +204,89 @@ class TelegramBotManager {
         .catch((err: unknown) => {
           logger.warn({ err, chatId }, "Telegram site_ready notify failed");
         });
+    }
+  }
+
+  // ── Re-engagement scheduler ─────────────────────────────────────────────
+
+  private startReengagementScheduler(): void {
+    const SIX_HOURS = 6 * 60 * 60 * 1000;
+    const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+
+    const check = async () => {
+      try {
+        await this.sendReengagementNudges(SEVEN_DAYS);
+      } catch (err) {
+        logger.warn({ err }, "Re-engagement scheduler error");
+      }
+    };
+
+    // Run once after 10 minutes (let bots fully warm up), then every 6 hours.
+    setTimeout(() => {
+      void check();
+      setInterval(() => { void check(); }, SIX_HOURS);
+    }, 10 * 60 * 1000);
+
+    logger.info("Re-engagement scheduler started");
+  }
+
+  private async sendReengagementNudges(inactivityMs: number): Promise<void> {
+    const SEVEN_DAYS = inactivityMs;
+    const now = Date.now();
+
+    for (const [botId, userId] of this.botOwner.entries()) {
+      const chatId = this.botLastChat.get(botId);
+      if (!chatId) continue;
+
+      // Respect cooldown — don't nudge same user more than once per 7 days.
+      const lastNudge = this.lastNudgeSent.get(userId) ?? 0;
+      if (now - lastNudge < SEVEN_DAYS) continue;
+
+      // Find the most recent site for this user.
+      const [latestSite] = await db
+        .select({ updatedAt: sitesTable.updatedAt, name: sitesTable.name })
+        .from(sitesTable)
+        .where(eq(sitesTable.userId, userId))
+        .orderBy(desc(sitesTable.updatedAt))
+        .limit(1);
+
+      if (!latestSite) continue; // never built — don't nudge yet
+
+      const lastActivity = latestSite.updatedAt ? new Date(latestSite.updatedAt).getTime() : 0;
+      const daysSince = Math.floor((now - lastActivity) / (24 * 60 * 60 * 1000));
+
+      if (daysSince < 7) continue; // still active
+
+      const bot = this.active.get(botId);
+      if (!bot) continue;
+
+      const timeLabel =
+        daysSince >= 30 ? "a while" :
+        daysSince >= 14 ? "a couple of weeks" :
+        "a week";
+
+      const lines = [
+        `👋 *Hey — we haven't seen you in ${timeLabel}!*`,
+        ``,
+        `Your last project was *${escapeMd(latestSite.name ?? "a site")}* — ${daysSince} day${daysSince !== 1 ? "s" : ""} ago.`,
+        ``,
+        `Ready to build something new? Just tell me what you want:`,
+        ``,
+        `• /create a personal portfolio`,
+        `• /template saas`,
+        `• /clone notion`,
+        ``,
+        `I'm here whenever you are 🚀`,
+      ];
+
+      await bot
+        .sendMessage(chatId, lines.join("\n"), { parse_mode: "Markdown" })
+        .catch((err: unknown) => {
+          logger.warn({ err, chatId, userId }, "Re-engagement nudge send failed");
+        });
+
+      this.lastNudgeSent.set(userId, now);
+      logger.info({ userId, daysSince, chatId }, "Re-engagement nudge sent");
     }
   }
 
