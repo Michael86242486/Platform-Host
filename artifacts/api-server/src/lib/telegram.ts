@@ -1,8 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { and, desc, eq } from "drizzle-orm";
 
-import { openai } from "@workspace/integrations-openai-ai-server";
-import { speechToText } from "@workspace/integrations-openai-ai-server/audio";
+import { puterAIComplete, type PuterAIMessage } from "./puter";
 
 import {
   db,
@@ -925,27 +924,10 @@ class TelegramBotManager {
         audioBuffer[2] === 0x67 &&
         audioBuffer[3] === 0x53;
 
-      const transcript = await speechToText(
-        audioBuffer,
-        isOgg ? "webm" : "mp3", // OGG Opus is close enough; Whisper handles it
-      );
-
-      if (!transcript.trim()) {
-        await bot.editMessageText(
-          "🎙 I couldn't make out any speech — try again in a quieter spot!",
-          { chat_id: chatId, message_id: thinking.message_id },
-        );
-        return;
-      }
-
-      // Show what was transcribed so the user can verify
-      await bot.editMessageText(
-        `🎙 _"${escapeMd(transcript.trim())}"_\n\nProcessing…`,
-        { chat_id: chatId, message_id: thinking.message_id, parse_mode: "Markdown" },
-      );
-
-      // Route via the normal free-text pipeline
-      await this.handleFreeText(userId, bot, chatId, transcript.trim());
+      // Speech-to-text via Whisper is not available in Puter Codex mode.
+      void isOgg;
+      void audioBuffer;
+      throw new Error("Voice transcription is not available — please type your message.");
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.warn({ err: errMsg, chatId }, "voice note transcription failed");
@@ -1079,18 +1061,17 @@ Rules:
 - Replies should be ≤ 2 sentences, warm, lowercase-ish like a friend who builds.`;
 
     try {
-      const completion = await openai.chat.completions.create({
+      const messages: PuterAIMessage[] = [
+        { role: "system", content: sys },
+        {
+          role: "user",
+          content: `User's sites:\n${JSON.stringify(sitesContext, null, 2)}\n\nUser message: ${text}`,
+        },
+      ];
+      const body = await puterAIComplete(messages, {
         model: "gpt-4o-mini",
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: sys },
-          {
-            role: "user",
-            content: `User's sites:\n${JSON.stringify(sitesContext, null, 2)}\n\nUser message: ${text}`,
-          },
-        ],
+        jsonMode: true,
       });
-      const body = completion.choices[0]?.message?.content?.trim() ?? "{}";
       const parsed = JSON.parse(body);
       return parsed;
     } catch (err) {

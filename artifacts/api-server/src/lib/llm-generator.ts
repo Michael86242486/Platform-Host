@@ -1,15 +1,13 @@
 /**
- * LLM-powered WebForge generator. Wraps the deterministic fallbacks from
- * generator.ts with calls to OpenAI for high-quality output.
+ * LLM-powered WebForge generator — powered by Puter Codex.
+ * No OpenAI key required; uses the puter-chat-completion driver
+ * with the user's Puter credentials (PUTER_USERNAME / PUTER_PASSWORD).
  *
- * - analyzeProjectAI: ask the model to classify the project, name it,
- *   list features, pages, and style hints. Falls back to rules on error.
- * - buildProjectAI: ask the model to produce a complete multi-page static
- *   site (HTML + shared CSS + tiny JS) from the plan. Falls back to the
- *   template renderer on error.
+ * - analyzeProjectAI: classify the project, name it, list features/pages/style hints.
+ * - buildProjectAIStream: produce a complete multi-page static site via streaming.
+ * - buildProjectAI: non-streaming JSON fallback (used by editProjectAI).
+ * - editProjectAI: patch existing files based on edit instructions.
  */
-
-import { openai } from "@workspace/integrations-openai-ai-server";
 
 import type { SiteAnalysis, SiteFiles, SitePlan } from "./db";
 import {
@@ -18,16 +16,16 @@ import {
   type BuildResult,
 } from "./generator";
 import { logger } from "./logger";
+import {
+  puterAIComplete,
+  puterAIStream,
+  type PuterAIMessage,
+} from "./puter";
 
-// gpt-5.4 — most capable general-purpose model per the OpenAI integration
-// skill. Supports `max_completion_tokens` (NOT `max_tokens` — that param was
-// removed for the gpt-5 family). gpt-4o + 16K previously truncated multi-page
-// sites mid-stream.
-const TEXT_MODEL = "gpt-5.4";
-const MAX_COMPLETION_TOKENS = 32768;
+const CODEX_MODEL = "gpt-4o-mini";
 
 // ---------------------------------------------------------------------------
-// PHASE 1 — Analysis (LLM)
+// PHASE 1 — Analysis
 // ---------------------------------------------------------------------------
 
 const ANALYSIS_SYSTEM = `You are WebForge, a senior product designer + engineer that ships beautiful, modern, fully-functional one-page-or-multi-page websites for indie founders.
@@ -54,20 +52,19 @@ export async function analyzeProjectAI(
   name?: string,
 ): Promise<SiteAnalysis> {
   try {
-    const completion = await openai.chat.completions.create({
-      model: TEXT_MODEL,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: ANALYSIS_SYSTEM },
-        {
-          role: "user",
-          content: `Project prompt: ${prompt}\n${
-            name ? `Suggested name: ${name}\n` : ""
-          }Return the JSON.`,
-        },
-      ],
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: ANALYSIS_SYSTEM },
+      {
+        role: "user",
+        content: `Project prompt: ${prompt}\n${
+          name ? `Suggested name: ${name}\n` : ""
+        }Return the JSON.`,
+      },
+    ];
+    const text = await puterAIComplete(messages, {
+      model: CODEX_MODEL,
+      jsonMode: true,
     });
-    const text = completion.choices[0]?.message?.content?.trim();
     if (!text) throw new Error("empty analysis");
     const parsed = JSON.parse(text) as Partial<SiteAnalysis>;
     return normalizeAnalysis(parsed, prompt, name);
@@ -121,7 +118,7 @@ function deriveTitle(prompt: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// PHASE 2 — Build (LLM produces real multi-file static site)
+// PHASE 2 — Build (non-streaming JSON — used internally by editProjectAI)
 // ---------------------------------------------------------------------------
 
 const BUILD_SYSTEM = `You are WebForge, a top-tier frontend engineer + designer. Generate a complete, production-quality static website as JSON.
@@ -158,8 +155,7 @@ Hard requirements:
 Aim for a polished, modern aesthetic — think Linear, Vercel, Stripe, Bolt.new, Apple. Dark or light is fine; pick what fits the prompt.`;
 
 // ---------------------------------------------------------------------------
-// PHASE 2-STREAM — Build with token-by-token streaming using a simple
-// delimiter format so the client can render partial HTML in real time.
+// PHASE 2-STREAM — Build with token-by-token streaming
 // ---------------------------------------------------------------------------
 
 const BUILD_STREAM_SYSTEM = `You are WebForge, a top-tier frontend engineer + designer. You are building a REAL, SUBSTANTIAL, PRODUCTION-QUALITY multi-page website — the kind a paying client would accept and a YC team would ship. You stream the whole project using a simple delimiter format. NO JSON. NO markdown code fences.
@@ -250,18 +246,13 @@ export async function buildProjectAIStream(
       mood: plan.styles.mood,
     };
 
-    const stream = await openai.chat.completions.create({
-      model: TEXT_MODEL,
-      max_completion_tokens: MAX_COMPLETION_TOKENS,
-      stream: true,
-      messages: [
-        { role: "system", content: BUILD_STREAM_SYSTEM },
-        {
-          role: "user",
-          content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}`,
-        },
-      ],
-    });
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: BUILD_STREAM_SYSTEM },
+      {
+        role: "user",
+        content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}`,
+      },
+    ];
 
     let buffer = "";
     let coverColor = "#7CC7FF";
@@ -277,7 +268,6 @@ export async function buildProjectAIStream(
       if (!force && now - lastFlush < 220) return;
       pendingFlush = true;
       try {
-        // Snapshot files (drop fences/markdown if model misbehaved)
         const snapshot: SiteFiles = {};
         for (const [k, v] of Object.entries(files)) snapshot[k] = v;
         await onUpdate({
@@ -293,8 +283,6 @@ export async function buildProjectAIStream(
     };
 
     const consumeLine = (rawLine: string): void => {
-      // Strip CRLF, BOM, and surrounding whitespace before marker detection so
-      // accidental indentation or stray \r doesn't break the parser.
       const stripped = rawLine.replace(/^\uFEFF/, "").replace(/\r$/, "");
       const probe = stripped.trim();
       const colorMatch = probe.match(
@@ -316,7 +304,6 @@ export async function buildProjectAIStream(
         currentFile = null;
         return;
       }
-      // Quietly drop markdown code fences if the model wrapped a file in one.
       if (/^```/.test(probe)) return;
       if (currentFile) {
         files[currentFile] = (files[currentFile] ?? "") + stripped + "\n";
@@ -324,51 +311,45 @@ export async function buildProjectAIStream(
       }
     };
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices?.[0]?.delta?.content ?? "";
-      if (!delta) continue;
-      buffer += delta;
+    await puterAIStream(
+      messages,
+      (delta) => {
+        buffer += delta;
 
-      // Process all completed lines.
-      let nl = buffer.indexOf("\n");
-      while (nl !== -1) {
-        const line = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
-        consumeLine(line);
-        nl = buffer.indexOf("\n");
-      }
+        let nl = buffer.indexOf("\n");
+        while (nl !== -1) {
+          const line = buffer.slice(0, nl);
+          buffer = buffer.slice(nl + 1);
+          consumeLine(line);
+          nl = buffer.indexOf("\n");
+        }
 
-      // Also append the in-flight (pre-newline) buffer as a transient tail
-      // to the current file so the iframe shows live partial HTML. We undo
-      // it on the next iteration by re-overwriting the same key.
-      if (currentFile) {
-        const stable = files[currentFile] ?? "";
-        const transient = stable + buffer;
-        // Don't permanently store the transient tail in `files` (would
-        // double-count when we later consume the line). Instead temporarily
-        // patch a snapshot for the flush.
-        const now = Date.now();
-        if (now - lastFlush > 220 && !pendingFlush) {
-          pendingFlush = true;
-          try {
-            const snapshot: SiteFiles = { ...files, [currentFile]: transient };
-            await onUpdate({
+        if (currentFile) {
+          const stable = files[currentFile] ?? "";
+          const transient = stable + buffer;
+          const now = Date.now();
+          if (now - lastFlush > 220 && !pendingFlush) {
+            pendingFlush = true;
+            const snapshot: SiteFiles = { ...files, [currentFile!]: transient };
+            void onUpdate({
               coverColor,
               files: snapshot,
               currentFile,
               bytes: bytes + buffer.length,
+            }).then(() => {
+              lastFlush = Date.now();
+              pendingFlush = false;
+            }).catch(() => {
+              pendingFlush = false;
             });
-            lastFlush = now;
-          } finally {
-            pendingFlush = false;
           }
+        } else {
+          void flush(false);
         }
-      } else {
-        await flush(false);
-      }
-    }
+      },
+      { model: CODEX_MODEL },
+    );
 
-    // Final newline-less remainder
     if (buffer.length > 0) {
       consumeLine(buffer);
       buffer = "";
@@ -416,20 +397,18 @@ export async function buildProjectAI(
       mood: plan.styles.mood,
     };
 
-    const completion = await openai.chat.completions.create({
-      model: TEXT_MODEL,
-      response_format: { type: "json_object" },
-      max_completion_tokens: MAX_COMPLETION_TOKENS,
-      messages: [
-        { role: "system", content: BUILD_SYSTEM },
-        {
-          role: "user",
-          content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}`,
-        },
-      ],
-    });
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: BUILD_SYSTEM },
+      {
+        role: "user",
+        content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}`,
+      },
+    ];
 
-    const text = completion.choices[0]?.message?.content?.trim();
+    const text = await puterAIComplete(messages, {
+      model: CODEX_MODEL,
+      jsonMode: true,
+    });
     if (!text) throw new Error("empty build response");
 
     const parsed = JSON.parse(text) as {
@@ -459,15 +438,12 @@ function sanitizeFiles(
   const out: SiteFiles = {};
   for (const [k, v] of Object.entries(raw)) {
     if (typeof v !== "string") continue;
-    // Strip leading slashes to keep paths relative.
     const path = k.replace(/^\/+/, "");
     if (path.length === 0 || path.length > 200) continue;
     if (path.includes("..")) continue;
-    // Strip a UTF-8 BOM the model occasionally prepends.
     const cleaned = v.replace(/^\uFEFF/, "");
     out[path] = cleaned;
   }
-  // Guarantee an index.html exists.
   if (!out["index.html"]) {
     const homePage = plan.pages[0];
     if (homePage && out[homePage.path]) {
@@ -477,13 +453,6 @@ function sanitizeFiles(
   return fillMissingFromFallback(out, plan);
 }
 
-/**
- * Make sure every page in the plan, plus the shared CSS/JS assets, actually
- * exist. If the LLM truncated mid-stream and never emitted, say, `about.html`,
- * we render that single page from the deterministic fallback so the home page's
- * nav link still resolves to a real file instead of a 404. This is the
- * difference between a "broken AI demo" and a working multi-page site.
- */
 function fillMissingFromFallback(files: SiteFiles, plan: SitePlan): SiteFiles {
   const out: SiteFiles = { ...files };
   let fallback: BuildResult | null = null;
@@ -496,8 +465,6 @@ function fillMissingFromFallback(files: SiteFiles, plan: SitePlan): SiteFiles {
     const path = page.path;
     if (!path) continue;
     const existing = out[path];
-    // Treat empty/whitespace-only or absurdly tiny pages (< 200 bytes) as
-    // truncated — those are almost always the symptom of a mid-stream cut-off.
     if (!existing || existing.trim().length < 200) {
       const fb = ensureFallback();
       if (fb.files[path]) out[path] = fb.files[path];
@@ -515,7 +482,7 @@ function fillMissingFromFallback(files: SiteFiles, plan: SitePlan): SiteFiles {
 }
 
 // ---------------------------------------------------------------------------
-// PHASE 3 — Edit (LLM patches existing files based on edit instructions)
+// PHASE 3 — Edit
 // ---------------------------------------------------------------------------
 
 const EDIT_SYSTEM = `You are WebForge, modifying an existing static website based on a user's edit instructions.
@@ -537,20 +504,20 @@ export async function editProjectAI(
   instructions: string,
 ): Promise<BuildResult> {
   try {
-    const completion = await openai.chat.completions.create({
-      model: TEXT_MODEL,
-      response_format: { type: "json_object" },
-      max_completion_tokens: MAX_COMPLETION_TOKENS,
-      messages: [
-        { role: "system", content: EDIT_SYSTEM },
-        {
-          role: "user",
-          content: `name: ${intentName}\n\nedit instructions: ${instructions}\n\ncurrent files:\n${JSON.stringify(currentFiles, null, 2)}`,
-        },
-      ],
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: EDIT_SYSTEM },
+      {
+        role: "user",
+        content: `name: ${intentName}\n\nedit instructions: ${instructions}\n\ncurrent files:\n${JSON.stringify(currentFiles, null, 2)}`,
+      },
+    ];
+
+    const text = await puterAIComplete(messages, {
+      model: CODEX_MODEL,
+      jsonMode: true,
     });
-    const text = completion.choices[0]?.message?.content?.trim();
     if (!text) throw new Error("empty edit response");
+
     const parsed = JSON.parse(text) as {
       coverColor?: string;
       files?: Record<string, unknown>;

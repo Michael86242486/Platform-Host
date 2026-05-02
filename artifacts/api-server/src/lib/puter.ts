@@ -550,6 +550,120 @@ export async function deleteSite(args: {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Puter AI — server-side LLM calls via puter-chat-completion driver
+// ---------------------------------------------------------------------------
+
+export type PuterAIMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+/**
+ * Non-streaming Puter AI completion.
+ * Uses the puter-chat-completion driver (no OpenAI key required).
+ */
+export async function puterAIComplete(
+  messages: PuterAIMessage[],
+  opts: { model?: string; jsonMode?: boolean } = {},
+): Promise<string> {
+  const model = opts.model ?? "gpt-4o-mini";
+  const args: Record<string, unknown> = { messages, model };
+  if (opts.jsonMode) args["response_format"] = { type: "json_object" };
+
+  const result = await callDriver<{
+    message?: { content?: string; role?: string };
+    finish_reason?: string;
+  }>("puter-chat-completion", "complete", args);
+
+  const content = result?.message?.content ?? "";
+  if (!content) throw new Error("Puter AI returned empty content");
+  return content;
+}
+
+/**
+ * Streaming Puter AI completion. Calls onChunk for each text delta and
+ * returns the full concatenated content when the stream ends.
+ */
+export async function puterAIStream(
+  messages: PuterAIMessage[],
+  onChunk: (text: string) => void,
+  opts: { model?: string } = {},
+): Promise<string> {
+  const model = opts.model ?? "gpt-4o-mini";
+  const auth = await getAuth();
+
+  const res = await fetch(`${PUTER_API}/drivers/call`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${auth.token}`,
+    },
+    body: JSON.stringify({
+      interface: "puter-chat-completion",
+      method: "complete",
+      args: { messages, model, stream: true },
+    }),
+  });
+
+  if (!res.ok || !res.body) {
+    if (res.status === 401 || res.status === 403) {
+      cachedAuth = null;
+    }
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Puter AI stream failed (${res.status}): ${text.slice(0, 200)}`,
+    );
+  }
+
+  const decoder = new TextDecoder();
+  let full = "";
+  let sseBuffer = "";
+
+  const reader = res.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+
+      const lines = sseBuffer.split("\n");
+      sseBuffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const data = trimmed.slice(6).trim();
+        if (data === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(data) as Record<string, unknown>;
+          // Handle Puter native format: { text: "..." }
+          // Also handle OpenAI-compat format: { choices: [{ delta: { content: "..." } }] }
+          const delta =
+            (parsed["text"] as string | undefined) ??
+            ((
+              (parsed["choices"] as Array<{
+                delta?: { content?: string };
+              }>)?.[0]?.delta?.content
+            ) as string | undefined) ??
+            "";
+          if (delta) {
+            full += delta;
+            onChunk(delta);
+          }
+        } catch {
+          /* ignore malformed SSE lines */
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return full;
+}
+
 /** A self-test used by the /api/health route to surface Puter readiness. */
 export async function puterPing(): Promise<{
   ok: boolean;

@@ -44,6 +44,29 @@ Theme tokens live in `constants/colors.ts` (dev-dark palette: `#0A0E14` bg,
 `#00FFC2` primary, `#58A6FF` accent). All visuals lean into a developer
 aesthetic — monospace accents, glowing dots, gradient CTAs.
 
+## AI Engine — Puter Codex (primary)
+
+WebForge uses **Puter Codex** as the primary AI engine for site generation.
+No OpenAI API key is required. The server authenticates with `PUTER_USERNAME`
+/ `PUTER_PASSWORD` and calls the `puter-chat-completion` driver via
+`POST /drivers/call`.
+
+Two helper functions live in `artifacts/api-server/src/lib/puter.ts`:
+
+- `puterAIComplete(messages, opts)` — non-streaming completion; used for
+  project analysis (JSON mode) and site editing.
+- `puterAIStream(messages, onChunk, opts)` — SSE streaming; parses both Puter
+  native format `{"text":"..."}` and OpenAI-compat format from the stream
+  and calls `onChunk` for each delta. Used by `buildProjectAIStream` and
+  `streamNarration`.
+
+`llm-generator.ts` and `narrate.ts` import from `./puter` exclusively — no
+`@workspace/integrations-openai-ai-server` dependency anywhere in the
+api-server source tree.
+
+Voice transcription (Whisper) is unavailable in Puter Codex mode; the
+`/api/voice/*` routes return HTTP 503 with a typed-input fallback message.
+
 ## Backend
 
 `POST /api/sites { prompt, name? }` enqueues a job. The in-process queue

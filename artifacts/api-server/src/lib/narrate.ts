@@ -1,10 +1,9 @@
 import crypto from "node:crypto";
 
-import { openai } from "@workspace/integrations-openai-ai-server";
-
 import { db, messagesTable } from "./db";
 import { siteEventBus } from "./eventBus";
 import { logger } from "./logger";
+import { puterAIStream, type PuterAIMessage } from "./puter";
 
 type NarrateInput = {
   userId: string;
@@ -36,12 +35,10 @@ const SHORT_TIMEOUT_MS = 7000;
  */
 export async function streamNarration(input: NarrateInput): Promise<string> {
   const narrationId = `nar_${crypto.randomBytes(6).toString("hex")}`;
-
   const userPrompt = `Phase: ${input.intent}\nContext: ${input.context}`;
 
   let buffer = "";
 
-  // Announce start so the UI can mount a typing bubble immediately.
   siteEventBus.emitSite({
     type: "narration_start",
     siteId: input.siteId,
@@ -53,31 +50,25 @@ export async function streamNarration(input: NarrateInput): Promise<string> {
   const timeout = setTimeout(() => ctrl.abort(), SHORT_TIMEOUT_MS);
 
   try {
-    const stream = await openai.chat.completions.create(
-      {
-        model: "gpt-4o-mini",
-        max_tokens: 120,
-        temperature: 0.85,
-        stream: true,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-      },
-      { signal: ctrl.signal },
-    );
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userPrompt },
+    ];
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices?.[0]?.delta?.content ?? "";
-      if (!delta) continue;
-      buffer += delta;
-      siteEventBus.emitSite({
-        type: "narration_delta",
-        siteId: input.siteId,
-        narrationId,
-        delta,
-      });
-    }
+    await puterAIStream(
+      messages,
+      (delta) => {
+        if (ctrl.signal.aborted) return;
+        buffer += delta;
+        siteEventBus.emitSite({
+          type: "narration_delta",
+          siteId: input.siteId,
+          narrationId,
+          delta,
+        });
+      },
+      { model: "gpt-4o-mini" },
+    );
   } catch (err) {
     logger.warn({ err, siteId: input.siteId }, "narration stream failed");
   } finally {
@@ -86,7 +77,6 @@ export async function streamNarration(input: NarrateInput): Promise<string> {
 
   if (!buffer.trim()) {
     buffer = input.fallback ?? defaultLine(input.intent);
-    // Replay the fallback as a single "delta" so the UI still gets text.
     siteEventBus.emitSite({
       type: "narration_delta",
       siteId: input.siteId,
@@ -95,7 +85,6 @@ export async function streamNarration(input: NarrateInput): Promise<string> {
     });
   }
 
-  // Persist the final narration as a chat message so it shows up on reload.
   try {
     const [row] = await db
       .insert(messagesTable)
