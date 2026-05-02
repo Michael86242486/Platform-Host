@@ -381,6 +381,20 @@ If tech stack includes:
 
 
 
+// ---------------------------------------------------------------------------
+// Typed error — thrown when the AI model is genuinely unreachable.
+// Callers that want to distinguish "AI offline" from other build errors
+// can catch this specifically.
+// ---------------------------------------------------------------------------
+
+export class AgentUnavailableError extends Error {
+  readonly isAgentUnavailable = true;
+  constructor(reason: string) {
+    super(reason);
+    this.name = "AgentUnavailableError";
+  }
+}
+
 // Old streaming system (kept for edit/fallback)
 const BUILD_STREAM_SYSTEM = `You are WebForge, a top-tier frontend engineer + designer. You build REAL, PRODUCTION-QUALITY, FULLY INTERACTIVE multi-page web experiences. Stream using a simple delimiter format.
 
@@ -694,8 +708,10 @@ export async function buildProjectAIStream(
     if (Object.keys(cleaned).length === 0) throw new Error("no files produced");
     return { files: cleaned, coverColor: result.coverColor, name: intentName };
   } catch (err) {
-    logger.warn({ err: String(err) }, "buildProjectAIStream failed; using fallback");
-    return buildProjectFallback(plan, intentName);
+    logger.warn({ err: String(err) }, "buildProjectAIStream failed — agent unavailable");
+    throw new AgentUnavailableError(
+      err instanceof Error ? err.message : String(err),
+    );
   }
 }
 
@@ -962,8 +978,10 @@ export async function buildProjectAI(
     const coverColor = isHex(parsed.coverColor) ? parsed.coverColor! : "#7CC7FF";
     return { files, coverColor, name: intentName };
   } catch (err) {
-    logger.warn({ err: String(err) }, "buildProjectAI failed; using fallback");
-    return buildProjectFallback(plan, intentName);
+    logger.warn({ err: String(err) }, "buildProjectAI failed — agent unavailable");
+    throw new AgentUnavailableError(
+      err instanceof Error ? err.message : String(err),
+    );
   }
 }
 

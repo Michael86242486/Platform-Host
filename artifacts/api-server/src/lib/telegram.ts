@@ -2101,11 +2101,37 @@ Rules:
         return;
       }
       if (s.status === "failed") {
-        await bot.sendMessage(
-          chatId,
-          `❌ Build failed: ${escapeMd(s.error ?? "unknown")}\n\nTry \`/retry ${escapeMd(s.name)}\``,
-          { parse_mode: "Markdown" },
-        );
+        const isOffline = s.error === "agent_offline";
+        if (isOffline) {
+          await bot.sendMessage(
+            chatId,
+            [
+              `🤖 *Agent Temporarily Offline*`,
+              ``,
+              `WebForge's AI is currently unavailable — this usually resolves within a few minutes.`,
+              ``,
+              `*${escapeMd(s.name)}* has been saved and will auto-retry shortly.`,
+              `Or retry now: \`/retry ${escapeMd(s.name)}\``,
+              ``,
+              `_WebForge AI · Status: recovering_`,
+            ].join("\n"),
+            { parse_mode: "Markdown" },
+          );
+        } else {
+          await bot.sendMessage(
+            chatId,
+            [
+              `❌ *Build Failed — ${escapeMd(s.name)}*`,
+              ``,
+              `Something went wrong during the build.`,
+              ``,
+              `\`${escapeMd((s.error ?? "Unknown error").slice(0, 200))}\``,
+              ``,
+              `→ \`/retry ${escapeMd(s.name)}\` to try again`,
+            ].join("\n"),
+            { parse_mode: "Markdown" },
+          );
+        }
         return;
       }
     }

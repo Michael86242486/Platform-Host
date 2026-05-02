@@ -3287,29 +3287,83 @@ function BlurOverlay({
         ]}
       >
         {site.status === "failed" ? (
-          <>
-            <Feather name="alert-triangle" size={32} color={colors.destructive} />
-            <Text
-              style={{
-                color: colors.foreground,
-                fontFamily: "Inter_700Bold",
-                fontSize: 18,
-                textAlign: "center",
-              }}
-            >
-              Build failed
-            </Text>
-            {site.error ? (
-              <MonoText style={{ color: colors.mutedForeground, fontSize: 12, textAlign: "center" }}>
-                {site.error}
-              </MonoText>
-            ) : null}
-            <NeonButton
-              title="Retry build"
-              onPress={onRetry}
-              icon={<Feather name="refresh-cw" size={16} color={colors.primaryForeground} />}
-            />
-          </>
+          site.error === "agent_offline" ? (
+            <>
+              <View style={{ alignItems: "center", gap: 4 }}>
+                <Text style={{ fontSize: 36 }}>🤖</Text>
+                <MonoText style={{ color: "#00FFC2", fontSize: 10, letterSpacing: 2, fontWeight: "700" }}>
+                  STATUS: OFFLINE
+                </MonoText>
+              </View>
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontFamily: "Inter_700Bold",
+                  fontSize: 20,
+                  textAlign: "center",
+                  letterSpacing: -0.4,
+                }}
+              >
+                Agent Temporarily Offline
+              </Text>
+              <Text
+                style={{
+                  color: colors.mutedForeground,
+                  fontSize: 13,
+                  textAlign: "center",
+                  lineHeight: 20,
+                  maxWidth: 260,
+                }}
+              >
+                The AI model is currently unreachable. Your project is saved and will auto-retry within 3 minutes.
+              </Text>
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: "rgba(0,255,194,0.2)",
+                  borderRadius: 10,
+                  paddingHorizontal: 16,
+                  paddingVertical: 10,
+                  backgroundColor: "rgba(0,255,194,0.05)",
+                  maxWidth: 280,
+                  width: "100%",
+                }}
+              >
+                <MonoText style={{ color: colors.mutedForeground, fontSize: 11, textAlign: "center", lineHeight: 17 }}>
+                  {"// auto-retry queued · no action needed"}
+                </MonoText>
+              </View>
+              <NeonButton
+                title="Retry now"
+                onPress={onRetry}
+                icon={<Feather name="refresh-cw" size={16} color={colors.primaryForeground} />}
+              />
+            </>
+          ) : (
+            <>
+              <Feather name="alert-triangle" size={32} color={colors.destructive} />
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontFamily: "Inter_700Bold",
+                  fontSize: 18,
+                  textAlign: "center",
+                }}
+              >
+                Build Failed
+              </Text>
+              {site.error ? (
+                <MonoText style={{ color: colors.mutedForeground, fontSize: 12, textAlign: "center", maxWidth: 280 }}>
+                  {site.error}
+                </MonoText>
+              ) : null}
+              <NeonButton
+                title="Retry build"
+                onPress={onRetry}
+                icon={<Feather name="refresh-cw" size={16} color={colors.primaryForeground} />}
+              />
+            </>
+          )
         ) : (
           <>
             <Animated.View style={{ opacity }}>

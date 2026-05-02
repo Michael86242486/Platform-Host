@@ -20,6 +20,7 @@ import {
   researchInspirationAI,
   auditProjectAI,
   autoFixProjectAI,
+  AgentUnavailableError,
   type ResearchBrief,
   type AuditIssue,
   type BuildQualityReport,
@@ -158,7 +159,12 @@ class JobQueue {
       }
     } catch (err) {
       logger.error({ err, jobId: job.id }, "Job failed");
-      await this.failJob(job, err instanceof Error ? err.message : "Unknown error");
+      const isOffline = err instanceof AgentUnavailableError;
+      await this.failJob(job, isOffline ? "agent_offline" : (err instanceof Error ? err.message : "Unknown error"));
+      if (isOffline) {
+        // Auto-retry after 3 minutes — agent outages are usually transient
+        void this.scheduleRetry(job, 3 * 60_000);
+      }
     }
   }
 
@@ -568,9 +574,53 @@ class JobQueue {
   }
 
   private async failJob(job: Job, message: string): Promise<void> {
-    await db.update(jobsTable).set({ status: "failed", message, finishedAt: new Date() }).where(eq(jobsTable.id, job.id));
-    await db.update(sitesTable).set({ status: "failed", error: message, message, updatedAt: new Date() }).where(eq(jobsTable.id, job.siteId));
-    await insertAgentMessage(job.userId, job.siteId, "build_failed", `Build failed: ${message}`, null);
+    const isOffline = message === "agent_offline";
+    const userMessage = isOffline
+      ? "Agent temporarily offline — auto-retrying in 3 minutes…"
+      : message;
+    await db.update(jobsTable).set({ status: "failed", message: userMessage, finishedAt: new Date() }).where(eq(jobsTable.id, job.id));
+    await db.update(sitesTable).set({ status: "failed", error: message, message: userMessage, updatedAt: new Date() }).where(eq(jobsTable.id, job.siteId));
+    await insertAgentMessage(
+      job.userId, job.siteId, "build_failed",
+      isOffline
+        ? "🤖 Agent temporarily offline — will auto-retry in 3 minutes."
+        : `Build failed: ${message}`,
+      null,
+    );
+  }
+
+  /** Re-queue a job after a delay, but only if the site is still in failed state. */
+  private async scheduleRetry(job: Job, delayMs: number): Promise<void> {
+    await sleep(delayMs);
+    try {
+      const [site] = await db
+        .select({ status: sitesTable.status })
+        .from(sitesTable)
+        .where(eq(sitesTable.id, job.siteId))
+        .limit(1);
+      if (!site || site.status !== "failed") return; // user already retried manually
+      const [newJob] = await db
+        .insert(jobsTable)
+        .values({
+          userId: job.userId,
+          siteId: job.siteId,
+          kind: job.kind === "analyze" ? "create" : job.kind,
+          status: "queued",
+          progress: 0,
+          message: "Auto-retry — agent back online",
+          instructions: job.instructions,
+        })
+        .returning();
+      await db
+        .update(sitesTable)
+        .set({ status: "queued", progress: 0, message: "Auto-retry — agent back online", error: null, updatedAt: new Date() })
+        .where(eq(sitesTable.id, job.siteId));
+      siteEventBus.emitSite({ type: "site_updated", siteId: job.siteId });
+      await insertAgentMessage(job.userId, job.siteId, "log", "🔄 Auto-retry started — agent back online.", null);
+      await this.enqueue(newJob.id);
+    } catch (err) {
+      logger.warn({ err, siteId: job.siteId }, "scheduleRetry failed");
+    }
   }
 }
 
