@@ -365,6 +365,117 @@ class TelegramBotManager {
     await bot.sendMessage(chatId, lines.join("\n"), { parse_mode: "Markdown" });
   }
 
+  // ── /improve command ────────────────────────────────────────────────────────
+
+  private async sendImprove(
+    userId: string,
+    bot: TelegramBot,
+    chatId: number,
+  ): Promise<void> {
+    const thinking = await bot.sendMessage(chatId, "🔧 Scanning your sites for issues…");
+
+    // Fetch all user sites that have built files and are not currently busy
+    const sites = await db
+      .select({
+        id: sitesTable.id,
+        name: sitesTable.name,
+        files: sitesTable.files,
+        status: sitesTable.status,
+      })
+      .from(sitesTable)
+      .where(eq(sitesTable.userId, userId));
+
+    type SiteCandidate = {
+      id: string;
+      name: string;
+      score: number;
+      grade: "A" | "B" | "C" | "D" | "F";
+      issues: import("./analyze.js").QualityIssue[];
+    };
+
+    const candidates: SiteCandidate[] = [];
+
+    for (const site of sites) {
+      // Skip sites currently building or queued
+      if (site.status === "building" || site.status === "queued" || site.status === "analyzing") {
+        continue;
+      }
+      const files = site.files as Record<string, string> | null;
+      if (!files || Object.keys(files).length === 0) continue;
+      try {
+        const report = analyzeSiteFiles(files);
+        // Only suggest sites that have at least one critical or warning issue
+        const actionable = report.issues.filter((i) => i.severity !== "info");
+        if (actionable.length === 0) continue;
+        candidates.push({
+          id: site.id,
+          name: site.name ?? "Untitled",
+          score: report.overall,
+          grade: report.grade,
+          issues: report.issues,
+        });
+      } catch {
+        // skip
+      }
+    }
+
+    bot.deleteMessage(chatId, thinking.message_id).catch(() => {});
+
+    if (candidates.length === 0) {
+      const busy = sites.some((s) => s.status === "building" || s.status === "queued" || s.status === "analyzing");
+      const msg = busy
+        ? "A build is already in progress — wait for it to finish, then try `/improve` again."
+        : sites.length === 0
+        ? "You haven't built any sites yet. Use `/create` to get started!"
+        : "All your sites are already issue-free — great work! 🎉";
+      await bot.sendMessage(chatId, msg, { parse_mode: "Markdown" });
+      return;
+    }
+
+    // Pick the lowest-scoring site
+    candidates.sort((a, b) => a.score - b.score);
+    const target = candidates[0];
+
+    const criticals = target.issues.filter((i) => i.severity === "critical");
+    const warnings  = target.issues.filter((i) => i.severity === "warning");
+    const gradeEmoji = (g: string) =>
+      g === "A" ? "🟢" : g === "B" ? "🔵" : g === "C" ? "🟡" : g === "D" ? "🟠" : "🔴";
+
+    // Build a precise, actionable instructions prompt for the AI
+    const issueLines: string[] = [];
+    if (criticals.length > 0) {
+      issueLines.push("CRITICAL ISSUES (fix these first):");
+      for (const i of criticals) issueLines.push(`  - ${i.message}: ${i.fix}`);
+    }
+    if (warnings.length > 0) {
+      issueLines.push("WARNINGS:");
+      for (const i of warnings) issueLines.push(`  - ${i.message}: ${i.fix}`);
+    }
+
+    const instructions = [
+      `Fix the following quality issues found by automated Intel analysis.`,
+      `Do NOT change the visual design, colour scheme, or layout — only fix the issues listed.`,
+      ``,
+      ...issueLines,
+      ``,
+      `After fixing, double-check every change is valid HTML/CSS and the page still looks correct.`,
+    ].join("\n");
+
+    const totalFixes = criticals.length + warnings.length;
+    const preview = [
+      `${gradeEmoji(target.grade)} Fixing *${escapeMd(target.name)}*`,
+      `Current grade: *${target.grade}* (${target.score}/100) · ${totalFixes} issue${totalFixes !== 1 ? "s" : ""} to fix`,
+      ``,
+      criticals.length > 0 ? `🔴 ${criticals.length} critical: ${criticals.map((i) => escapeMd(i.message)).join(", ")}` : null,
+      warnings.length > 0  ? `🟡 ${warnings.length} warning${warnings.length !== 1 ? "s" : ""}: ${warnings.map((i) => escapeMd(i.message)).join(", ")}` : null,
+      ``,
+      `AI fix queued — you'll get a notification when it's done.`,
+    ].filter(Boolean).join("\n");
+
+    await bot.sendMessage(chatId, preview, { parse_mode: "Markdown" });
+    await this.runEdit(userId, bot, chatId, target.id, instructions);
+  }
+
   /**
    * Ensure the global WebForge Telegram bot (configured via the
    * WEBFORGE_TELEGRAM_BOT_TOKEN env var) is registered and polling.
@@ -624,6 +735,10 @@ class TelegramBotManager {
 
     bot.onText(/^\/stats\b/i, async (msg) => {
       await this.sendStats(ownerUserId, bot, msg.chat.id);
+    });
+
+    bot.onText(/^\/improve\b/i, async (msg) => {
+      await this.sendImprove(ownerUserId, bot, msg.chat.id);
     });
 
     bot.onText(/^\/credits\b/i, async (msg) => {
@@ -1367,6 +1482,7 @@ Rules:
       "🗑  `/delsecret NAME` — Remove a secret",
       "📋  `/tasks` — See your active jobs",
       "📊  `/stats` — Leaderboard of all your sites by Intel grade",
+      "🔧  `/improve` — Auto-fix your lowest-scoring site with AI",
       "💳  `/credits` — Show your credit balance & tier",
       "⚡  `/boosts` — See Pro / VIP power-up tiers",
       "",
