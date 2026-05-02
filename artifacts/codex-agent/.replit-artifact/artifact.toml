@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Puter Codex Agent"
+version = "1.0.0"
+id = "artifacts/codex-agent"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24800
+
+[services.development]
+run = "pnpm --filter @workspace/codex-agent run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/codex-agent", "run", "build" ]
+publicDir = "artifacts/codex-agent/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24800"
+BASE_PATH = "/"

@@ -9,6 +9,7 @@ args = ["pnpm", "store", "prune"]
 env = { "CI" = "true" }
 
 [workflows]
+runButton = "Project"
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -44,6 +45,10 @@ externalPort = 3000
 [[ports]]
 localPort = 19470
 externalPort = 3002
+
+[[ports]]
+localPort = 24800
+externalPort = 3001
 
 [nix]
 channel = "stable-25_05"
