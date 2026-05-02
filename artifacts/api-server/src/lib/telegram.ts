@@ -476,6 +476,175 @@ class TelegramBotManager {
     await this.runEdit(userId, bot, chatId, target.id, instructions);
   }
 
+  // ── /compare command ─────────────────────────────────────────────────────────
+
+  private async sendCompare(
+    userId: string,
+    bot: TelegramBot,
+    chatId: number,
+    arg: string,
+  ): Promise<void> {
+    type RawCp = { id: string; label: string; createdAt: string; files?: Record<string, string> };
+
+    const thinking = await bot.sendMessage(chatId, "🔍 Comparing checkpoints…");
+
+    // Fetch all user sites with checkpoints
+    const sites = await db
+      .select({
+        id: sitesTable.id,
+        name: sitesTable.name,
+        checkpoints: sitesTable.checkpoints,
+        updatedAt: sitesTable.updatedAt,
+      })
+      .from(sitesTable)
+      .where(eq(sitesTable.userId, userId))
+      .orderBy(desc(sitesTable.updatedAt));
+
+    bot.deleteMessage(chatId, thinking.message_id).catch(() => {});
+
+    if (sites.length === 0) {
+      await bot.sendMessage(chatId, "You haven't built any sites yet. Use `/create` to get started!", { parse_mode: "Markdown" });
+      return;
+    }
+
+    // If a name/id was provided, match it; otherwise pick the first site with ≥2 scored checkpoints
+    const needle = arg.trim().toLowerCase();
+    let site: typeof sites[0] | undefined;
+    if (needle) {
+      site = sites.find(
+        (s) =>
+          s.id === needle ||
+          (s.name ?? "").toLowerCase().includes(needle),
+      );
+      if (!site) {
+        await bot.sendMessage(chatId, `❌ No site found matching *${escapeMd(arg.trim())}*. Use \`/list\` to see your sites.`, { parse_mode: "Markdown" });
+        return;
+      }
+    } else {
+      // Pick the site that has ≥2 checkpoints with files
+      site = sites.find((s) => {
+        const cps = ((s.checkpoints ?? []) as RawCp[]).filter((c) => c.files && Object.keys(c.files).length > 0);
+        return cps.length >= 2;
+      });
+      if (!site) {
+        await bot.sendMessage(
+          chatId,
+          sites.length === 1
+            ? "Your site only has one checkpoint — run `/improve` or edit it to generate a second snapshot to compare."
+            : "None of your sites have two saved checkpoints yet — run `/improve` to build one.",
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+    }
+
+    const allCps = ((site.checkpoints ?? []) as RawCp[]).filter(
+      (c) => c.files && Object.keys(c.files).length > 0,
+    );
+
+    if (allCps.length < 2) {
+      await bot.sendMessage(
+        chatId,
+        `*${escapeMd(site.name ?? "Untitled")}* only has one checkpoint with files.\nRun \`/improve\` to create a new version, then compare again.`,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    // Take the last two scored checkpoints
+    const cpBefore = allCps[allCps.length - 2];
+    const cpAfter  = allCps[allCps.length - 1];
+
+    let reportBefore: import("./analyze.js").QualityReport;
+    let reportAfter:  import("./analyze.js").QualityReport;
+    try {
+      reportBefore = analyzeSiteFiles(cpBefore.files!);
+      reportAfter  = analyzeSiteFiles(cpAfter.files!);
+    } catch {
+      await bot.sendMessage(chatId, "⚠️ Could not analyse one of the checkpoints — files may be corrupted.");
+      return;
+    }
+
+    // ── Format the diff ───────────────────────────────────────────────────────
+    const fmtDate = (iso: string) => {
+      const d = new Date(iso);
+      const diffMs = Date.now() - d.getTime();
+      const diffH = Math.floor(diffMs / 3_600_000);
+      if (diffH < 1) return "just now";
+      if (diffH < 24) return `${diffH}h ago`;
+      return `${Math.floor(diffH / 24)}d ago`;
+    };
+
+    const arrow = (a: number, b: number) => b > a ? "↑" : b < a ? "↓" : "—";
+    const sign  = (n: number) => n > 0 ? `+${n}` : `${n}`;
+
+    const scoreDelta = reportAfter.overall - reportBefore.overall;
+    const improved   = scoreDelta > 0;
+    const worsened   = scoreDelta < 0;
+    const trendEmoji = improved ? "📈" : worsened ? "📉" : "➡️";
+    const gradeEmoji = (g: string) =>
+      g === "A" ? "🟢" : g === "B" ? "🔵" : g === "C" ? "🟡" : g === "D" ? "🟠" : "🔴";
+
+    // Category rows aligned with backtick mono
+    const cats: Array<[string, keyof typeof reportBefore.scores]> = [
+      ["SEO   ", "seo"],
+      ["A11y  ", "a11y"],
+      ["Perf  ", "perf"],
+      ["Mobile", "mobile"],
+      ["Code  ", "code"],
+    ];
+
+    const catRows = cats.map(([label, key]) => {
+      const a = reportBefore.scores[key];
+      const b = reportAfter.scores[key];
+      const d = b - a;
+      const ar = arrow(a, b);
+      const ds = d !== 0 ? ` (${sign(d)})` : "     ";
+      return `\`${label}  ${String(a).padStart(3)}  →  ${String(b).padStart(3)}  ${ar}${ds}\``;
+    });
+
+    // Issue diff
+    const issBefore = { crit: reportBefore.issues.filter((i) => i.severity === "critical").length, warn: reportBefore.issues.filter((i) => i.severity === "warning").length };
+    const issAfter  = { crit: reportAfter.issues.filter((i) => i.severity === "critical").length,  warn: reportAfter.issues.filter((i) => i.severity === "warning").length };
+    const fixedCrit = Math.max(0, issBefore.crit - issAfter.crit);
+    const fixedWarn = Math.max(0, issBefore.warn - issAfter.warn);
+    const addedCrit = Math.max(0, issAfter.crit - issBefore.crit);
+    const addedWarn = Math.max(0, issAfter.warn - issBefore.warn);
+
+    const issueLines: string[] = [];
+    if (fixedCrit + fixedWarn > 0)
+      issueLines.push(`✅ Fixed:      ${fixedCrit > 0 ? `${fixedCrit} critical` : ""}${fixedCrit > 0 && fixedWarn > 0 ? ", " : ""}${fixedWarn > 0 ? `${fixedWarn} warning${fixedWarn !== 1 ? "s" : ""}` : ""}`);
+    if (addedCrit + addedWarn > 0)
+      issueLines.push(`🆕 New:        ${addedCrit > 0 ? `${addedCrit} critical` : ""}${addedCrit > 0 && addedWarn > 0 ? ", " : ""}${addedWarn > 0 ? `${addedWarn} warning${addedWarn !== 1 ? "s" : ""}` : ""}`);
+    if (issAfter.crit + issAfter.warn > 0)
+      issueLines.push(`⚠️ Remaining:  ${issAfter.crit > 0 ? `${issAfter.crit} critical` : ""}${issAfter.crit > 0 && issAfter.warn > 0 ? ", " : ""}${issAfter.warn > 0 ? `${issAfter.warn} warning${issAfter.warn !== 1 ? "s" : ""}` : ""}`);
+    if (issAfter.crit === 0 && issAfter.warn === 0)
+      issueLines.push("🎉 All critical & warning issues resolved!");
+
+    const gradeLine =
+      reportBefore.grade === reportAfter.grade
+        ? `${gradeEmoji(reportAfter.grade)} Grade *${reportAfter.grade}* (unchanged)`
+        : `${gradeEmoji(reportBefore.grade)} *${reportBefore.grade}* → ${gradeEmoji(reportAfter.grade)} *${reportAfter.grade}*  ${improved ? "✅" : "⬇️"}`;
+
+    const lines = [
+      `🔍 *${escapeMd(site.name ?? "Untitled")}* — checkpoint compare`,
+      "",
+      `📅 Before: \`${escapeMd(cpBefore.label)}\` · ${fmtDate(cpBefore.createdAt)}`,
+      `📅 After:  \`${escapeMd(cpAfter.label)}\`  · ${fmtDate(cpAfter.createdAt)}`,
+      "",
+      `📊 Score  \`${reportBefore.overall} → ${reportAfter.overall}  (${sign(scoreDelta)})\`  ${trendEmoji}`,
+      `🏆 ${gradeLine}`,
+      "",
+      "*Category breakdown*",
+      ...catRows,
+      "",
+      "*Issues*",
+      ...issueLines,
+    ];
+
+    await bot.sendMessage(chatId, lines.join("\n"), { parse_mode: "Markdown" });
+  }
+
   /**
    * Ensure the global WebForge Telegram bot (configured via the
    * WEBFORGE_TELEGRAM_BOT_TOKEN env var) is registered and polling.
@@ -739,6 +908,10 @@ class TelegramBotManager {
 
     bot.onText(/^\/improve\b/i, async (msg) => {
       await this.sendImprove(ownerUserId, bot, msg.chat.id);
+    });
+
+    bot.onText(/^\/compare(?:\s+(.+))?$/i, async (msg, match) => {
+      await this.sendCompare(ownerUserId, bot, msg.chat.id, match?.[1] ?? "");
     });
 
     bot.onText(/^\/credits\b/i, async (msg) => {
@@ -1483,6 +1656,7 @@ Rules:
       "📋  `/tasks` — See your active jobs",
       "📊  `/stats` — Leaderboard of all your sites by Intel grade",
       "🔧  `/improve` — Auto-fix your lowest-scoring site with AI",
+      "🔍  `/compare [name]` — Before/after grade diff of last two checkpoints",
       "💳  `/credits` — Show your credit balance & tier",
       "⚡  `/boosts` — See Pro / VIP power-up tiers",
       "",
