@@ -24,6 +24,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
   getGetSiteQueryKey,
   getListSiteMessagesQueryKey,
+  useConfirmSite,
   useCreateSite,
   useGetSite,
   useListSiteMessages,
@@ -104,6 +105,7 @@ export default function CreateScreen() {
 
   const create = useCreateSite();
   const send = useSendSiteMessage();
+  const confirmBuild = useConfirmSite();
 
   // Subscribe to live server-sent events (web). Falls back to polling on
   // native and as a safety net while the SSE connection establishes.
@@ -146,7 +148,7 @@ export default function CreateScreen() {
     if (!activeSiteId) {
       try {
         const created = await create.mutateAsync({
-          data: { prompt: trimmed, name: null, autoBuild: true, model: selectedModel },
+          data: { prompt: trimmed, name: null, autoBuild: false, model: selectedModel },
         });
         void Haptics.notificationAsync(
           Haptics.NotificationFeedbackType.Success,
@@ -328,7 +330,26 @@ export default function CreateScreen() {
   const sending = create.isPending || send.isPending;
   const inputDisabled = transcribing || sending;
   const isWorking =
-    !!site && site.status !== "ready" && site.status !== "failed";
+    !!site &&
+    site.status !== "ready" &&
+    site.status !== "failed" &&
+    site.status !== "awaiting_confirmation";
+
+  const onConfirm = useCallback(async () => {
+    if (!activeSiteId) return;
+    try {
+      await confirmBuild.mutateAsync({ id: activeSiteId });
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await qc.invalidateQueries({
+        queryKey: getGetSiteQueryKey(activeSiteId),
+      });
+    } catch (e) {
+      Alert.alert(
+        "Could not start build",
+        e instanceof Error ? e.message : "Unknown error",
+      );
+    }
+  }, [activeSiteId, confirmBuild, qc]);
 
   const onClose = () => router.back();
   const onNewChat = () => {
@@ -375,6 +396,8 @@ export default function CreateScreen() {
               if (!site?.previewUrl) return;
               await Linking.openURL(site.previewUrl);
             }}
+            onConfirm={onConfirm}
+            confirmPending={confirmBuild.isPending}
           />
         )}
 
@@ -792,6 +815,8 @@ function ConversationView({
   onTogglePreview,
   onOpenSite,
   onOpenInBrowser,
+  onConfirm,
+  confirmPending,
 }: {
   messages: AgentMessage[];
   site: Site | undefined;
@@ -802,6 +827,8 @@ function ConversationView({
   onTogglePreview: () => void;
   onOpenSite: () => void;
   onOpenInBrowser: () => void;
+  onConfirm: () => void;
+  confirmPending: boolean;
 }) {
   const colors = useColors();
   const scrollRef = useRef<ScrollView>(null);
@@ -883,6 +910,11 @@ function ConversationView({
           onOpenSite={onOpenSite}
           onOpenInBrowser={onOpenInBrowser}
         />
+      ) : null}
+
+      {/* Plan confirmation card — shown when analysis is done + waiting for user. */}
+      {site?.status === "awaiting_confirmation" ? (
+        <ConfirmBuildCard onConfirm={onConfirm} pending={confirmPending} />
       ) : null}
 
       {/* Live token-by-token narration bubbles streaming from the server. */}
@@ -978,17 +1010,6 @@ function MessageBubble({ message }: { message: AgentMessage }) {
           >
             {message.content}
           </Text>
-          <MonoText
-            style={{
-              color: colors.primary,
-              fontSize: 10,
-              letterSpacing: 1.2,
-              marginTop: 6,
-              textTransform: "uppercase",
-            }}
-          >
-            reply &quot;build it&quot; to confirm
-          </MonoText>
         </AgentBubble>
       );
     case "build_started":
@@ -1110,6 +1131,101 @@ function NarrationBubble({ narration }: { narration: LiveNarration }) {
         ) : null}
       </Text>
     </AgentBubble>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Confirm build card
+// ---------------------------------------------------------------------------
+
+function ConfirmBuildCard({
+  onConfirm,
+  pending,
+}: {
+  onConfirm: () => void;
+  pending: boolean;
+}) {
+  const colors = useColors();
+  return (
+    <View
+      style={{
+        marginTop: 6,
+        borderRadius: 16,
+        borderWidth: 1.5,
+        borderColor: `${colors.primary}55`,
+        backgroundColor: `${colors.primary}0D`,
+        padding: 16,
+        gap: 12,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            backgroundColor: `${colors.primary}22`,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Feather name="check-square" size={14} color={colors.primary} />
+        </View>
+        <Text
+          style={{
+            color: colors.foreground,
+            fontFamily: "Inter_700Bold",
+            fontSize: 14,
+          }}
+        >
+          Plan ready — your call
+        </Text>
+      </View>
+
+      <Text
+        style={{
+          color: colors.mutedForeground,
+          fontSize: 13,
+          lineHeight: 19,
+        }}
+      >
+        Review the pages and palette above. Want to tweak anything? Just type
+        it below. Happy with the plan? Tap Build.
+      </Text>
+
+      <Pressable
+        onPress={onConfirm}
+        disabled={pending}
+        style={({ pressed }) => ({
+          backgroundColor: colors.primary,
+          borderRadius: 12,
+          paddingVertical: 14,
+          alignItems: "center",
+          justifyContent: "center",
+          flexDirection: "row",
+          gap: 8,
+          opacity: pressed || pending ? 0.75 : 1,
+        })}
+      >
+        {pending ? (
+          <ActivityIndicator size="small" color={colors.primaryForeground} />
+        ) : (
+          <>
+            <Feather name="zap" size={16} color={colors.primaryForeground} />
+            <Text
+              style={{
+                color: colors.primaryForeground,
+                fontFamily: "Inter_700Bold",
+                fontSize: 15,
+                letterSpacing: 0.3,
+              }}
+            >
+              Build It
+            </Text>
+          </>
+        )}
+      </Pressable>
+    </View>
   );
 }
 

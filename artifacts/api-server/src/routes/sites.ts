@@ -1451,8 +1451,29 @@ function escapeHtml(s: string): string {
 }
 
 export function pickFile(files: SiteFiles, rel: string): string | null {
+  // Exact match
   if (Object.prototype.hasOwnProperty.call(files, rel)) return files[rel];
+  // Root or empty → index.html
   if (rel === "" || rel === "/") return files["index.html"] ?? null;
+
+  const noTrail = rel.replace(/\/+$/, "");
+
+  // Trailing-slash form: try dir/index.html then bare name
+  if (noTrail !== rel) {
+    const dirIdx = `${noTrail}/index.html`;
+    if (Object.prototype.hasOwnProperty.call(files, dirIdx)) return files[dirIdx];
+    if (Object.prototype.hasOwnProperty.call(files, noTrail)) return files[noTrail];
+  }
+
+  // Extension-less: try appending .html
+  if (!noTrail.includes(".")) {
+    const withHtml = `${noTrail}.html`;
+    if (Object.prototype.hasOwnProperty.call(files, withHtml)) return files[withHtml];
+    // Also try as a directory index
+    const asDir = `${noTrail}/index.html`;
+    if (Object.prototype.hasOwnProperty.call(files, asDir)) return files[asDir];
+  }
+
   return null;
 }
 
