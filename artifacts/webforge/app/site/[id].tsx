@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
@@ -382,6 +383,8 @@ function TabBar({
         borderBottomWidth: 1,
         borderBottomColor: colors.border,
         backgroundColor: colors.surface,
+        paddingHorizontal: 8,
+        paddingTop: 6,
       }}
     >
       {tabs.map((t) => {
@@ -395,23 +398,28 @@ function TabBar({
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "center",
-              gap: 5,
-              paddingVertical: 11,
-              borderBottomWidth: 2,
+              gap: 6,
+              paddingVertical: 9,
+              marginBottom: -1,
+              borderBottomWidth: 2.5,
               borderBottomColor: active ? accent : "transparent",
+              backgroundColor: active ? `${accent}12` : "transparent",
+              borderRadius: active ? 8 : 0,
+              borderBottomLeftRadius: active ? 0 : 0,
+              borderBottomRightRadius: active ? 0 : 0,
               opacity: pressed ? 0.7 : 1,
             })}
           >
             <Feather
               name={t.icon}
-              size={14}
+              size={15}
               color={active ? accent : colors.mutedForeground}
             />
             <Text
               style={{
                 color: active ? accent : colors.mutedForeground,
                 fontSize: 13,
-                fontFamily: active ? "Inter_600SemiBold" : "Inter_400Regular",
+                fontFamily: active ? "Inter_700Bold" : "Inter_400Regular",
                 letterSpacing: 0.1,
               }}
             >
@@ -685,6 +693,46 @@ function ChatTab({
 
   const canSend = chatDraft.trim().length >= 2 && !isSending && !isWorking;
 
+  const [isUploading, setIsUploading] = useState(false);
+
+  const pickAndUploadImage = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert("Permission needed", "Allow photo library access to upload images.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.75,
+      base64: true,
+      allowsEditing: false,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    if (!asset.base64) return;
+    setIsUploading(true);
+    try {
+      const resp = await fetch(`/api/sites/${site.id}/upload-asset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          base64: asset.base64,
+          mimeType: asset.mimeType ?? "image/jpeg",
+          filename: asset.fileName ?? `upload-${Date.now()}.jpg`,
+        }),
+      });
+      if (!resp.ok) throw new Error("Upload failed");
+      const { path } = await resp.json() as { path: string };
+      setChatDraft((prev) => (prev ? `${prev} [use uploaded image: ${path}]` : `Use my uploaded image: ${path}`));
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) {
+      Alert.alert("Upload failed", e instanceof Error ? e.message : "Could not upload image");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
@@ -730,11 +778,14 @@ function ChatTab({
 
         {isWorking && narrations.length === 0 ? (
           <AgentChatBubble colors={colors}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <ActivityIndicator size="small" color={accent} />
-              <MonoText style={{ color: colors.mutedForeground, fontSize: 11 }}>
-                {currentFile ? `streaming ${currentFile}` : (site.message ?? "working…")}
-              </MonoText>
+            <View style={{ gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                <ThinkingDots accent={accent} />
+                <MonoText style={{ color: colors.mutedForeground, fontSize: 11, flex: 1 }}>
+                  {currentFile ? `writing ${currentFile}` : (site.message ?? "thinking…")}
+                </MonoText>
+              </View>
+              <ThinkingBar accent={accent} />
             </View>
           </AgentChatBubble>
         ) : null}
@@ -781,6 +832,25 @@ function ChatTab({
                 ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as object) : null),
               }}
             />
+            <Pressable
+              onPress={pickAndUploadImage}
+              disabled={isUploading}
+              style={({ pressed }) => ({
+                width: 32,
+                height: 32,
+                borderRadius: 16,
+                alignItems: "center",
+                justifyContent: "center",
+                opacity: pressed || isUploading ? 0.5 : 0.75,
+                marginBottom: 4,
+              })}
+            >
+              {isUploading ? (
+                <ActivityIndicator size="small" color={accent} />
+              ) : (
+                <Feather name="image" size={17} color={colors.mutedForeground} />
+              )}
+            </Pressable>
             <Pressable
               onPress={onSend}
               disabled={!canSend}
@@ -940,6 +1010,98 @@ function ChatMessageBubble({
         {message.content}
       </Text>
     </AgentChatBubble>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Thinking animation components
+// ---------------------------------------------------------------------------
+
+function ThinkingDots({ accent }: { accent: string }) {
+  const d0 = useRef(new Animated.Value(0.3)).current;
+  const d1 = useRef(new Animated.Value(0.3)).current;
+  const d2 = useRef(new Animated.Value(0.3)).current;
+
+  useEffect(() => {
+    const pulse = (dot: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(dot, { toValue: 1, duration: 280, useNativeDriver: false }),
+          Animated.timing(dot, { toValue: 0.3, duration: 280, useNativeDriver: false }),
+          Animated.delay(Math.max(0, 560 - delay)),
+        ]),
+      );
+    const a0 = pulse(d0, 0);
+    const a1 = pulse(d1, 180);
+    const a2 = pulse(d2, 360);
+    a0.start(); a1.start(); a2.start();
+    return () => { a0.stop(); a1.stop(); a2.stop(); };
+  }, [d0, d1, d2]);
+
+  return (
+    <View style={{ flexDirection: "row", gap: 5, alignItems: "center" }}>
+      {([d0, d1, d2] as Animated.Value[]).map((dot, i) => (
+        <Animated.View
+          key={i}
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: 3.5,
+            backgroundColor: accent,
+            opacity: dot,
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
+function ThinkingBar({ accent }: { accent: string }) {
+  const shimmer = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.timing(shimmer, {
+        toValue: 1,
+        duration: 1600,
+        useNativeDriver: false,
+        easing: Easing.inOut(Easing.quad),
+      }),
+    ).start();
+    return () => shimmer.stopAnimation();
+  }, [shimmer]);
+
+  return (
+    <View
+      style={{
+        height: 2,
+        borderRadius: 1,
+        backgroundColor: `${accent}22`,
+        overflow: "hidden",
+      }}
+    >
+      <Animated.View
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: "45%",
+          borderRadius: 1,
+          backgroundColor: accent,
+          opacity: 0.85,
+          transform: [
+            {
+              translateX: shimmer.interpolate({
+                inputRange: [0, 1],
+                outputRange: [-80, 220],
+              }),
+            },
+          ],
+        }}
+      />
+    </View>
   );
 }
 

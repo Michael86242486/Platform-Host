@@ -151,7 +151,7 @@ Hard requirements:
 8. coverColor is a single hex (the dominant accent for the brand card).
 9. NO external CDN scripts/fonts/images. Use system fonts and CSS-only visuals (gradients, SVG inlined sparingly). Emojis as accents are OK.
 10. Output must be valid JSON. Escape strings properly.
-11. Add a footer to every HTML page with EXACTLY this snippet just before </body>: <footer class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:48px">made with <strong style="color:inherit">(kidderboy)</strong></footer>
+11. Add a footer to every HTML page with EXACTLY this snippet just before </body>: <footer class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:48px">made with <strong style="color:inherit">WebForge</strong></footer>
 
 Aim for a polished, modern aesthetic — think Linear, Vercel, Stripe, Bolt.new, Apple. Dark or light is fine; pick what fits the prompt.`;
 
@@ -184,12 +184,12 @@ Rules:
 7. Shared sticky <header> nav on every page links every page in the plan, plus a primary CTA button. Shared <footer> with three+ link columns + contact line on every page.
 8. Mobile-responsive (clamp, grid, flex). Beautiful gradients, generous spacing, large display headings (clamp(2.5rem, 6vw, 5rem)).
 9. End with ===END=== on its OWN line.
-10. Add the WebForge credit footer EXACTLY (place it inside the regular <footer>, just above the closing tag): <div class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:24px">made with <strong style="color:inherit">(kidderboy)</strong></div>
+10. Add the WebForge credit footer EXACTLY (place it inside the regular <footer>, just above the closing tag): <div class="webforge-credit" style="text-align:center;padding:20px 16px;font-size:12px;letter-spacing:0.04em;color:rgba(120,120,140,0.85);border-top:1px solid rgba(120,120,140,0.15);margin-top:24px">made with <strong style="color:inherit">WebForge</strong></div>
 
 DEPTH & SIZE — THIS IS NOT NEGOTIABLE:
 - Build AT LEAST 4 pages (index + 3 more drawn from the plan). 5-7 is ideal.
 - index.html MUST contain ALL of these distinct full-width sections, in order:
-  1. Hero (display headline, subhead, two CTAs, hero visual on the right — inline SVG illustration OR a gradient-card mockup. NO external image URLs.)
+  1. Hero (display headline, subhead, two CTAs. On the right: a full-bleed picsum.photos image OR an inline SVG illustration. Use a picsum photo whenever possible for realism.)
   2. Logo cloud / social proof row (6-10 fake-but-believable customer/partner names typeset in muted style — NO real images, just styled text in a flex row).
   3. Feature grid: 6+ feature cards (icon SVG + title + 2-3 sentence description each).
   4. "How it works" — 3 or 4 numbered steps with rich paragraph copy.
@@ -209,14 +209,31 @@ CONTENT QUALITY:
 - Body copy uses concrete nouns and verbs.
 - Reference real-feeling customer names ("Maya from Form & Fold", "the team at Halcyon Labs"), real-feeling cities, real-feeling industry terminology.
 
-VISUALS WITHOUT EXTERNAL FILES:
-- NO external CDN scripts, fonts, or image URLs. System font stack only. All visuals are inline SVG, CSS gradients, CSS shapes, or unicode/emoji glyphs (used sparingly as accents).
+VISUALS — IMAGES ALLOWED:
+- NO external CDN scripts or fonts. System font stack only.
+- YOU MAY (and should) use free photo URLs from https://picsum.photos for realistic imagery:
+  Hero banner: <img src="https://picsum.photos/seed/UNIQUE_SEED/1400/600" loading="lazy" alt="descriptive alt" style="width:100%;height:100%;object-fit:cover">
+  Section / feature photos: https://picsum.photos/seed/UNIQUE_SEED/800/500
+  Team / blog card thumbnails: https://picsum.photos/seed/UNIQUE_SEED/400/300
+  Replace UNIQUE_SEED with a short descriptive word tied to the content (e.g. "hero-tech", "team-maya", "product-dashboard", "blog-design"). Each image must have a DIFFERENT seed so photos don't repeat.
 - Inline SVG icons for every feature card (24x24 stroked icons, currentColor).
-- The hero "screenshot" is a designed CSS card (gradient background + faux UI chrome made from flex rows + typography) — NOT a placeholder image.
+- For decorative elements without photos, use CSS gradients, shapes, and glassmorphism.
 
-FILE-SIZE TARGET: the FULL output (all files combined) must exceed 30KB of source. A 5KB site is a failure. Aim for 60-120KB across the whole project.
+MAKE IT VISUALLY WILD — these are NOT optional, use them liberally:
+- Animated gradient hero: @keyframes gradientShift that slowly rotates hue or shifts two-stop gradient on the hero section background (8-12s loop, ease-in-out).
+- Glassmorphism cards: background:rgba(255,255,255,0.06); backdrop-filter:blur(14px); border:1px solid rgba(255,255,255,0.12); border-radius:16px.
+- Bold layered display type: hero headline at clamp(3.2rem,8vw,6.5rem), heavy weight (800-900), with a subtle text-shadow or gradient text via background-clip:text.
+- 3D card hover effect in JS: on mousemove over cards, apply perspective(900px) rotateX/rotateY to create a tilt — smooth cubic-bezier transition back on mouseleave.
+- Neon glow accents: box-shadow:0 0 28px 4px rgba(ACCENT_COLOR,0.35) on hero CTAs, key headings, or border highlights.
+- Scroll parallax: translate the hero background at 0.4x scroll speed using a scroll event listener in app.js.
+- Micro-interactions: transform:translateY(-4px) scale(1.03) + box-shadow on all card hovers, 0.22s cubic-bezier(0.34,1.56,0.64,1).
+- Custom scrollbar: ::-webkit-scrollbar 6px wide, ::-webkit-scrollbar-thumb with brand accent color and border-radius.
+- Photo panels: full-bleed <img> sections with overlay gradient text, giving a magazine / editorial look.
+- Stagger fade-ins: each .reveal element gets opacity:0 initially; IntersectionObserver applies a CSS class that transitions to opacity:1 translateY(0) with a 60ms stagger per sibling.
 
-If the user prompt sounds like a SaaS, ship it like Linear/Vercel/Stripe. If it's editorial/blog-y, ship it like Ghost/Substack with real article snippets and bylines. If it's an agency or studio, ship it like Pentagram or Locomotive (case-study cards). If it's a restaurant/local biz, ship menus, hours, location card, gallery built from CSS.`;
+FILE-SIZE TARGET: the FULL output (all files combined) must exceed 30KB of source. A 5KB site is a failure. Aim for 80-140KB across the whole project.
+
+If the user prompt sounds like a SaaS, ship it like Linear/Vercel/Stripe with glassmorphism, animated gradients, and bold type. If it's editorial/blog-y, ship it like Ghost/Substack with real article snippets, bylines, and photo panels. If it's an agency or studio, ship it like Pentagram or Locomotive (full-bleed case-study cards, large type). If it's a restaurant/local biz, ship menus, hours, gallery built with picsum photos, and a map card.`;
 
 export type StreamUpdate = {
   coverColor: string;

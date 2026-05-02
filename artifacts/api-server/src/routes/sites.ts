@@ -197,6 +197,48 @@ router.post("/sites", requireAuth, async (req, res) => {
   res.status(201).json(siteToDto(site));
 });
 
+const uploadAssetSchema = z.object({
+  base64: z.string().min(10).max(6_000_000),
+  mimeType: z.enum(["image/jpeg", "image/png", "image/webp", "image/gif"]),
+  filename: z.string().max(120).optional(),
+});
+
+router.post("/sites/:id/upload-asset", requireAuth, async (req, res) => {
+  const parsed = uploadAssetSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_input", issues: parsed.error.issues });
+    return;
+  }
+  const { base64, mimeType, filename } = parsed.data;
+
+  const [site] = await db
+    .select()
+    .from(sitesTable)
+    .where(and(eq(sitesTable.id, String(req.params.id)), eq(sitesTable.userId, req.user!.id)))
+    .limit(1);
+  if (!site) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+
+  const ext = mimeType.split("/")[1] ?? "jpg";
+  const safeName = (filename ?? `upload-${Date.now()}.${ext}`)
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .slice(0, 80);
+  const assetPath = `assets/user-${safeName}`;
+  const dataUrl = `data:${mimeType};base64,${base64}`;
+
+  const currentFiles = (site.files ?? {}) as Record<string, string>;
+  const updatedFiles = { ...currentFiles, [assetPath]: dataUrl };
+
+  await db
+    .update(sitesTable)
+    .set({ files: updatedFiles, updatedAt: new Date() })
+    .where(eq(sitesTable.id, site.id));
+
+  res.json({ path: assetPath, url: dataUrl.slice(0, 60) + "…" });
+});
+
 router.get("/sites/:id", requireAuth, async (req, res) => {
   const [site] = await db
     .select()
