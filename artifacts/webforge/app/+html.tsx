@@ -14,6 +14,7 @@ export default function Root({ children }: PropsWithChildren): React.ReactElemen
         <ScrollViewStyleReset />
         <style dangerouslySetInnerHTML={{ __html: badgeHiddenCss }} />
         <script dangerouslySetInnerHTML={{ __html: badgeRemoverJs }} />
+        <script src="https://js.puter.com/v2/" />
       </head>
       <body>{children}</body>
     </html>

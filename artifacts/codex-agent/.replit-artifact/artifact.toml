@@ -1,5 +1,5 @@
 kind = "web"
-previewPath = "/"
+previewPath = "/codex-agent/"
 title = "Puter Codex Agent"
 version = "1.0.0"
 id = "artifacts/codex-agent"
@@ -11,7 +11,7 @@ version = "1.0.0"
 
 [[services]]
 name = "web"
-paths = [ "/" ]
+paths = [ "/codex-agent/" ]
 localPort = 24800
 
 [services.development]
@@ -28,4 +28,4 @@ to = "/index.html"
 
 [services.env]
 PORT = "24800"
-BASE_PATH = "/"
+BASE_PATH = "/codex-agent/"

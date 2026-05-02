@@ -46,6 +46,8 @@ export default function HomeLayout() {
                 return "globe";
               case "bots":
                 return "send";
+              case "codex":
+                return "cpu";
               case "profile":
                 return "user";
               default:
@@ -70,6 +72,7 @@ export default function HomeLayout() {
       <Tabs.Screen name="index" options={{ title: "Forge" }} />
       <Tabs.Screen name="sites" options={{ title: "Sites" }} />
       <Tabs.Screen name="bots" options={{ title: "Bots" }} />
+      <Tabs.Screen name="codex" options={{ title: "Codex" }} />
       <Tabs.Screen name="profile" options={{ title: "Me" }} />
     </Tabs>
   );
