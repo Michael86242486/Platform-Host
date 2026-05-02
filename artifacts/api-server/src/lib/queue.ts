@@ -22,7 +22,11 @@ import {
   autoFixProjectAI,
   type ResearchBrief,
   type AuditIssue,
+  type BuildQualityReport,
 } from "./llm-generator";
+import {
+  AgentBuildLog,
+} from "./agent-skills";
 import { logger } from "./logger";
 import { getDecryptedSecrets, injectSecretsIntoFiles } from "./secrets";
 import { siteEventBus } from "./eventBus";
@@ -304,6 +308,7 @@ class JobQueue {
 
     let lastReportedFile: string | null = null;
     const seenFiles = new Set<string>();
+    const buildLog = new AgentBuildLog();
 
     const buildOut = await buildProjectAIParallel(
       plan, site.name, promptWithSecrets, research,
@@ -321,11 +326,30 @@ class JobQueue {
           if (!seenFiles.has(currentFile)) {
             seenFiles.add(currentFile);
             void fileCount;
+            buildLog.log(2, `File ready`, currentFile);
             await insertAgentMessage(job.userId, siteId, "build_progress", streamLabel(currentFile), { progress: pct, file: currentFile });
           }
         }
       },
       siteModel,
+      // Quality gate callback — surfaced in chat
+      async (report: BuildQualityReport) => {
+        buildLog.log(2, report.passed ? "Quality gate PASSED" : "Quality gate FAILED", report.summary);
+        if (!report.passed) {
+          const issueLines = report.issues
+            .filter(i => i.severity === "critical" || i.severity === "high")
+            .slice(0, 5)
+            .map(i => `   ✗ [${i.severity.toUpperCase()}] ${i.file}: ${i.detail}`)
+            .join("\n");
+          await insertAgentMessage(job.userId, siteId, "build_progress",
+            `⚠ Quality gate — score ${report.score}/100\n${issueLines}\n   → Retrying weak pages…`,
+            { qualityReport: report });
+        } else {
+          await insertAgentMessage(job.userId, siteId, "build_progress",
+            `✓ Quality gate — score ${report.score}/100 · ${(report.totalBytes / 1024).toFixed(1)} KB · ${Object.keys(buildOut?.files ?? {}).length || "?"} files`,
+            { qualityReport: report });
+        }
+      },
     );
 
     await setProgress(job.id, siteId, ph2.pctEnd, `✓ Step 2/7: ${ph2.label}`);

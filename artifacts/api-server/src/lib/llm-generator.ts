@@ -23,6 +23,15 @@ import {
   puterAIStream,
   type PuterAIMessage,
 } from "./puter";
+import {
+  getFullSkillsContext,
+  buildEnvironmentContext,
+  validateBuildOutput,
+  type AgentEnvironment,
+  type BuildQualityReport,
+} from "./agent-skills";
+
+export type { BuildQualityReport };
 
 const CODEX_MODEL = "gpt-4o-mini";
 
@@ -381,17 +390,35 @@ async function generateSharedAssetsStream(
   research: ResearchBrief,
   onUpdate: (u: StreamUpdate) => Promise<void> | void,
   model?: string,
+  attempt = 1,
 ): Promise<{ files: SiteFiles; coverColor: string }> {
   const techStackNote = research.techStack.length > 0
     ? `\nCDN tech stack to use: ${research.techStack.join(", ")}`
     : "";
   const paletteNote = `\nBrand palette: ${JSON.stringify(research.palette)}\nMood: ${research.mood}\nLayout direction: ${research.layout}`;
 
+  const env: AgentEnvironment = {
+    model: model ?? CODEX_MODEL,
+    siteName: intentName,
+    siteType: plan.type,
+    pageCount: plan.pages.length,
+    features: plan.features,
+    mood: research.mood,
+    techStack: research.techStack,
+    buildAttempt: attempt,
+  };
+
+  const skillsContext = getFullSkillsContext(plan, research);
+  const envContext = buildEnvironmentContext(env);
+
   const messages: PuterAIMessage[] = [
-    { role: "system", content: SHARED_ASSETS_SYSTEM },
+    {
+      role: "system",
+      content: `${SHARED_ASSETS_SYSTEM}\n\n${skillsContext}\n\n${envContext}`,
+    },
     {
       role: "user",
-      content: `Site name: ${intentName}\nProject: ${originalPrompt}\nPlan summary: ${plan.summary}\nFeatures: ${plan.features.join(", ")}\nPages: ${plan.pages.map(p => p.path).join(", ")}${paletteNote}${techStackNote}\n\nGenerate the shared assets/styles.css and assets/app.js now.`,
+      content: `Site name: ${intentName}\nProject: ${originalPrompt}\nPlan summary: ${plan.summary}\nFeatures: ${plan.features.join(", ")}\nPages: ${plan.pages.map(p => p.path).join(", ")}${paletteNote}${techStackNote}\n\nGenerate the shared assets/styles.css and assets/app.js now. Remember: minimum 700 lines CSS, 250 lines JS.`,
     },
   ];
 
@@ -410,11 +437,13 @@ async function generatePageAI(
   originalPrompt: string,
   research: ResearchBrief,
   model?: string,
+  attempt = 1,
+  previousIssues?: string[],
 ): Promise<SiteFiles> {
   const filename = page.path === "index" ? "index.html"
     : page.path.endsWith(".html") ? page.path : `${page.path}.html`;
-
   const isHome = page.path === "index";
+
   const navLinks = allPages.map(p => {
     const href = p.path === "index" ? "index.html" : `${p.path}.html`;
     return `<a href="${href}">${p.title}</a>`;
@@ -423,11 +452,32 @@ async function generatePageAI(
   const techNote = research.techStack.length > 0
     ? `\nCDN libraries to use: ${research.techStack.join(", ")}`
     : "";
-
   const paletteNote = `Palette: bg ${research.palette.background}, primary ${research.palette.primary}, secondary ${research.palette.secondary}. Mood: ${research.mood}. Unique twist: ${research.uniqueTwist}.`;
 
+  const env: AgentEnvironment = {
+    model: model ?? CODEX_MODEL,
+    siteName: intentName,
+    siteType: plan.type,
+    pageCount: allPages.length,
+    features: plan.features,
+    mood: research.mood,
+    techStack: research.techStack,
+    buildAttempt: attempt,
+    previousIssues,
+  };
+
+  const skillsContext = getFullSkillsContext(plan, research);
+  const envContext = buildEnvironmentContext(env);
+
+  const retryNote = attempt > 1 && previousIssues && previousIssues.length > 0
+    ? `\n\nATTEMPT ${attempt} — PREVIOUS ISSUES TO FIX:\n${previousIssues.map(i => `  ✗ ${i}`).join("\n")}\nFix ALL of the above. Do not repeat them.`
+    : "";
+
   const messages: PuterAIMessage[] = [
-    { role: "system", content: PAGE_BUILD_SYSTEM },
+    {
+      role: "system",
+      content: `${PAGE_BUILD_SYSTEM}\n\n${skillsContext}\n\n${envContext}`,
+    },
     {
       role: "user",
       content: `Generate the ${isHome ? "HOME (index.html)" : `"${page.title}" (${filename})`} page.
@@ -446,6 +496,7 @@ THIS PAGE:
 All pages (for nav): ${navLinks}
 Features to mention: ${plan.features.slice(0, 6).join(", ")}
 ${isHome ? "\nThis is the HOME page — include ALL 10 mandatory sections. Minimum 500 lines of HTML." : `\nThis is an inner page — include nav, page hero, 3+ content sections, footer. Minimum 350 lines.`}
+${retryNote}
 
 Output the FILE marker then the complete HTML, then ===END===.`,
     },
@@ -457,7 +508,6 @@ Output the FILE marker then the complete HTML, then ===END===.`,
     for (const [k, v] of Object.entries(result.files)) {
       if (v && v.trim().length > 100) files[k] = v;
     }
-    // Remap to correct filename
     if (files[page.path] && !files[filename]) {
       files[filename] = files[page.path];
       delete files[page.path];
@@ -480,37 +530,91 @@ export async function buildProjectAIParallel(
   research: ResearchBrief,
   onUpdate: (u: StreamUpdate) => Promise<void> | void,
   model?: string,
+  onQualityReport?: (report: BuildQualityReport) => Promise<void> | void,
 ): Promise<BuildResult> {
+  const MAX_ATTEMPTS = 2; // quality-gate retry attempts
+
   try {
-    // Step A: Generate shared CSS + JS
-    const sharedResult = await generateSharedAssetsStream(
-      plan, intentName, originalPrompt, research, onUpdate, model
-    );
-    const coverColor = sharedResult.coverColor;
-    const allFiles: SiteFiles = { ...sharedResult.files };
-    let totalBytes = Object.values(allFiles).reduce((s, v) => s + v.length, 0);
+    let attempt = 1;
+    let allFiles: SiteFiles = {};
+    let coverColor = "#7CC7FF";
+    let qualityReport: BuildQualityReport | null = null;
 
-    await onUpdate({ coverColor, files: { ...allFiles }, currentFile: null, bytes: totalBytes });
+    while (attempt <= MAX_ATTEMPTS) {
+      const previousIssues = qualityReport
+        ? qualityReport.issues.map(i => `[${i.severity.toUpperCase()}] ${i.file}: ${i.detail}`)
+        : undefined;
 
-    // Step B: Generate all pages concurrently
-    await Promise.all(
-      plan.pages.map(async (page) => {
-        const pageFiles = await generatePageAI(
-          page, plan.pages, plan, intentName, originalPrompt, research, model
+      // ── Step A: Shared CSS + JS (only on first attempt or if CSS/JS were weak)
+      const needsSharedRebuild = attempt === 1
+        || (qualityReport?.weakPages ?? []).some(p => p.startsWith("assets/"));
+
+      if (needsSharedRebuild) {
+        const sharedResult = await generateSharedAssetsStream(
+          plan, intentName, originalPrompt, research, onUpdate, model, attempt
         );
-        for (const [k, v] of Object.entries(pageFiles)) {
+        coverColor = sharedResult.coverColor;
+        for (const [k, v] of Object.entries(sharedResult.files)) {
           allFiles[k] = v;
-          totalBytes += v.length;
         }
-        const firstFile = Object.keys(pageFiles)[0] ?? null;
-        await onUpdate({ coverColor, files: { ...allFiles }, currentFile: firstFile, bytes: totalBytes });
-      })
-    );
+        const totalBytes = Object.values(allFiles).reduce((s, v) => s + v.length, 0);
+        await onUpdate({ coverColor, files: { ...allFiles }, currentFile: null, bytes: totalBytes });
+      }
 
+      // ── Step B: Generate pages — on retry only regenerate weak pages
+      const pagesToBuild = attempt === 1
+        ? plan.pages
+        : plan.pages.filter(p => {
+            const filename = p.path === "index" ? "index.html"
+              : p.path.endsWith(".html") ? p.path : `${p.path}.html`;
+            return (qualityReport?.weakPages ?? []).includes(filename);
+          });
+
+      if (pagesToBuild.length > 0) {
+        await Promise.all(
+          pagesToBuild.map(async (page) => {
+            const pageFiles = await generatePageAI(
+              page, plan.pages, plan, intentName, originalPrompt, research,
+              model, attempt, previousIssues
+            );
+            for (const [k, v] of Object.entries(pageFiles)) {
+              allFiles[k] = v;
+            }
+            const totalBytes = Object.values(allFiles).reduce((s, v) => s + v.length, 0);
+            const firstFile = Object.keys(pageFiles)[0] ?? null;
+            await onUpdate({ coverColor, files: { ...allFiles }, currentFile: firstFile, bytes: totalBytes });
+          })
+        );
+      }
+
+      // ── Step C: Quality gate
+      const cleaned = sanitizeFiles(allFiles, plan);
+      qualityReport = validateBuildOutput(cleaned, plan);
+
+      logger.info({
+        attempt,
+        score: qualityReport.score,
+        passed: qualityReport.passed,
+        weakPages: qualityReport.weakPages,
+        totalKB: (qualityReport.totalBytes / 1024).toFixed(1),
+      }, "Quality gate result");
+
+      if (onQualityReport) await onQualityReport(qualityReport);
+
+      if (qualityReport.passed || attempt >= MAX_ATTEMPTS) {
+        if (Object.keys(cleaned).length === 0) throw new Error("no files produced");
+        return { files: cleaned, coverColor, name: intentName };
+      }
+
+      // Not passed — retry weak pages
+      logger.warn({ attempt, issues: qualityReport.issues.length, weakPages: qualityReport.weakPages }, "Quality gate failed — retrying weak pages");
+      attempt++;
+    }
+
+    // Fallback (shouldn't reach here)
     const cleaned = sanitizeFiles(allFiles, plan);
-    if (Object.keys(cleaned).length === 0) throw new Error("no files produced");
-
     return { files: cleaned, coverColor, name: intentName };
+
   } catch (err) {
     logger.warn({ err: String(err) }, "buildProjectAIParallel failed; using streaming fallback");
     return buildProjectAIStream(plan, intentName, originalPrompt, onUpdate, model);
