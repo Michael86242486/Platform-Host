@@ -22,6 +22,7 @@ export type {
   SitePlan,
   SitePlanPage,
   SiteFiles,
+  SiteCheckpoint,
   Job,
   InsertJob,
   Message,

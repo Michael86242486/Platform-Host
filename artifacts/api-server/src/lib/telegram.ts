@@ -2,6 +2,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { and, desc, eq } from "drizzle-orm";
 
 import { puterAIComplete, type PuterAIMessage } from "./puter";
+import { siteEventBus, type SiteEvent } from "./eventBus";
 
 import {
   db,
@@ -102,6 +103,10 @@ interface ChatState {
 class TelegramBotManager {
   private active = new Map<string, TelegramBot>();
   private state = new Map<string, ChatState>();
+  /** Map of botId → owning userId (set in startBot). */
+  private botOwner = new Map<string, string>();
+  /** Map of botId → last observed chatId from that bot's messages. */
+  private botLastChat = new Map<string, number>();
   /** pendingId -> in-memory record before we commit it to DB. */
   private pendingHosted = new Map<
     string,
@@ -122,6 +127,45 @@ class TelegramBotManager {
     await this.ensureSystemBot().catch((err) => {
       logger.warn({ err }, "ensureSystemBot failed");
     });
+
+    siteEventBus.on("site:*", (ev: SiteEvent) => {
+      if (ev.type !== "site_ready") return;
+      this.notifySiteReady(ev.userId, ev.siteName, ev.publicUrl).catch((err) => {
+        logger.warn({ err, siteId: ev.siteId }, "notifySiteReady failed");
+      });
+    });
+  }
+
+  private async notifySiteReady(
+    userId: string,
+    siteName: string,
+    publicUrl: string | null,
+  ): Promise<void> {
+    const recipients: Array<{ bot: TelegramBot; chatId: number }> = [];
+
+    for (const [botId, ownerUserId] of this.botOwner.entries()) {
+      if (ownerUserId !== userId) continue;
+      const bot = this.active.get(botId);
+      if (!bot) continue;
+      const chatId = this.botLastChat.get(botId);
+      if (!chatId) continue;
+      recipients.push({ bot, chatId });
+    }
+
+    if (recipients.length === 0) return;
+
+    const urlLine = publicUrl ? `\n🌐 ${publicUrl}` : "";
+    const text =
+      `✅ *${escapeMd(siteName)}* is ready!${urlLine}\n\n` +
+      `Tap /sites to manage your projects.`;
+
+    for (const { bot, chatId } of recipients) {
+      await bot
+        .sendMessage(chatId, text, { parse_mode: "Markdown" })
+        .catch((err: unknown) => {
+          logger.warn({ err, chatId }, "Telegram site_ready notify failed");
+        });
+    }
   }
 
   /**
@@ -192,6 +236,10 @@ class TelegramBotManager {
       },
     });
     this.active.set(record.id, bot);
+    this.botOwner.set(record.id, record.userId);
+    bot.on("message", (msg) => {
+      this.botLastChat.set(record.id, msg.chat.id);
+    });
 
     try {
       const me = await bot.getMe();

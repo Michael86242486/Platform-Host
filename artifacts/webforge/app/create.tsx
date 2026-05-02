@@ -35,6 +35,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { MonoText } from "@/components/MonoText";
 import { useColors } from "@/hooks/useColors";
 import { useSiteStream, type LiveNarration } from "@/lib/useSiteStream";
+import { CODEX_MODELS } from "@/lib/puter";
 
 const SUGGESTIONS = [
   {
@@ -98,6 +99,7 @@ export default function CreateScreen() {
   const [activeSiteId, setActiveSiteId] = useState<string | null>(
     typeof params.siteId === "string" ? params.siteId : null,
   );
+  const [selectedModel, setSelectedModel] = useState("gpt-4o-mini");
   const [showPreview, setShowPreview] = useState(true);
 
   const create = useCreateSite();
@@ -144,7 +146,7 @@ export default function CreateScreen() {
     if (!activeSiteId) {
       try {
         const created = await create.mutateAsync({
-          data: { prompt: trimmed, name: null, autoBuild: true },
+          data: { prompt: trimmed, name: null, autoBuild: true, model: selectedModel },
         });
         void Haptics.notificationAsync(
           Haptics.NotificationFeedbackType.Success,
@@ -376,6 +378,14 @@ export default function CreateScreen() {
           />
         )}
 
+        {!activeSiteId ? (
+          <ModelSelector
+            selectedModel={selectedModel}
+            onSelect={setSelectedModel}
+            colors={colors}
+          />
+        ) : null}
+
         <Composer
           colors={colors}
           value={draft}
@@ -395,6 +405,112 @@ export default function CreateScreen() {
         />
       </KeyboardAvoidingView>
     </SafeAreaView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Model selector
+// ---------------------------------------------------------------------------
+
+const BUILD_MODELS: { value: string; label: string; hint: string }[] = [
+  { value: "gpt-4o-mini", label: "GPT-4o Mini", hint: "Fast · default" },
+  { value: "gpt-4o", label: "GPT-4o", hint: "High quality" },
+  { value: "gpt-5.3-codex", label: "Codex 5.3", hint: "Most capable" },
+  { value: "gpt-5.1-codex", label: "Codex 5.1", hint: "Balanced" },
+  { value: "gpt-5.1-codex-mini", label: "Codex Mini", hint: "Fastest" },
+];
+
+function ModelSelector({
+  selectedModel,
+  onSelect,
+  colors,
+}: {
+  selectedModel: string;
+  onSelect: (m: string) => void;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View
+      style={{
+        paddingHorizontal: 14,
+        paddingTop: 8,
+        paddingBottom: 4,
+        gap: 6,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Feather name="cpu" size={11} color={colors.mutedForeground} />
+        <Text
+          style={{
+            color: colors.mutedForeground,
+            fontSize: 11,
+            fontFamily: "Inter_500Medium",
+            letterSpacing: 0.5,
+          }}
+        >
+          Model
+        </Text>
+      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 6, paddingRight: 6 }}
+        keyboardShouldPersistTaps="handled"
+      >
+        {BUILD_MODELS.map((m) => {
+          const active = selectedModel === m.value;
+          return (
+            <Pressable
+              key={m.value}
+              onPress={() => onSelect(m.value)}
+              style={({ pressed }) => ({
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 5,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+                borderRadius: 20,
+                borderWidth: 1,
+                borderColor: active ? colors.primary : colors.border,
+                backgroundColor: active
+                  ? `${colors.primary}1A`
+                  : colors.cardElevated,
+                opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              {active ? (
+                <View
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: 3,
+                    backgroundColor: colors.primary,
+                  }}
+                />
+              ) : null}
+              <Text
+                style={{
+                  color: active ? colors.primary : colors.mutedForeground,
+                  fontSize: 12,
+                  fontFamily: active ? "Inter_600SemiBold" : "Inter_400Regular",
+                }}
+              >
+                {m.label}
+              </Text>
+              <Text
+                style={{
+                  color: colors.mutedForeground,
+                  fontSize: 10,
+                  fontFamily: "Inter_400Regular",
+                }}
+              >
+                {m.hint}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
   );
 }
 

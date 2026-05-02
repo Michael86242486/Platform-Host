@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { eq } from "drizzle-orm";
 
 import {
@@ -6,6 +7,8 @@ import {
   messagesTable,
   sitesTable,
   type Job,
+  type SiteCheckpoint,
+  type SiteFiles,
   type SitePlan,
 } from "./db";
 import { buildPlan, analyzeProject } from "./generator";
@@ -22,8 +25,6 @@ import { PUTER_CONFIGURED, uploadSite } from "./puter";
 
 const MAX_CONCURRENCY = 3;
 
-/** Sentinel stored in jobs.instructions for analyze jobs that should
- *  auto-chain straight into a build job once analysis completes. */
 const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
 
 const ANALYSIS_STAGES: { progress: number; label: string; ms: number }[] = [
@@ -39,6 +40,42 @@ const BUILD_STAGES: { progress: number; label: string; ms: number }[] = [
   { progress: 38, label: "Composing layouts", ms: 250 },
   { progress: 55, label: "Writing components", ms: 250 },
 ];
+
+// ---------------------------------------------------------------------------
+// Checkpoint helpers
+// ---------------------------------------------------------------------------
+
+async function saveCheckpoint(
+  siteId: string,
+  label: string,
+  files?: SiteFiles,
+  progress?: number,
+): Promise<void> {
+  try {
+    const [row] = await db
+      .select({ checkpoints: sitesTable.checkpoints, progress: sitesTable.progress })
+      .from(sitesTable)
+      .where(eq(sitesTable.id, siteId))
+      .limit(1);
+    if (!row) return;
+    const existing: SiteCheckpoint[] =
+      (row.checkpoints as SiteCheckpoint[] | null) ?? [];
+    const cp: SiteCheckpoint = {
+      id: crypto.randomUUID(),
+      label,
+      createdAt: new Date().toISOString(),
+      files,
+      progress: progress ?? row.progress,
+    };
+    const next = [...existing, cp].slice(-10);
+    await db
+      .update(sitesTable)
+      .set({ checkpoints: next })
+      .where(eq(sitesTable.id, siteId));
+  } catch (err) {
+    logger.warn({ err }, "saveCheckpoint failed (non-fatal)");
+  }
+}
 
 class JobQueue {
   private active = new Set<string>();
@@ -61,7 +98,6 @@ class JobQueue {
     }
   }
 
-  /** Re-enqueue any jobs left in queued/running after a server restart. */
   async resumeOrphans(): Promise<void> {
     const queued = await db
       .select()
@@ -100,7 +136,13 @@ class JobQueue {
 
     try {
       if (job.kind === "analyze") {
-        await this.runAnalysis(job, site.prompt, site.id, site.name);
+        await this.runAnalysis(
+          job,
+          site.prompt,
+          site.id,
+          site.name,
+          site.model ?? undefined,
+        );
       } else if (
         job.kind === "create" ||
         job.kind === "edit" ||
@@ -124,6 +166,7 @@ class JobQueue {
     prompt: string,
     siteId: string,
     name: string,
+    model?: string,
   ): Promise<void> {
     await db
       .update(jobsTable)
@@ -147,9 +190,6 @@ class JobQueue {
       { stage: 0 },
     );
 
-    // Stream a "thinking out loud" narration in parallel with the
-    // deterministic stage ticker — gives the user something alive to read
-    // within the first second.
     void streamNarration({
       userId: job.userId,
       siteId,
@@ -159,8 +199,7 @@ class JobQueue {
         "Reading your idea now — picking out the vibe, the pages, and a palette that fits.",
     });
 
-    // Kick off the AI call in parallel with cosmetic progress stages.
-    const analysisPromise = analyzeProjectAI(prompt, name);
+    const analysisPromise = analyzeProjectAI(prompt, name, model);
 
     for (const stage of ANALYSIS_STAGES) {
       await sleep(stage.ms);
@@ -189,7 +228,7 @@ class JobQueue {
       .update(sitesTable)
       .set({
         status: autoBuild ? "queued" : "awaiting_confirmation",
-        progress: autoBuild ? 100 : 100,
+        progress: 100,
         message: autoBuild
           ? "Plan ready — starting build"
           : "Awaiting your confirmation",
@@ -214,6 +253,8 @@ class JobQueue {
       { plan },
     );
 
+    await saveCheckpoint(siteId, "Analysis complete — plan ready");
+
     if (!autoBuild) {
       await insertAgentMessage(
         job.userId,
@@ -234,7 +275,6 @@ class JobQueue {
       })
       .where(eq(jobsTable.id, job.id));
 
-    // Auto-chain straight into a build job (mobile app flow).
     if (autoBuild) {
       const [next] = await db
         .insert(jobsTable)
@@ -259,10 +299,13 @@ class JobQueue {
       .limit(1);
     if (!site) throw new Error("Site missing");
 
+    const siteModel = site.model ?? undefined;
+
     let plan = site.plan;
     if (!plan) {
       const analysis =
-        site.analysis ?? (await analyzeProjectAI(site.prompt, site.name));
+        site.analysis ??
+        (await analyzeProjectAI(site.prompt, site.name, siteModel));
       plan = buildPlan(analysis);
       await db
         .update(sitesTable)
@@ -294,8 +337,6 @@ class JobQueue {
       null,
     );
 
-    // Stream a short "what I'm about to build" narration so the user has
-    // something to read while the model warms up.
     void streamNarration({
       userId: job.userId,
       siteId,
@@ -317,7 +358,6 @@ class JobQueue {
     };
 
     if (isEdit && site.files) {
-      // Edits still go through the JSON path (full-rewrite semantics).
       for (const stage of BUILD_STAGES) {
         await sleep(stage.ms);
         await db
@@ -340,9 +380,13 @@ class JobQueue {
           { progress: stage.progress },
         );
       }
-      out = await editProjectAI(site.files, site.name, job.instructions!);
+      out = await editProjectAI(
+        site.files,
+        site.name,
+        job.instructions!,
+        siteModel,
+      );
     } else {
-      // Quick cosmetic ramp before the model starts streaming.
       await db
         .update(sitesTable)
         .set({
@@ -358,14 +402,16 @@ class JobQueue {
         .set({ progress: 8, message: BUILD_STAGES[0].label })
         .where(eq(jobsTable.id, job.id));
 
-      // Stream the build token-by-token. We update site.files in real time so
-      // the iframe in the mobile app shows partial HTML as the model writes.
+      await saveCheckpoint(
+        siteId,
+        `Build started${siteModel ? ` · ${siteModel}` : ""}`,
+        {},
+        8,
+      );
+
       let lastReportedFile: string | null = null;
       let revealedCount = 0;
       const seenFiles = new Set<string>();
-      // Tell the model which user-provided secrets are available so it can
-      // wire them in as `${NAME}` placeholders (we substitute the real values
-      // post-stream in `injectSecretsIntoFiles`).
       const availableSecretNames = Object.keys(
         await getDecryptedSecrets(job.userId),
       );
@@ -373,13 +419,13 @@ class JobQueue {
         availableSecretNames.length > 0
           ? `${site.prompt}\n\n[Available user secrets — reference as \${NAME} and I'll inject the value at build-time]: ${availableSecretNames.join(", ")}`
           : site.prompt;
+
       out = await buildProjectAIStream(
         plan,
         site.name,
         promptWithSecrets,
         async ({ coverColor, files, currentFile, bytes }) => {
           const fileCount = Object.keys(files).length;
-          // Estimate progress: 10% start + grows with bytes streamed (capped 90%)
           const byteProgress = Math.min(Math.round(bytes / 250), 80);
           const pct = Math.min(10 + byteProgress, 90);
           const label = currentFile
@@ -401,8 +447,6 @@ class JobQueue {
             .set({ progress: pct, message: label })
             .where(eq(jobsTable.id, job.id));
 
-          // Push a live site update so subscribers can rerender the iframe
-          // and progress bar without polling.
           siteEventBus.emitSite({ type: "site_updated", siteId });
           siteEventBus.emitSite({
             type: "file_progress",
@@ -411,7 +455,6 @@ class JobQueue {
             bytes,
           });
 
-          // Emit a chat log line whenever a new file appears or we cross 50%.
           if (currentFile && currentFile !== lastReportedFile) {
             lastReportedFile = currentFile;
             if (!seenFiles.has(currentFile)) {
@@ -428,6 +471,7 @@ class JobQueue {
           }
           void revealedCount;
         },
+        siteModel,
       );
     }
 
@@ -439,14 +483,9 @@ class JobQueue {
         }
       : plan;
 
-    // Inject any user-stored secrets the AI referenced as `${NAME}`. Values
-    // are decrypted on demand and never logged.
     const userSecrets = await getDecryptedSecrets(job.userId);
     const finalFiles = injectSecretsIntoFiles(out.files, userSecrets);
 
-    // Persist the freshly-built files (still marked "building") so the mobile
-    // app can render them immediately if the user is watching, then push to
-    // Puter for the public URL.
     await db
       .update(sitesTable)
       .set({
@@ -489,7 +528,6 @@ class JobQueue {
             opts: {
               concurrency: 4,
               onFile: async (rel, idx) => {
-                // Map upload progress into the 80 → 98% band.
                 const pct = Math.min(
                   98,
                   80 + Math.round((idx / Math.max(totalFiles, 1)) * 18),
@@ -513,10 +551,7 @@ class JobQueue {
           break;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          logger.warn(
-            { err, attempt, siteId },
-            "Puter upload attempt failed",
-          );
+          logger.warn({ err, attempt, siteId }, "Puter upload attempt failed");
           if (attempt >= MAX_ATTEMPTS) {
             puterStatus = "failed";
             puterError = msg;
@@ -554,6 +589,16 @@ class JobQueue {
         finishedAt: new Date(),
       })
       .where(eq(jobsTable.id, job.id));
+
+    await saveCheckpoint(
+      siteId,
+      isEdit
+        ? `Edit complete · ${new Date().toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+        : "Build complete",
+      finalFiles,
+      100,
+    );
+
     if (puterStatus === "hosted" && puterPublicUrl) {
       await insertAgentMessage(
         job.userId,
@@ -568,16 +613,19 @@ class JobQueue {
         siteId,
         "build_done",
         `Built ${Object.keys(out.files).length} files (Puter upload ${puterStatus ?? "skipped"}${puterError ? `: ${puterError}` : ""})`,
-        {
-          files: Object.keys(out.files),
-          puterStatus,
-          puterError,
-        },
+        { files: Object.keys(out.files), puterStatus, puterError },
       );
     }
     siteEventBus.emitSite({ type: "site_updated", siteId });
 
-    // Final celebratory narration — streams token-by-token to the UI.
+    siteEventBus.emitSite({
+      type: "site_ready",
+      siteId,
+      userId: job.userId,
+      siteName: site.name,
+      publicUrl: puterPublicUrl,
+    });
+
     void streamNarration({
       userId: job.userId,
       siteId,
@@ -600,7 +648,7 @@ class JobQueue {
         message,
         updatedAt: new Date(),
       })
-      .where(eq(sitesTable.id, job.siteId));
+      .where(eq(jobsTable.id, job.siteId));
     await insertAgentMessage(
       job.userId,
       job.siteId,
@@ -674,8 +722,6 @@ function streamLabel(path: string): string {
   return `Streaming ${path}`;
 }
 
-// Re-export so callers (telegram.ts) that imported BUILD_STAGES still work.
 export { BUILD_STAGES };
-// Keep the legacy synchronous fallback exported for any consumer.
 export { analyzeProject };
 export const jobQueue = new JobQueue();

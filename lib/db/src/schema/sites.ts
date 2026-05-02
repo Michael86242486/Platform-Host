@@ -38,6 +38,14 @@ export interface SitePlan {
 /** Map of relative file path -> file content (text). */
 export type SiteFiles = Record<string, string>;
 
+export interface SiteCheckpoint {
+  id: string;
+  label: string;
+  createdAt: string;
+  files?: SiteFiles;
+  progress: number;
+}
+
 export const sitesTable = pgTable(
   "sites",
   {
@@ -89,6 +97,10 @@ export const sitesTable = pgTable(
     }),
     /** Last error encountered while uploading to Puter (if any). */
     puterError: text("puter_error"),
+    /** Codex/LLM model used to build this site (e.g. "gpt-4o-mini"). */
+    model: text("model"),
+    /** Array of build snapshots; newest last; capped at 10. */
+    checkpoints: jsonb("checkpoints").$type<SiteCheckpoint[] | null>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

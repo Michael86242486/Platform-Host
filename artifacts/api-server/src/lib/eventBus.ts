@@ -26,6 +26,13 @@ export type SiteEvent =
       siteId: string;
       currentFile: string | null;
       bytes: number;
+    }
+  | {
+      type: "site_ready";
+      siteId: string;
+      userId: string;
+      siteName: string;
+      publicUrl: string | null;
     };
 
 class SiteEventBus extends EventEmitter {

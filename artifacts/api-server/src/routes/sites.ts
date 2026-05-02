@@ -34,6 +34,7 @@ const createSchema = z.object({
   prompt: z.string().min(4).max(1000),
   name: z.string().max(80).optional().nullable(),
   autoBuild: z.boolean().optional(),
+  model: z.string().max(80).optional().nullable(),
 });
 
 const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
@@ -114,6 +115,22 @@ export function siteToDto(site: Site) {
     puterStatus: site.puterStatus,
     puterError: site.puterError,
     hostingProvider: site.puterPublicUrl ? "puter" : "internal",
+    model: site.model ?? null,
+    checkpoints: site.checkpoints
+      ? (site.checkpoints as Array<{
+          id: string;
+          label: string;
+          createdAt: string;
+          progress: number;
+          files?: unknown;
+        }>).map((c) => ({
+          id: c.id,
+          label: c.label,
+          createdAt: c.createdAt,
+          progress: c.progress,
+          hasFiles: !!c.files,
+        }))
+      : [],
     createdAt: site.createdAt.toISOString(),
     updatedAt: site.updatedAt.toISOString(),
   };
@@ -136,7 +153,7 @@ router.post("/sites", requireAuth, async (req, res) => {
     res.status(400).json({ error: "invalid_input", issues: parsed.error.issues });
     return;
   }
-  const { prompt, name, autoBuild } = parsed.data;
+  const { prompt, name, autoBuild, model } = parsed.data;
   const finalName = (name?.trim() || inferSiteName(prompt)).slice(0, 80);
   const slug = await uniqueSlug(finalName);
   const autoBuildOn = autoBuild !== false; // default true
@@ -148,6 +165,7 @@ router.post("/sites", requireAuth, async (req, res) => {
       name: finalName,
       slug,
       prompt,
+      model: model ?? null,
       status: "queued",
       progress: 0,
       message: autoBuildOn

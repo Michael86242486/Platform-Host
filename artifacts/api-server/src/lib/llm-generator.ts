@@ -50,6 +50,7 @@ Guidelines:
 export async function analyzeProjectAI(
   prompt: string,
   name?: string,
+  model?: string,
 ): Promise<SiteAnalysis> {
   try {
     const messages: PuterAIMessage[] = [
@@ -62,7 +63,7 @@ export async function analyzeProjectAI(
       },
     ];
     const text = await puterAIComplete(messages, {
-      model: CODEX_MODEL,
+      model: model ?? CODEX_MODEL,
       jsonMode: true,
     });
     if (!text) throw new Error("empty analysis");
@@ -229,6 +230,7 @@ export async function buildProjectAIStream(
   intentName: string,
   originalPrompt: string,
   onUpdate: (u: StreamUpdate) => Promise<void> | void,
+  model?: string,
 ): Promise<BuildResult> {
   try {
     const planSummary = {
@@ -313,7 +315,7 @@ export async function buildProjectAIStream(
 
     await puterAIStream(
       messages,
-      (delta) => {
+      (delta: string) => {
         buffer += delta;
 
         let nl = buffer.indexOf("\n");
@@ -331,12 +333,14 @@ export async function buildProjectAIStream(
           if (now - lastFlush > 220 && !pendingFlush) {
             pendingFlush = true;
             const snapshot: SiteFiles = { ...files, [currentFile!]: transient };
-            void onUpdate({
-              coverColor,
-              files: snapshot,
-              currentFile,
-              bytes: bytes + buffer.length,
-            }).then(() => {
+            void Promise.resolve(
+              onUpdate({
+                coverColor,
+                files: snapshot,
+                currentFile,
+                bytes: bytes + buffer.length,
+              }),
+            ).then(() => {
               lastFlush = Date.now();
               pendingFlush = false;
             }).catch(() => {
@@ -347,7 +351,7 @@ export async function buildProjectAIStream(
           void flush(false);
         }
       },
-      { model: CODEX_MODEL },
+      { model: model ?? CODEX_MODEL },
     );
 
     if (buffer.length > 0) {
@@ -380,6 +384,7 @@ export async function buildProjectAI(
   plan: SitePlan,
   intentName: string,
   originalPrompt: string,
+  model?: string,
 ): Promise<BuildResult> {
   try {
     const planSummary = {
@@ -406,7 +411,7 @@ export async function buildProjectAI(
     ];
 
     const text = await puterAIComplete(messages, {
-      model: CODEX_MODEL,
+      model: model ?? CODEX_MODEL,
       jsonMode: true,
     });
     if (!text) throw new Error("empty build response");
@@ -502,6 +507,7 @@ export async function editProjectAI(
   currentFiles: SiteFiles,
   intentName: string,
   instructions: string,
+  model?: string,
 ): Promise<BuildResult> {
   try {
     const messages: PuterAIMessage[] = [
@@ -513,7 +519,7 @@ export async function editProjectAI(
     ];
 
     const text = await puterAIComplete(messages, {
-      model: CODEX_MODEL,
+      model: model ?? CODEX_MODEL,
       jsonMode: true,
     });
     if (!text) throw new Error("empty edit response");
