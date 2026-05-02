@@ -290,6 +290,81 @@ class TelegramBotManager {
     }
   }
 
+  // ── /stats command ─────────────────────────────────────────────────────────
+
+  private async sendStats(
+    userId: string,
+    bot: TelegramBot,
+    chatId: number,
+  ): Promise<void> {
+    const thinking = await bot.sendMessage(chatId, "📊 Analysing your sites…");
+
+    const sites = await db
+      .select({ id: sitesTable.id, name: sitesTable.name, files: sitesTable.files, createdAt: sitesTable.createdAt })
+      .from(sitesTable)
+      .where(eq(sitesTable.userId, userId))
+      .orderBy(desc(sitesTable.createdAt));
+
+    // Only score sites that have actual files
+    type Scored = { name: string; score: number; grade: "A" | "B" | "C" | "D" | "F" };
+    const scored: Scored[] = [];
+
+    for (const site of sites) {
+      const files = site.files as Record<string, string> | null;
+      if (!files || Object.keys(files).length === 0) continue;
+      try {
+        const report = analyzeSiteFiles(files);
+        scored.push({ name: site.name ?? "Untitled", score: report.overall, grade: report.grade });
+      } catch {
+        // skip sites that fail analysis
+      }
+    }
+
+    // Delete the "thinking" placeholder
+    bot.deleteMessage(chatId, thinking.message_id).catch(() => {});
+
+    if (scored.length === 0) {
+      await bot.sendMessage(
+        chatId,
+        sites.length === 0
+          ? "You haven't built any sites yet. Use `/create` to get started!"
+          : "Your sites don't have analysable files yet — run a build first.",
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    // Sort descending by score
+    scored.sort((a, b) => b.score - a.score);
+
+    const gradeEmoji = (g: string) =>
+      g === "A" ? "🟢" : g === "B" ? "🔵" : g === "C" ? "🟡" : g === "D" ? "🟠" : "🔴";
+    const medal = (i: number) => i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.  `;
+
+    const totalBuilt = sites.length;
+    const avgScore = Math.round(scored.reduce((s, x) => s + x.score, 0) / scored.length);
+    const best = scored[0];
+
+    const rows = scored.map((s, i) => {
+      const nameTrunc = s.name.length > 18 ? s.name.slice(0, 17) + "…" : s.name;
+      const pad = " ".repeat(Math.max(1, 20 - nameTrunc.length));
+      return `${medal(i)} ${gradeEmoji(s.grade)} \`${nameTrunc}\`${pad}*${s.grade}* · ${s.score}`;
+    });
+
+    const lines = [
+      "📊 *Your Site Stats*",
+      "",
+      `🏆 Best: *${escapeMd(best.name)}* — Grade *${best.grade}* (${best.score}/100)`,
+      "",
+      "*Leaderboard*",
+      ...rows,
+      "",
+      `📦 ${totalBuilt} site${totalBuilt !== 1 ? "s" : ""} built · avg score *${avgScore}*`,
+    ];
+
+    await bot.sendMessage(chatId, lines.join("\n"), { parse_mode: "Markdown" });
+  }
+
   /**
    * Ensure the global WebForge Telegram bot (configured via the
    * WEBFORGE_TELEGRAM_BOT_TOKEN env var) is registered and polling.
@@ -545,6 +620,10 @@ class TelegramBotManager {
           : "Nothing to cancel — you're not in the middle of anything.",
         { parse_mode: "Markdown" },
       );
+    });
+
+    bot.onText(/^\/stats\b/i, async (msg) => {
+      await this.sendStats(ownerUserId, bot, msg.chat.id);
     });
 
     bot.onText(/^\/credits\b/i, async (msg) => {
@@ -1287,6 +1366,7 @@ Rules:
       "🔑  `/setsecret NAME=value` — Add a secret",
       "🗑  `/delsecret NAME` — Remove a secret",
       "📋  `/tasks` — See your active jobs",
+      "📊  `/stats` — Leaderboard of all your sites by Intel grade",
       "💳  `/credits` — Show your credit balance & tier",
       "⚡  `/boosts` — See Pro / VIP power-up tiers",
       "",
