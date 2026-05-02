@@ -32,6 +32,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   user: AuthUser | null;
   token: string | null;
+  loginError: string | null;
   login: () => Promise<void>;
   logout: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -45,6 +46,7 @@ const AuthContext = createContext<AuthContextValue>({
   isAuthenticated: false,
   user: null,
   token: null,
+  loginError: null,
   login: async () => {},
   logout: async () => {},
   signOut: async () => {},
@@ -90,6 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   const discovery = AuthSession.useAutoDiscovery(ISSUER_URL);
   const redirectUri = AuthSession.makeRedirectUri({ scheme: "webforge" });
@@ -134,9 +137,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [fetchUser]);
 
   useEffect(() => {
+    if (response?.type === "error") {
+      setLoginError("Login was cancelled or failed. Please try again.");
+      return;
+    }
     if (response?.type !== "success" || !request?.codeVerifier) return;
     const { code, state } = response.params;
     void (async () => {
+      setLoginError(null);
       try {
         const apiBase = getApiBaseUrl();
         const exchangeRes = await fetch(`${apiBase}/api/mobile-auth/token-exchange`, {
@@ -150,7 +158,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             nonce: request.nonce,
           }),
         });
-        if (!exchangeRes.ok) return;
+        if (!exchangeRes.ok) {
+          const body = await exchangeRes.json().catch(() => ({})) as { error?: string };
+          setLoginError(body.error ?? `Server error (${exchangeRes.status}). Please try again.`);
+          setIsLoading(false);
+          return;
+        }
         const data = (await exchangeRes.json()) as { token: string };
         if (data.token) {
           await storeSet(AUTH_TOKEN_KEY, data.token);
@@ -160,8 +173,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser(u);
           await storeSet(USER_KEY, JSON.stringify(u));
           setIsLoading(false);
+        } else {
+          setLoginError("Login failed — no session returned. Please try again.");
+          setIsLoading(false);
         }
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Network error";
+        setLoginError(`Could not reach the server. Check your connection and try again. (${msg})`);
         setIsLoading(false);
       }
     })();
@@ -227,13 +245,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated: !!user,
       user,
       token,
+      loginError,
       login,
       logout,
       signOut: logout,
       updateUser,
       getToken,
     }),
-    [isLoading, user, token, login, logout, updateUser, getToken],
+    [isLoading, user, token, loginError, login, logout, updateUser, getToken],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

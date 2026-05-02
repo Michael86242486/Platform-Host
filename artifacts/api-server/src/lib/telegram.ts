@@ -1061,7 +1061,7 @@ class TelegramBotManager {
         });
         await bot.sendMessage(
           msg.chat.id,
-          `✏️ Editing *${site.name}*. Send me what to change.`,
+          `✏️ Editing *${escapeMd(site.name)}*. Send me what to change.`,
           { parse_mode: "Markdown" },
         );
       } else {
@@ -1337,7 +1337,7 @@ class TelegramBotManager {
       if (site) {
         await bot.sendMessage(
           chatId,
-          intent.reply ?? `✏️ Updating *${site.name}*…`,
+          intent.reply ?? `✏️ Updating *${escapeMd(site.name)}*…`,
           { parse_mode: "Markdown" },
         );
         await this.runEdit(
@@ -1709,7 +1709,7 @@ Rules:
       .set({ status: "queued", progress: 0, message: "Queued", error: null })
       .where(eq(sitesTable.id, site.id));
     await jobQueue.enqueue(job.id);
-    await bot.sendMessage(chatId, `✏️ Updating *${site.name}*…`, {
+    await bot.sendMessage(chatId, `✏️ Updating *${escapeMd(site.name)}*…`, {
       parse_mode: "Markdown",
     });
     void this.pollBuildAndNotify(bot, chatId, site.id);
@@ -1750,7 +1750,7 @@ Rules:
       .set({ status: "queued", progress: 0, message: "Queued" })
       .where(eq(sitesTable.id, siteId));
     await jobQueue.enqueue(job.id);
-    await bot.sendMessage(chatId, `🛠️ Building *${site.name}*…`, {
+    await bot.sendMessage(chatId, `🛠️ Building *${escapeMd(site.name)}*…`, {
       parse_mode: "Markdown",
     });
     void this.pollBuildAndNotify(bot, chatId, siteId);
@@ -1981,7 +1981,7 @@ Rules:
               : s.status === "awaiting_confirmation"
                 ? "⏸️"
                 : "⏳";
-      return `${emoji} *${s.name}* — ${s.status}\n${baseUrl}/api/hosted/${s.slug}/`;
+      return `${emoji} *${escapeMd(s.name)}* — ${s.status}\n${baseUrl}/api/hosted/${s.slug}/`;
     });
     await bot.sendMessage(chatId, lines.join("\n\n"), {
       parse_mode: "Markdown",
@@ -2001,7 +2001,7 @@ Rules:
     }
     await bot.sendMessage(
       chatId,
-      `*${site.name}*\nstatus: ${site.status}\nprogress: ${site.progress}%\n${site.message ?? ""}`,
+      `*${escapeMd(site.name)}*\nstatus: ${site.status}\nprogress: ${site.progress}%\n${site.message ?? ""}`,
       { parse_mode: "Markdown" },
     );
   }
@@ -2021,7 +2021,7 @@ Rules:
     if (site.status !== "ready") {
       await bot.sendMessage(
         chatId,
-        `⏳ *${site.name}* is ${site.status} (${site.progress}%).`,
+        `⏳ *${escapeMd(site.name)}* is ${site.status} (${site.progress}%).`,
         { parse_mode: "Markdown" },
       );
       return;

@@ -18,7 +18,7 @@ import { Feather } from "@expo/vector-icons";
 
 export default function SignInScreen() {
   const colors = useColors();
-  const { login, isLoaded } = useAuth();
+  const { login, isLoaded, loginError } = useAuth();
   const { width, height } = useWindowDimensions();
   const [loading, setLoading] = useState(false);
   const accent = "#00FFC2";
@@ -158,6 +158,34 @@ export default function SignInScreen() {
         >
           {"// secure login · no password needed"}
         </MonoText>
+
+        {loginError ? (
+          <View
+            style={{
+              marginTop: 16,
+              paddingHorizontal: 16,
+              paddingVertical: 10,
+              borderRadius: 10,
+              backgroundColor: "rgba(255,80,80,0.10)",
+              borderWidth: 1,
+              borderColor: "rgba(255,80,80,0.35)",
+              maxWidth: 320,
+              width: "100%",
+            }}
+          >
+            <Text
+              style={{
+                color: "#FF6B6B",
+                fontSize: 12,
+                textAlign: "center",
+                fontFamily: "Inter_400Regular",
+                lineHeight: 18,
+              }}
+            >
+              {loginError}
+            </Text>
+          </View>
+        ) : null}
       </View>
     </View>
   );
