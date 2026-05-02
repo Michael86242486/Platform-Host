@@ -669,6 +669,10 @@ function OverviewTab({
           restorePending={restoreCheckpointPending}
         />
       ) : null}
+
+      {checkpoints.length > 0 ? (
+        <IntelTimelineSection site={site} accent={accent} colors={colors} />
+      ) : null}
     </ScrollView>
   );
 }
@@ -800,6 +804,303 @@ function CheckpointsSection({
           </View>
         ))}
       </View>
+    </Surface>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Intel quality timeline section (shown in Overview tab)
+// ---------------------------------------------------------------------------
+
+type TimelineEntry =
+  | { id: string; label: string; createdAt: string; progress: number; hasFiles: false }
+  | { id: string; label: string; createdAt: string; progress: number; hasFiles: true; grade: string; overall: number; scores: { seo: number; a11y: number; perf: number; mobile: number; code: number } };
+
+function relTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 2) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+const CAT_KEYS: (keyof NonNullable<Extract<TimelineEntry, { hasFiles: true }>["scores"]>)[] = [
+  "seo", "a11y", "perf", "mobile", "code",
+];
+
+function TimelineCard({
+  entry,
+  prev,
+  idx,
+  accent,
+  colors,
+}: {
+  entry: TimelineEntry;
+  prev: TimelineEntry | null;
+  idx: number;
+  accent: string;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const [displayed, setDisplayed] = useState(0);
+  const started = useRef(false);
+  const score = entry.hasFiles ? entry.overall : 0;
+  const grade = entry.hasFiles ? entry.grade : "—";
+
+  useEffect(() => {
+    if (started.current || !entry.hasFiles) return;
+    started.current = true;
+    const delay = setTimeout(() => {
+      const total = 45;
+      let f = 0;
+      const tick = setInterval(() => {
+        f++;
+        setDisplayed(Math.round(score * (1 - Math.pow(1 - f / total, 3))));
+        if (f >= total) { clearInterval(tick); setDisplayed(score); }
+      }, 1000 / 60);
+    }, idx * 80);
+    return () => clearTimeout(delay);
+  }, [score, idx, entry.hasFiles]);
+
+  const gc = entry.hasFiles ? gradeColor(entry.grade) : colors.mutedForeground;
+  const r = 26; const sw = 5; const size = (r + sw) * 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - displayed / 100);
+  const cx = size / 2; const cy = size / 2;
+
+  const prevOverall = prev && prev.hasFiles ? prev.overall : null;
+  const trend = prevOverall !== null && entry.hasFiles
+    ? entry.overall > prevOverall ? "up" : entry.overall < prevOverall ? "down" : "flat"
+    : null;
+
+  return (
+    <View
+      style={{
+        width: 120,
+        backgroundColor: colors.surface,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: entry.hasFiles ? `${gc}40` : colors.border,
+        padding: 12,
+        alignItems: "center",
+        gap: 6,
+      }}
+    >
+      {/* checkpoint number badge */}
+      <View style={{ position: "absolute", top: 8, left: 8 }}>
+        <Text style={{ color: colors.mutedForeground, fontSize: 9, fontWeight: "700" }}>#{idx + 1}</Text>
+      </View>
+
+      {/* trend arrow */}
+      {trend && (
+        <View style={{ position: "absolute", top: 7, right: 8 }}>
+          <Feather
+            name={trend === "up" ? "trending-up" : trend === "down" ? "trending-down" : "minus"}
+            size={10}
+            color={trend === "up" ? "#00FFC2" : trend === "down" ? "#FF6B6B" : colors.mutedForeground}
+          />
+        </View>
+      )}
+
+      {/* Score ring */}
+      <View style={{ alignItems: "center", justifyContent: "center", marginTop: 6 }}>
+        <Svg width={size} height={size}>
+          <Circle cx={cx} cy={cy} r={r} stroke="#ffffff0D" strokeWidth={sw} fill="none" />
+          {entry.hasFiles && (
+            <Circle
+              cx={cx} cy={cy} r={r}
+              stroke={gc}
+              strokeWidth={sw}
+              fill="none"
+              strokeDasharray={circ}
+              strokeDashoffset={offset}
+              strokeLinecap="round"
+              transform={`rotate(-90, ${cx}, ${cy})`}
+            />
+          )}
+        </Svg>
+        <View style={{ position: "absolute", alignItems: "center" }}>
+          <Text style={{ color: gc, fontSize: entry.hasFiles ? 20 : 16, fontWeight: "800" }}>{grade}</Text>
+        </View>
+      </View>
+
+      {/* Overall score */}
+      {entry.hasFiles ? (
+        <Text style={{ color: colors.foreground, fontSize: 11, fontWeight: "700" }}>{entry.overall}/100</Text>
+      ) : (
+        <Text style={{ color: colors.mutedForeground, fontSize: 10 }}>no scan</Text>
+      )}
+
+      {/* Label */}
+      <Text numberOfLines={2} style={{ color: colors.foreground, fontSize: 10, fontWeight: "600", textAlign: "center", lineHeight: 14 }}>
+        {entry.label}
+      </Text>
+
+      {/* Time */}
+      <Text style={{ color: colors.mutedForeground, fontSize: 9 }}>{relTime(entry.createdAt)}</Text>
+
+      {/* Category dots */}
+      {entry.hasFiles ? (
+        <View style={{ flexDirection: "row", gap: 4, marginTop: 2 }}>
+          {CAT_KEYS.map((k) => (
+            <View
+              key={k}
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: 5,
+                backgroundColor: scoreColor(entry.scores[k]),
+                opacity: 0.85,
+              }}
+            />
+          ))}
+        </View>
+      ) : (
+        <View style={{ flexDirection: "row", gap: 4, marginTop: 2 }}>
+          {CAT_KEYS.map((k) => (
+            <View key={k} style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: colors.border }} />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function IntelTimelineSection({
+  site,
+  accent,
+  colors,
+}: {
+  site: Site;
+  accent: string;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const { getToken } = useAuth();
+  const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+  const [timeline, setTimeline] = useState<TimelineEntry[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setLoading(true);
+      try {
+        const token = await getToken();
+        const res = await fetch(`${apiBase}/api/sites/${site.id}/checkpoints/timeline`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (cancelled) return;
+        if (!res.ok) { setError(`HTTP ${res.status}`); return; }
+        const data = await res.json() as { timeline: TimelineEntry[] };
+        setTimeline(data.timeline);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "failed");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [site.id]);
+
+  if (loading) {
+    return (
+      <Surface padded style={{ marginTop: 16, gap: 12 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Feather name="activity" size={14} color={colors.mutedForeground} />
+          <MonoText style={{ color: colors.mutedForeground, fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase" }}>
+            Quality Timeline
+          </MonoText>
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingVertical: 4 }}>
+          {[0, 1, 2].map((i) => (
+            <View key={i} style={{ width: 120, height: 180, backgroundColor: colors.cardElevated, borderRadius: 16, borderWidth: 1, borderColor: colors.border, opacity: 0.5 - i * 0.12 }} />
+          ))}
+        </ScrollView>
+      </Surface>
+    );
+  }
+
+  if (error || !timeline || timeline.length === 0) return null;
+
+  const withScores = timeline.filter((t) => t.hasFiles);
+  if (withScores.length === 0) return null;
+
+  const firstScore = (withScores[0] as Extract<TimelineEntry, { hasFiles: true }>).overall;
+  const lastScore = (withScores[withScores.length - 1] as Extract<TimelineEntry, { hasFiles: true }>).overall;
+  const delta = lastScore - firstScore;
+
+  return (
+    <Surface padded style={{ marginTop: 16, gap: 12 }}>
+      {/* Header */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Feather name="activity" size={14} color={accent} />
+        <MonoText style={{ color: colors.mutedForeground, fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase", flex: 1 }}>
+          Quality Timeline
+        </MonoText>
+        {withScores.length > 1 && (
+          <View style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 4,
+            paddingHorizontal: 8,
+            paddingVertical: 3,
+            borderRadius: 999,
+            backgroundColor: delta >= 0 ? "#00FFC218" : "#FF6B6B18",
+          }}>
+            <Feather
+              name={delta > 0 ? "trending-up" : delta < 0 ? "trending-down" : "minus"}
+              size={11}
+              color={delta > 0 ? "#00FFC2" : delta < 0 ? "#FF6B6B" : colors.mutedForeground}
+            />
+            <Text style={{ color: delta > 0 ? "#00FFC2" : delta < 0 ? "#FF6B6B" : colors.mutedForeground, fontSize: 11, fontWeight: "700" }}>
+              {delta > 0 ? "+" : ""}{delta} pts
+            </Text>
+          </View>
+        )}
+      </View>
+
+      {/* Category legend */}
+      <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+        {[
+          { key: "seo", label: "SEO" },
+          { key: "a11y", label: "A11y" },
+          { key: "perf", label: "Spd" },
+          { key: "mobile", label: "Mob" },
+          { key: "code", label: "Code" },
+        ].map((c) => (
+          <View key={c.key} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: accent + "80" }} />
+            <Text style={{ color: colors.mutedForeground, fontSize: 9 }}>{c.label}</Text>
+          </View>
+        ))}
+      </View>
+
+      {/* Cards */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 8, paddingVertical: 4, paddingHorizontal: 2 }}
+      >
+        {timeline.map((entry, idx) => (
+          <TimelineCard
+            key={entry.id}
+            entry={entry}
+            prev={idx > 0 ? timeline[idx - 1] : null}
+            idx={idx}
+            accent={accent}
+            colors={colors}
+          />
+        ))}
+      </ScrollView>
+
+      {/* Bottom summary */}
+      {withScores.length > 1 && (
+        <Text style={{ color: colors.mutedForeground, fontSize: 11, textAlign: "center" }}>
+          {withScores.length} builds scanned · scores from {firstScore} → {lastScore}
+        </Text>
+      )}
     </Surface>
   );
 }

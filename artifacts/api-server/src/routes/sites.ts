@@ -937,6 +937,36 @@ router.get("/sites/:id/analyze", requireAuth, async (req, res) => {
 });
 
 /**
+ * GET /sites/:id/checkpoints/timeline
+ *
+ * Returns every checkpoint for the site with its Intel quality scores so the
+ * client can render a visual "how quality evolved across builds" timeline.
+ * Checkpoints without saved files get hasFiles:false and no scores.
+ */
+router.get("/sites/:id/checkpoints/timeline", requireAuth, async (req, res) => {
+  const [site] = await db
+    .select({ checkpoints: sitesTable.checkpoints })
+    .from(sitesTable)
+    .where(and(eq(sitesTable.id, String(req.params.id)), eq(sitesTable.userId, req.user!.id)))
+    .limit(1);
+  if (!site) { res.status(404).json({ error: "not_found" }); return; }
+
+  type RawCp = { id: string; label: string; createdAt: string; progress: number; files?: Record<string, string> };
+  const checkpoints = ((site.checkpoints ?? []) as RawCp[]);
+
+  const timeline = checkpoints.map((cp) => {
+    const files = cp.files as Record<string, string> | undefined;
+    if (!files || Object.keys(files).length === 0) {
+      return { id: cp.id, label: cp.label, createdAt: cp.createdAt, progress: cp.progress, hasFiles: false as const };
+    }
+    const { grade, overall, scores } = analyzeSiteFiles(files);
+    return { id: cp.id, label: cp.label, createdAt: cp.createdAt, progress: cp.progress, hasFiles: true as const, grade, overall, scores };
+  });
+
+  res.json({ timeline });
+});
+
+/**
  * Re-upload an already-built site to Puter. Used to recover sites whose first
  * Puter upload failed (e.g. legacy `wf-` rows from before the API was fixed,
  * or transient network errors). Does NOT regenerate any HTML — it just takes
