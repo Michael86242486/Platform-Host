@@ -3272,10 +3272,10 @@ function FakeBrowser({ site, accent }: { site: Site; accent: string }) {
 }
 
 const RETRY_MODELS = [
-  { value: "openai/gpt-5.1-codex-mini", label: "Codex Mini",   hint: "Fastest · free" },
-  { value: "openai/gpt-5.1-codex",      label: "Codex 5.1",    hint: "Balanced · free" },
   { value: "openai/gpt-5.3-codex",      label: "Codex 5.3",    hint: "Most capable · free" },
-  { value: "openai/gpt-4o-mini",        label: "GPT-4o Mini",  hint: "Fast" },
+  { value: "openai/gpt-5.1-codex",      label: "Codex 5.1",    hint: "Balanced · free" },
+  { value: "openai/gpt-5.1-codex-mini", label: "Codex Mini",   hint: "Fastest · free" },
+  { value: "openai/gpt-4o-mini",        label: "GPT-4o Mini",  hint: "Fallback" },
   { value: "openai/gpt-4o",             label: "GPT-4o",       hint: "High quality" },
 ] as const;
 
@@ -3292,7 +3292,7 @@ function BlurOverlay({
   const { width } = useWindowDimensions();
   const pulse = useRef(new Animated.Value(0)).current;
 
-  const siteModel = (site as unknown as { model?: string | null }).model ?? "openai/gpt-5.1-codex-mini";
+  const siteModel = (site as unknown as { model?: string | null }).model ?? "openai/gpt-5.3-codex";
   const isQuota   = site.error === "quota_exhausted";
   const isOffline = site.error === "agent_offline";
 

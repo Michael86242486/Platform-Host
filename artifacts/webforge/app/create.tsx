@@ -100,7 +100,7 @@ export default function CreateScreen() {
   const [activeSiteId, setActiveSiteId] = useState<string | null>(
     typeof params.siteId === "string" ? params.siteId : null,
   );
-  const [selectedModel, setSelectedModel] = useState("openai/gpt-5.1-codex-mini");
+  const [selectedModel, setSelectedModel] = useState("openai/gpt-5.3-codex");
   const [showPreview, setShowPreview] = useState(true);
 
   const create = useCreateSite();
@@ -436,11 +436,11 @@ export default function CreateScreen() {
 // ---------------------------------------------------------------------------
 
 const BUILD_MODELS: { value: string; label: string; hint: string }[] = [
-  { value: "openai/gpt-4o-mini",        label: "GPT-4o Mini",  hint: "Fast · default" },
-  { value: "openai/gpt-4o",             label: "GPT-4o",       hint: "High quality" },
   { value: "openai/gpt-5.3-codex",      label: "Codex 5.3",    hint: "Most capable · free" },
   { value: "openai/gpt-5.1-codex",      label: "Codex 5.1",    hint: "Balanced · free" },
   { value: "openai/gpt-5.1-codex-mini", label: "Codex Mini",   hint: "Fastest · free" },
+  { value: "openai/gpt-4o-mini",        label: "GPT-4o Mini",  hint: "Fallback" },
+  { value: "openai/gpt-4o",             label: "GPT-4o",       hint: "High quality" },
 ];
 
 function ModelSelector({
