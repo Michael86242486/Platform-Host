@@ -115,6 +115,14 @@ class TelegramBotManager {
     string,
     { token: string; username: string; displayName: string | null }
   >();
+  /**
+   * Per-chat conversation history for free-chat mode.
+   * Key: chatId (string). Value: sliding window of last 24 turns.
+   */
+  private chatHistory = new Map<
+    string,
+    Array<{ role: "user" | "assistant"; content: string }>
+  >();
 
   async startAll(): Promise<void> {
     const bots = await db
@@ -1539,12 +1547,14 @@ class TelegramBotManager {
       return;
     }
 
-    // Fallback: just chat back.
-    await bot.sendMessage(
-      chatId,
-      intent.reply ??
-        "Hey! Tell me what to build (e.g. \"a coffee shop landing page\") or /help for commands.",
-    );
+    if (intent.action === "image") {
+      const prompt = intent.prompt ?? text;
+      await this.runImage(bot, chatId, prompt);
+      return;
+    }
+
+    // Free chat — use persistent conversation history + WebForge personality AI.
+    await this.sendChatReply(userId, bot, chatId, text, sites);
   }
 
   private async classifyIntent(
@@ -1557,6 +1567,7 @@ class TelegramBotManager {
       | "status"
       | "preview"
       | "list_sites"
+      | "image"
       | "chat";
     siteId?: string;
     prompt?: string;
@@ -1579,11 +1590,12 @@ Possible actions:
 - "status": user is asking about progress on a site. Provide "siteId".
 - "preview": user wants the live link to a site. Provide "siteId".
 - "list_sites": user wants to see all their sites.
-- "chat": small talk, greeting, or ambiguous. Provide "reply" (warm, helpful, short, suggest what they could do).
+- "image": user wants to generate an image (says "draw", "paint", "generate an image", "picture of", "create an image", "make a photo", "render", "sketch", "illustrate", etc). Provide "prompt" with the image description.
+- "chat": anything else — questions, advice, small talk, writing help, code help, brainstorming. DO NOT provide a reply here; leave it null so the chat AI handles it with full context.
 
 Schema:
 {
-  "action": "create"|"edit"|"status"|"preview"|"list_sites"|"chat",
+  "action": "create"|"edit"|"status"|"preview"|"list_sites"|"image"|"chat",
   "siteId"?: string,
   "prompt"?: string,
   "instructions"?: string,
@@ -1593,7 +1605,8 @@ Schema:
 Rules:
 - Only set "siteId" to an id from the user's sites context.
 - If unsure between create and edit, prefer "chat" with a clarifying reply.
-- Replies should be ≤ 2 sentences, warm, lowercase-ish like a friend who builds.`;
+- For "chat" action, always leave "reply" null/omitted — the chat AI will respond.
+- For "image" action, extract a clean image description into "prompt".`;
 
     try {
       const messages: PuterAIMessage[] = [
@@ -1620,6 +1633,68 @@ Rules:
         reply:
           "I didn't catch that. Tell me what to build — e.g. \"a portfolio for a wedding photographer\".",
       };
+    }
+  }
+
+  // ── Free-chat AI ────────────────────────────────────────────────────────────
+
+  private async sendChatReply(
+    userId: string,
+    bot: TelegramBot,
+    chatId: number,
+    userText: string,
+    sites: Site[],
+  ): Promise<void> {
+    const key = String(chatId);
+
+    // Build sliding history (max 24 messages = 12 turns)
+    const history = this.chatHistory.get(key) ?? [];
+    history.push({ role: "user", content: userText });
+    if (history.length > 24) history.splice(0, history.length - 24);
+    this.chatHistory.set(key, history);
+
+    // Sites context for the system prompt
+    const sitesCtx = sites.length > 0
+      ? `\n\nUser's sites (for context):\n${sites.map((s) => `- "${s.name}" (${s.status}) — ${s.prompt.slice(0, 100)}`).join("\n")}`
+      : "\n\nUser has no sites yet.";
+
+    const system = `You are WebForge — a sharp, friendly AI assistant living inside Telegram. You help users build websites, generate code, write copy, brainstorm ideas, answer questions, and have real conversations.
+
+Personality: warm, direct, technically precise. You don't pad answers. You use Telegram Markdown (bold with *asterisks*, inline code with \`backticks\`, code blocks with triple backticks).
+
+You know the user can:
+- Build a site by just describing it (you'll route it)
+- Say "draw me …" or "generate an image of …" to create images
+- Use /improve, /compare, /stats to analyse their sites
+- Use /edit <name> to update any site with AI${sitesCtx}
+
+Keep replies concise — this is a chat, not a doc. For code, use fenced blocks. If a question leads naturally to building something, suggest it at the end with a light nudge.`;
+
+    const typing = bot.sendChatAction(chatId, "typing").catch(() => {});
+
+    try {
+      const messages: PuterAIMessage[] = [
+        { role: "system", content: system },
+        ...history.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: userText },
+      ];
+      const reply = await puterAIComplete(messages, { model: "gpt-4o-mini" });
+      await typing;
+
+      // Store assistant reply in history
+      history.push({ role: "assistant", content: reply });
+      if (history.length > 24) history.splice(0, history.length - 24);
+      this.chatHistory.set(key, history);
+
+      await bot.sendMessage(chatId, reply, { parse_mode: "Markdown" });
+    } catch (err) {
+      await typing;
+      logger.warn({ err: String(err) }, "sendChatReply failed");
+      await bot.sendMessage(
+        chatId,
+        "🤖 I'm having trouble reaching the AI right now. Try again in a moment — or use `/help` to see what I can do.",
+        { parse_mode: "Markdown" },
+      );
     }
   }
 
@@ -1667,6 +1742,8 @@ Rules:
       "",
       "*Extras*",
       "🎨  `/image <prompt>` — Generate an image from text",
+      "💬  `Just type anything` — Free chat: ask questions, get code, write copy, brainstorm",
+      "🖼  `draw me a …` — Generate an image without using `/image`",
       "🩺  `/debug` — Self-diagnostic report",
       "❓  `/help` — This guide",
       "✗  `/cancel` — Cancel current action",
