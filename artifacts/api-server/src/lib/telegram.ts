@@ -899,7 +899,7 @@ class TelegramBotManager {
     });
 
     bot.onText(/^\/cancel\b/i, async (msg) => {
-      const had = this.state.has(msg.chat.id);
+      const had = this.state.has(String(msg.chat.id));
       this.clearState(msg.chat.id);
       await bot.sendMessage(
         msg.chat.id,

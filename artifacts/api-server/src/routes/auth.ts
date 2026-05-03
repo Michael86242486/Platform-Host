@@ -2,6 +2,7 @@ import * as oidc from "openid-client";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { logger } from "../lib/logger";
 import {
   clearSession,
   getOidcConfig,
@@ -9,6 +10,7 @@ import {
   createSession,
   deleteSession,
   getSession,
+  updateSession,
   SESSION_COOKIE,
   SESSION_TTL,
   ISSUER_URL,
@@ -259,7 +261,9 @@ router.post("/mobile-auth/token-exchange", async (req: Request, res: Response) =
     const sid = await createSession(sessionData);
     res.json({ token: sid });
   } catch (err) {
-    res.status(500).json({ error: "Token exchange failed" });
+    logger.error({ err }, "token-exchange failed");
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: "Token exchange failed", detail: msg });
   }
 });
 
