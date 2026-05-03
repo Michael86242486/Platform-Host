@@ -559,42 +559,6 @@ export type PuterAIMessage = {
   content: string;
 };
 
-// Anonymous "SDK" session — mirrors what the Puter JS SDK does for unauthed web apps.
-// Used as a transparent fallback when the main account hits quota (402).
-let cachedSDKAuth: CachedAuth | null = null;
-
-/**
- * Create a temporary anonymous Puter account and cache its token.
- * Each anonymous account gets its own free AI allocation, separate from the
- * user account's credits.
- */
-async function getSDKToken(): Promise<string> {
-  if (cachedSDKAuth && cachedSDKAuth.expiresAt > Date.now() + 60_000) {
-    return cachedSDKAuth.token;
-  }
-  const hex = crypto.randomBytes(6).toString("hex");
-  const username = `wf_sdk_${hex}`;
-  const password = crypto.randomBytes(16).toString("hex");
-  const email = `${username}@temp.webforge.app`;
-
-  const res = await fetch(`${PUTER_API}/signup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password, email, is_temp: true }),
-  });
-  const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    throw new Error(`Puter SDK signup failed (${res.status}): ${text.slice(0, 200)}`);
-  }
-  let data: { token?: string } = {};
-  try { data = JSON.parse(text); } catch { /* noop */ }
-  if (!data.token) throw new Error("Puter SDK signup returned no token");
-
-  cachedSDKAuth = { token: data.token, username, expiresAt: Date.now() + 60 * 60 * 1000 };
-  logger.info({ username }, "puter: created anonymous SDK session");
-  return data.token;
-}
-
 function isQuotaResponse(errBody: string): boolean {
   return errBody.includes("insufficient_funds");
 }
@@ -698,8 +662,8 @@ async function rawComplete(
 
 /**
  * Non-streaming Puter AI completion.
- * Transparently falls back to an anonymous SDK session if the account
- * hits quota (402 insufficient_funds) — same model, different credit pool.
+ * On 402 insufficient_funds the error bubbles up with errBody intact so
+ * llm-generator can detect it as a quota error and show the model picker.
  */
 export async function puterAIComplete(
   messages: PuterAIMessage[],
@@ -707,24 +671,13 @@ export async function puterAIComplete(
 ): Promise<string> {
   const model = opts.model ?? "gpt-4o-mini";
   const { token } = await getAuth();
-  try {
-    return await rawComplete(token, messages, model, opts.jsonMode ?? false);
-  } catch (err) {
-    const errBody = (err as { errBody?: string }).errBody ?? String(err);
-    if (isQuotaResponse(errBody)) {
-      logger.warn({ model }, "puter: user quota exhausted — retrying with anonymous SDK session");
-      cachedSDKAuth = null;
-      const sdkToken = await getSDKToken();
-      return await rawComplete(sdkToken, messages, model, opts.jsonMode ?? false);
-    }
-    throw err;
-  }
+  return rawComplete(token, messages, model, opts.jsonMode ?? false);
 }
 
 /**
  * Streaming Puter AI completion.
- * Transparently falls back to an anonymous SDK session if the account
- * hits quota (402 insufficient_funds) — same model, different credit pool.
+ * On 402 insufficient_funds the error bubbles up with errBody intact so
+ * llm-generator can detect it as a quota error and show the model picker.
  */
 export async function puterAIStream(
   messages: PuterAIMessage[],
@@ -733,19 +686,7 @@ export async function puterAIStream(
 ): Promise<string> {
   const model = opts.model ?? "gpt-4o-mini";
   const { token } = await getAuth();
-  try {
-    return await rawStream(token, messages, model, onChunk);
-  } catch (err) {
-    const errBody = (err as { errBody?: string }).errBody ?? String(err);
-    if (isQuotaResponse(errBody)) {
-      logger.warn({ model }, "puter: user quota exhausted — retrying stream with anonymous SDK session");
-      cachedSDKAuth = null;
-      const sdkToken = await getSDKToken();
-      logger.info({ model }, "puter: SDK fallback stream started");
-      return await rawStream(sdkToken, messages, model, onChunk);
-    }
-    throw err;
-  }
+  return rawStream(token, messages, model, onChunk);
 }
 
 /** A self-test used by the /api/health route to surface Puter readiness. */
