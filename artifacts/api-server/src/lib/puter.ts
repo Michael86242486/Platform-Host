@@ -559,31 +559,172 @@ export type PuterAIMessage = {
   content: string;
 };
 
+// Anonymous "SDK" session — mirrors what the Puter JS SDK does for unauthed web apps.
+// Used as a transparent fallback when the main account hits quota (402).
+let cachedSDKAuth: CachedAuth | null = null;
+
+/**
+ * Create a temporary anonymous Puter account and cache its token.
+ * Each anonymous account gets its own free AI allocation, separate from the
+ * user account's credits.
+ */
+async function getSDKToken(): Promise<string> {
+  if (cachedSDKAuth && cachedSDKAuth.expiresAt > Date.now() + 60_000) {
+    return cachedSDKAuth.token;
+  }
+  const hex = crypto.randomBytes(6).toString("hex");
+  const username = `wf_sdk_${hex}`;
+  const password = crypto.randomBytes(16).toString("hex");
+  const email = `${username}@temp.webforge.app`;
+
+  const res = await fetch(`${PUTER_API}/signup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, email, is_temp: true }),
+  });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    throw new Error(`Puter SDK signup failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+  let data: { token?: string } = {};
+  try { data = JSON.parse(text); } catch { /* noop */ }
+  if (!data.token) throw new Error("Puter SDK signup returned no token");
+
+  cachedSDKAuth = { token: data.token, username, expiresAt: Date.now() + 60 * 60 * 1000 };
+  logger.info({ username }, "puter: created anonymous SDK session");
+  return data.token;
+}
+
+function isQuotaResponse(errBody: string): boolean {
+  return errBody.includes("insufficient_funds");
+}
+
+/** Shared SSE reader — same model/stream logic for both token types. */
+async function readSSEStream(
+  res: Response,
+  onChunk: (text: string) => void,
+): Promise<string> {
+  if (!res.body) throw new Error("Puter AI stream: no response body");
+  const decoder = new TextDecoder();
+  let full = "";
+  let sseBuffer = "";
+  const reader = res.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+      const lines = sseBuffer.split("\n");
+      sseBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const data = trimmed.slice(6).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(data) as Record<string, unknown>;
+          const delta =
+            (parsed["text"] as string | undefined) ??
+            ((parsed["choices"] as Array<{ delta?: { content?: string } }>)?.[0]?.delta?.content) ??
+            "";
+          if (delta) { full += delta; onChunk(delta); }
+        } catch { /* ignore malformed SSE lines */ }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return full;
+}
+
+/** Raw streaming drivers/call with an explicit bearer token. */
+async function rawStream(
+  token: string,
+  messages: PuterAIMessage[],
+  model: string,
+  onChunk: (text: string) => void,
+): Promise<string> {
+  const res = await fetch(`${PUTER_API}/drivers/call`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      interface: "puter-chat-completion",
+      method: "complete",
+      args: { messages, model, stream: true },
+    }),
+  });
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) cachedAuth = null;
+    const errBody = await res.text().catch(() => "");
+    throw Object.assign(
+      new Error(`Puter AI stream failed (${res.status}): ${errBody.slice(0, 200)}`),
+      { status: res.status, errBody },
+    );
+  }
+  return readSSEStream(res, onChunk);
+}
+
+/** Raw non-streaming drivers/call with an explicit bearer token. */
+async function rawComplete(
+  token: string,
+  messages: PuterAIMessage[],
+  model: string,
+  jsonMode: boolean,
+): Promise<string> {
+  const args: Record<string, unknown> = { messages, model };
+  if (jsonMode) args["response_format"] = { type: "json_object" };
+  const res = await fetch(`${PUTER_API}/drivers/call`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ interface: "puter-chat-completion", method: "complete", args }),
+  });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) cachedAuth = null;
+    throw Object.assign(
+      new Error(`Puter AI complete failed (${res.status}): ${text.slice(0, 200)}`),
+      { status: res.status, errBody: text },
+    );
+  }
+  let parsed: { success?: boolean; result?: { message?: { content?: string } } } = {};
+  try { parsed = JSON.parse(text); } catch { /* noop */ }
+  if (parsed.success === false) {
+    throw Object.assign(new Error(`Puter AI failed: ${text.slice(0, 200)}`), { status: res.status, errBody: text });
+  }
+  const content = parsed.result?.message?.content ?? "";
+  if (!content) throw new Error("Puter AI returned empty content");
+  return content;
+}
+
 /**
  * Non-streaming Puter AI completion.
- * Uses the puter-chat-completion driver (no OpenAI key required).
+ * Transparently falls back to an anonymous SDK session if the account
+ * hits quota (402 insufficient_funds) — same model, different credit pool.
  */
 export async function puterAIComplete(
   messages: PuterAIMessage[],
   opts: { model?: string; jsonMode?: boolean } = {},
 ): Promise<string> {
   const model = opts.model ?? "gpt-4o-mini";
-  const args: Record<string, unknown> = { messages, model };
-  if (opts.jsonMode) args["response_format"] = { type: "json_object" };
-
-  const result = await callDriver<{
-    message?: { content?: string; role?: string };
-    finish_reason?: string;
-  }>("puter-chat-completion", "complete", args);
-
-  const content = result?.message?.content ?? "";
-  if (!content) throw new Error("Puter AI returned empty content");
-  return content;
+  const { token } = await getAuth();
+  try {
+    return await rawComplete(token, messages, model, opts.jsonMode ?? false);
+  } catch (err) {
+    const errBody = (err as { errBody?: string }).errBody ?? String(err);
+    if (isQuotaResponse(errBody)) {
+      logger.warn({ model }, "puter: user quota exhausted — retrying with anonymous SDK session");
+      cachedSDKAuth = null;
+      const sdkToken = await getSDKToken();
+      return await rawComplete(sdkToken, messages, model, opts.jsonMode ?? false);
+    }
+    throw err;
+  }
 }
 
 /**
- * Streaming Puter AI completion. Calls onChunk for each text delta and
- * returns the full concatenated content when the stream ends.
+ * Streaming Puter AI completion.
+ * Transparently falls back to an anonymous SDK session if the account
+ * hits quota (402 insufficient_funds) — same model, different credit pool.
  */
 export async function puterAIStream(
   messages: PuterAIMessage[],
@@ -591,77 +732,20 @@ export async function puterAIStream(
   opts: { model?: string } = {},
 ): Promise<string> {
   const model = opts.model ?? "gpt-4o-mini";
-  const auth = await getAuth();
-
-  const res = await fetch(`${PUTER_API}/drivers/call`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${auth.token}`,
-    },
-    body: JSON.stringify({
-      interface: "puter-chat-completion",
-      method: "complete",
-      args: { messages, model, stream: true },
-    }),
-  });
-
-  if (!res.ok || !res.body) {
-    if (res.status === 401 || res.status === 403) {
-      cachedAuth = null;
-    }
-    const text = await res.text().catch(() => "");
-    throw new Error(
-      `Puter AI stream failed (${res.status}): ${text.slice(0, 200)}`,
-    );
-  }
-
-  const decoder = new TextDecoder();
-  let full = "";
-  let sseBuffer = "";
-
-  const reader = res.body.getReader();
+  const { token } = await getAuth();
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      sseBuffer += decoder.decode(value, { stream: true });
-
-      const lines = sseBuffer.split("\n");
-      sseBuffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
-        const data = trimmed.slice(6).trim();
-        if (data === "[DONE]") continue;
-
-        try {
-          const parsed = JSON.parse(data) as Record<string, unknown>;
-          // Handle Puter native format: { text: "..." }
-          // Also handle OpenAI-compat format: { choices: [{ delta: { content: "..." } }] }
-          const delta =
-            (parsed["text"] as string | undefined) ??
-            ((
-              (parsed["choices"] as Array<{
-                delta?: { content?: string };
-              }>)?.[0]?.delta?.content
-            ) as string | undefined) ??
-            "";
-          if (delta) {
-            full += delta;
-            onChunk(delta);
-          }
-        } catch {
-          /* ignore malformed SSE lines */
-        }
-      }
+    return await rawStream(token, messages, model, onChunk);
+  } catch (err) {
+    const errBody = (err as { errBody?: string }).errBody ?? String(err);
+    if (isQuotaResponse(errBody)) {
+      logger.warn({ model }, "puter: user quota exhausted — retrying stream with anonymous SDK session");
+      cachedSDKAuth = null;
+      const sdkToken = await getSDKToken();
+      logger.info({ model }, "puter: SDK fallback stream started");
+      return await rawStream(sdkToken, messages, model, onChunk);
     }
-  } finally {
-    reader.releaseLock();
+    throw err;
   }
-
-  return full;
 }
 
 /** A self-test used by the /api/health route to surface Puter readiness. */
