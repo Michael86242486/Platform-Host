@@ -33,7 +33,7 @@ import {
 
 export type { BuildQualityReport };
 
-const CODEX_MODEL = "openai/gpt-5.3-codex";
+const CODEX_MODEL = "openai/gpt-5.1-codex-mini";
 
 // ---------------------------------------------------------------------------
 // PHASE 0 — Research / design inspiration

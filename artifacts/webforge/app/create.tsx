@@ -100,7 +100,7 @@ export default function CreateScreen() {
   const [activeSiteId, setActiveSiteId] = useState<string | null>(
     typeof params.siteId === "string" ? params.siteId : null,
   );
-  const [selectedModel, setSelectedModel] = useState("openai/gpt-5.3-codex");
+  const [selectedModel, setSelectedModel] = useState("openai/gpt-5.1-codex-mini");
   const [showPreview, setShowPreview] = useState(true);
 
   const create = useCreateSite();

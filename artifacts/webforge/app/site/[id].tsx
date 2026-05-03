@@ -3292,7 +3292,7 @@ function BlurOverlay({
   const { width } = useWindowDimensions();
   const pulse = useRef(new Animated.Value(0)).current;
 
-  const siteModel = (site as unknown as { model?: string | null }).model ?? "openai/gpt-5.3-codex";
+  const siteModel = (site as unknown as { model?: string | null }).model ?? "openai/gpt-5.1-codex-mini";
   const isQuota   = site.error === "quota_exhausted";
   const isOffline = site.error === "agent_offline";
 
