@@ -502,6 +502,11 @@ router.post("/sites/:id/retry", requireAuth, async (req, res) => {
     res.status(404).json({ error: "not_found" });
     return;
   }
+  // Optional model override — lets the user switch models on retry
+  const { model } = req.body as { model?: string };
+  if (model && typeof model === "string") {
+    await db.update(sitesTable).set({ model }).where(eq(sitesTable.id, site.id));
+  }
   // Re-run analysis if there is no plan yet, otherwise re-build.
   const kind = site.plan ? "retry" : "analyze";
   const [job] = await db
@@ -512,7 +517,7 @@ router.post("/sites/:id/retry", requireAuth, async (req, res) => {
       kind,
       status: "queued",
       progress: 0,
-      message: "Queued",
+      message: model ? `Queued with ${model}` : "Queued",
     })
     .returning();
   await db
@@ -520,7 +525,7 @@ router.post("/sites/:id/retry", requireAuth, async (req, res) => {
     .set({
       status: "queued",
       progress: 0,
-      message: "Queued for retry",
+      message: model ? `Switching to ${model} — retrying…` : "Queued for retry",
       error: null,
       updatedAt: new Date(),
     })

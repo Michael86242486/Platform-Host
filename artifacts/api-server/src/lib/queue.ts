@@ -160,9 +160,10 @@ class JobQueue {
     } catch (err) {
       logger.error({ err, jobId: job.id }, "Job failed");
       const isOffline = err instanceof AgentUnavailableError;
-      await this.failJob(job, isOffline ? "agent_offline" : (err instanceof Error ? err.message : "Unknown error"));
-      if (isOffline) {
-        // Auto-retry after 3 minutes — agent outages are usually transient
+      const isQuota = isOffline && (err as AgentUnavailableError).isQuotaError;
+      await this.failJob(job, isQuota ? "quota_exhausted" : isOffline ? "agent_offline" : (err instanceof Error ? err.message : "Unknown error"));
+      if (isOffline && !isQuota) {
+        // Auto-retry after 3 minutes — transient outages only (not quota exhaustion)
         void this.scheduleRetry(job, 3 * 60_000);
       }
     }
@@ -575,8 +576,11 @@ class JobQueue {
 
   private async failJob(job: Job, message: string): Promise<void> {
     const isOffline = message === "agent_offline";
+    const isQuota = message === "quota_exhausted";
     const userMessage = isOffline
       ? "Agent temporarily offline — auto-retrying in 3 minutes…"
+      : isQuota
+      ? "Model quota exhausted — retry with a different model"
       : message;
     await db.update(jobsTable).set({ status: "failed", message: userMessage, finishedAt: new Date() }).where(eq(jobsTable.id, job.id));
     await db.update(sitesTable).set({ status: "failed", error: message, message: userMessage, updatedAt: new Date() }).where(eq(sitesTable.id, job.siteId));
@@ -584,6 +588,8 @@ class JobQueue {
       job.userId, job.siteId, "build_failed",
       isOffline
         ? "🤖 Agent temporarily offline — will auto-retry in 3 minutes."
+        : isQuota
+        ? "⚡ Model quota exhausted — pick a different model and retry."
         : `Build failed: ${message}`,
       null,
     );

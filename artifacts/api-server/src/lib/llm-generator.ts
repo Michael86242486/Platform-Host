@@ -421,9 +421,11 @@ If tech stack includes:
 
 export class AgentUnavailableError extends Error {
   readonly isAgentUnavailable = true;
-  constructor(reason: string) {
+  readonly isQuotaError: boolean;
+  constructor(reason: string, isQuota = false) {
     super(reason);
     this.name = "AgentUnavailableError";
+    this.isQuotaError = isQuota;
   }
 }
 
@@ -741,8 +743,10 @@ export async function buildProjectAIStream(
     return { files: cleaned, coverColor: result.coverColor, name: intentName };
   } catch (err) {
     logger.warn({ err: String(err) }, "buildProjectAIStream failed — agent unavailable");
+    const isQuota = String(err).includes("insufficient_funds");
     throw new AgentUnavailableError(
       err instanceof Error ? err.message : String(err),
+      isQuota,
     );
   }
 }
@@ -1011,8 +1015,10 @@ export async function buildProjectAI(
     return { files, coverColor, name: intentName };
   } catch (err) {
     logger.warn({ err: String(err) }, "buildProjectAI failed — agent unavailable");
+    const isQuota = String(err).includes("insufficient_funds");
     throw new AgentUnavailableError(
       err instanceof Error ? err.message : String(err),
+      isQuota,
     );
   }
 }

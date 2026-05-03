@@ -167,11 +167,25 @@ export default function SiteDetailScreen() {
     ]);
   };
 
-  const onRetry = async () => {
+  const onRetry = useCallback(async (model?: string) => {
     if (!site) return;
-    await retry.mutateAsync({ id: site.id });
-    siteQuery.refetch();
-  };
+    try {
+      if (model) {
+        await fetch(`/api/sites/${site.id}/retry`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model }),
+        });
+      } else {
+        await retry.mutateAsync({ id: site.id });
+      }
+      void siteQuery.refetch();
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) {
+      Alert.alert("Retry failed", e instanceof Error ? e.message : "Unknown error");
+    }
+  }, [site, retry, siteQuery]);
 
   const onRepublish = async () => {
     if (!site) return;
@@ -539,7 +553,7 @@ function OverviewTab({
   restoreCheckpointPending: boolean;
   onShare: () => void;
   onCopy: () => void;
-  onRetry: () => void;
+  onRetry: (model?: string) => void;
   onRepublish: () => Promise<void>;
   onRegeneratePage: (page: SitePlanPage) => void;
   onSetDomain: (domain: string) => Promise<void>;
@@ -3099,7 +3113,7 @@ function PreviewCard({
   width: number;
   onShare: () => void;
   onCopy: () => void;
-  onRetry: () => void;
+  onRetry: (model?: string) => void;
 }) {
   const colors = useColors();
   const accent = site.coverColor || colors.primary;
@@ -3257,6 +3271,14 @@ function FakeBrowser({ site, accent }: { site: Site; accent: string }) {
   );
 }
 
+const RETRY_MODELS = [
+  { value: "gpt-4o-mini",       label: "GPT-4o Mini",  hint: "Fast · default" },
+  { value: "gpt-4o",            label: "GPT-4o",       hint: "High quality" },
+  { value: "gpt-5.3-codex",     label: "Codex 5.3",    hint: "Most capable" },
+  { value: "gpt-5.1-codex",     label: "Codex 5.1",    hint: "Balanced" },
+  { value: "gpt-5.1-codex-mini",label: "Codex Mini",   hint: "Fastest" },
+] as const;
+
 function BlurOverlay({
   site,
   accent,
@@ -3264,27 +3286,30 @@ function BlurOverlay({
 }: {
   site: Site;
   accent: string;
-  onRetry: () => void;
+  onRetry: (model?: string) => void;
 }) {
   const colors = useColors();
   const { width } = useWindowDimensions();
   const pulse = useRef(new Animated.Value(0)).current;
 
+  const siteModel = (site as unknown as { model?: string | null }).model ?? "gpt-4o-mini";
+  const isQuota   = site.error === "quota_exhausted";
+  const isOffline = site.error === "agent_offline";
+
+  const [pickedModel, setPickedModel] = useState<string>(() => {
+    if (isQuota) {
+      const idx = RETRY_MODELS.findIndex((m) => m.value === siteModel);
+      return RETRY_MODELS[(idx + 1) % RETRY_MODELS.length].value;
+    }
+    return siteModel;
+  });
+  const [showPicker, setShowPicker] = useState(isQuota);
+
   useEffect(() => {
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulse, {
-          toValue: 1,
-          duration: 1400,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulse, {
-          toValue: 0,
-          duration: 1400,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
+        Animated.timing(pulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
       ]),
     );
     loop.start();
@@ -3292,6 +3317,45 @@ function BlurOverlay({
   }, [pulse]);
 
   const opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] });
+  const pickedLabel = RETRY_MODELS.find((m) => m.value === pickedModel)?.label ?? pickedModel;
+
+  const modelPicker = (
+    <View style={{ width: "100%", maxWidth: 280, gap: 5 }}>
+      {RETRY_MODELS.map((m) => {
+        const active = pickedModel === m.value;
+        return (
+          <Pressable
+            key={m.value}
+            onPress={() => setPickedModel(m.value)}
+            style={({ pressed }) => ({
+              flexDirection: "row",
+              alignItems: "center",
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              borderRadius: 8,
+              borderWidth: 1,
+              borderColor: active ? accent : "rgba(255,255,255,0.12)",
+              backgroundColor: active ? `${accent}20` : "rgba(255,255,255,0.04)",
+              opacity: pressed ? 0.7 : 1,
+            })}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: active ? accent : colors.foreground, fontSize: 13, fontWeight: "600" }}>
+                {m.label}
+              </Text>
+              <Text style={{ color: colors.mutedForeground, fontSize: 11 }}>{m.hint}</Text>
+            </View>
+            {active && <Feather name="check" size={14} color={accent} />}
+          </Pressable>
+        );
+      })}
+      <NeonButton
+        title={`Retry with ${pickedLabel}`}
+        onPress={() => onRetry(pickedModel)}
+        icon={<Feather name="cpu" size={16} color={colors.primaryForeground} />}
+      />
+    </View>
+  );
 
   return (
     <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0007" }]}>
@@ -3301,85 +3365,69 @@ function BlurOverlay({
       <View
         style={[
           StyleSheet.absoluteFill,
-          { backgroundColor: "#000A", alignItems: "center", justifyContent: "center", padding: 24, gap: 14 },
+          { backgroundColor: "#000A", alignItems: "center", justifyContent: "center", padding: 20, gap: 12 },
         ]}
       >
         {site.status === "failed" ? (
-          site.error === "agent_offline" ? (
+          isQuota ? (
             <>
               <View style={{ alignItems: "center", gap: 4 }}>
-                <Text style={{ fontSize: 36 }}>🤖</Text>
-                <MonoText style={{ color: "#00FFC2", fontSize: 10, letterSpacing: 2, fontWeight: "700" }}>
-                  STATUS: OFFLINE
+                <Text style={{ fontSize: 34 }}>⚡</Text>
+                <MonoText style={{ color: "#FEBC2E", fontSize: 10, letterSpacing: 2, fontWeight: "700" }}>
+                  QUOTA EXHAUSTED
                 </MonoText>
               </View>
-              <Text
-                style={{
-                  color: colors.foreground,
-                  fontFamily: "Inter_700Bold",
-                  fontSize: 20,
-                  textAlign: "center",
-                  letterSpacing: -0.4,
-                }}
-              >
-                Agent Temporarily Offline
+              <Text style={{ color: colors.foreground, fontFamily: "Inter_700Bold", fontSize: 20, textAlign: "center", letterSpacing: -0.4 }}>
+                Model Ran Out of Credits
               </Text>
-              <Text
-                style={{
-                  color: colors.mutedForeground,
-                  fontSize: 13,
-                  textAlign: "center",
-                  lineHeight: 20,
-                  maxWidth: 260,
-                }}
-              >
-                The AI model is currently unreachable. Your project is saved and will auto-retry within 3 minutes.
+              <Text style={{ color: colors.mutedForeground, fontSize: 13, textAlign: "center", lineHeight: 20, maxWidth: 260 }}>
+                This model has no usage left. Pick a different one below to continue.
               </Text>
-              <View
-                style={{
-                  borderWidth: 1,
-                  borderColor: "rgba(0,255,194,0.2)",
-                  borderRadius: 10,
-                  paddingHorizontal: 16,
-                  paddingVertical: 10,
-                  backgroundColor: "rgba(0,255,194,0.05)",
-                  maxWidth: 280,
-                  width: "100%",
-                }}
-              >
-                <MonoText style={{ color: colors.mutedForeground, fontSize: 11, textAlign: "center", lineHeight: 17 }}>
-                  {"// auto-retry queued · no action needed"}
-                </MonoText>
-              </View>
-              <NeonButton
-                title="Retry now"
-                onPress={onRetry}
-                icon={<Feather name="refresh-cw" size={16} color={colors.primaryForeground} />}
-              />
+              {modelPicker}
             </>
           ) : (
             <>
-              <Feather name="alert-triangle" size={32} color={colors.destructive} />
-              <Text
-                style={{
-                  color: colors.foreground,
-                  fontFamily: "Inter_700Bold",
-                  fontSize: 18,
-                  textAlign: "center",
-                }}
-              >
-                Build Failed
+              {isOffline ? (
+                <View style={{ alignItems: "center", gap: 4 }}>
+                  <Text style={{ fontSize: 36 }}>🤖</Text>
+                  <MonoText style={{ color: "#00FFC2", fontSize: 10, letterSpacing: 2, fontWeight: "700" }}>
+                    STATUS: OFFLINE
+                  </MonoText>
+                </View>
+              ) : (
+                <Feather name="alert-triangle" size={32} color={colors.destructive} />
+              )}
+              <Text style={{ color: colors.foreground, fontFamily: "Inter_700Bold", fontSize: isOffline ? 20 : 18, textAlign: "center", letterSpacing: -0.4 }}>
+                {isOffline ? "Agent Temporarily Offline" : "Build Failed"}
               </Text>
-              {site.error ? (
-                <MonoText style={{ color: colors.mutedForeground, fontSize: 12, textAlign: "center", maxWidth: 280 }}>
-                  {site.error}
-                </MonoText>
-              ) : null}
+              <Text style={{ color: colors.mutedForeground, fontSize: 13, textAlign: "center", lineHeight: 20, maxWidth: 260 }}>
+                {isOffline
+                  ? "The AI model is currently unreachable. Your project is saved and will auto-retry within 3 minutes."
+                  : (site.error ?? "An unknown error occurred.")}
+              </Text>
+              {isOffline && (
+                <View style={{ borderWidth: 1, borderColor: "rgba(0,255,194,0.2)", borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: "rgba(0,255,194,0.05)", maxWidth: 280, width: "100%" }}>
+                  <MonoText style={{ color: colors.mutedForeground, fontSize: 11, textAlign: "center", lineHeight: 17 }}>
+                    {"// auto-retry queued · no action needed"}
+                  </MonoText>
+                </View>
+              )}
               <NeonButton
-                title="Retry build"
-                onPress={onRetry}
+                title={isOffline ? "Retry now" : "Retry build"}
+                onPress={() => onRetry()}
                 icon={<Feather name="refresh-cw" size={16} color={colors.primaryForeground} />}
               />
+              <Pressable
+                onPress={() => setShowPicker((v) => !v)}
+                style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 2 }}
+              >
+                <Feather name="cpu" size={13} color={accent} />
+                <Text style={{ color: accent, fontSize: 12, fontWeight: "600" }}>
+                  {showPicker ? "Hide model picker" : "Try a different model"}
+                </Text>
+                <Feather name={showPicker ? "chevron-up" : "chevron-down"} size={12} color={accent} />
+              </Pressable>
+              {showPicker && modelPicker}
             </>
           )
         ) : (
@@ -3389,23 +3437,11 @@ function BlurOverlay({
                 ● GENERATING
               </MonoText>
             </Animated.View>
-            <Text
-              style={{
-                color: colors.foreground,
-                fontFamily: "Inter_700Bold",
-                fontSize: 22,
-                letterSpacing: -0.5,
-                textAlign: "center",
-              }}
-            >
+            <Text style={{ color: colors.foreground, fontFamily: "Inter_700Bold", fontSize: 22, letterSpacing: -0.5, textAlign: "center" }}>
               Forging your site
             </Text>
-            <View
-              style={{ width: "80%", height: 4, backgroundColor: "#fff1", borderRadius: 2, overflow: "hidden" }}
-            >
-              <View
-                style={{ width: `${Math.max(3, site.progress)}%`, backgroundColor: accent, height: "100%" }}
-              />
+            <View style={{ width: "80%", height: 4, backgroundColor: "#fff1", borderRadius: 2, overflow: "hidden" }}>
+              <View style={{ width: `${Math.max(3, site.progress)}%`, backgroundColor: accent, height: "100%" }} />
             </View>
             <MonoText style={{ color: colors.mutedForeground, fontSize: 12 }}>
               {site.message ?? "warming up…"}
