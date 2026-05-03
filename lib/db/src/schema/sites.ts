@@ -11,7 +11,11 @@ import {
 import { usersTable } from "./users";
 
 export interface SiteAnalysis {
-  type: "website" | "bot" | "backend" | "tool";
+  type:
+    | "website" | "saas" | "portfolio" | "restaurant" | "ecommerce"
+    | "event" | "editorial" | "art" | "music" | "game" | "tool"
+    | "bot" | "docs" | "nonprofit" | "personal" | "agency"
+    | "directory" | "backend";
   intent: string;
   audience: string | null;
   features: string[];

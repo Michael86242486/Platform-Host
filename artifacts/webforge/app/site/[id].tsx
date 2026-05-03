@@ -37,6 +37,7 @@ import {
   useRepublishSite,
   useRestoreCheckpoint,
   useRetrySite,
+  useSendSiteMessage,
   useSetSiteDomain,
   useVerifySiteDomain,
   type Site,
@@ -114,6 +115,7 @@ export default function SiteDetailScreen() {
   const restoreCheckpoint = useRestoreCheckpoint();
   const del = useDeleteSite();
   const editSite = useEditSite();
+  const sendMessage = useSendSiteMessage();
   const setDomain = useSetSiteDomain();
   const removeDomain = useRemoveSiteDomain();
   const verifyDomain = useVerifySiteDomain();
@@ -219,15 +221,14 @@ export default function SiteDetailScreen() {
     const trimmed = chatDraft.trim();
     if (trimmed.length < 2 || !site) return;
     try {
-      await editSite.mutateAsync({ id: site.id, data: { prompt: trimmed } });
+      await sendMessage.mutateAsync({ id: site.id, data: { content: trimmed } });
       setChatDraft("");
       void Haptics.selectionAsync();
-      await siteQuery.refetch();
       void qc.invalidateQueries({ queryKey: getListSiteMessagesQueryKey(site.id) });
     } catch (e) {
-      Alert.alert("Edit failed", e instanceof Error ? e.message : "Unknown error");
+      Alert.alert("Send failed", e instanceof Error ? e.message : "Unknown error");
     }
-  }, [chatDraft, site, editSite, siteQuery, qc]);
+  }, [chatDraft, site, sendMessage, qc]);
 
   if (!site) {
     return (
@@ -364,7 +365,7 @@ export default function SiteDetailScreen() {
             chatDraft={chatDraft}
             setChatDraft={setChatDraft}
             onSend={onSendChatMessage}
-            isSending={editSite.isPending}
+            isSending={sendMessage.isPending}
             isWorking={isWorking}
             narrations={stream.narrations}
             currentFile={stream.currentFile}
@@ -1134,7 +1135,7 @@ function ChatTab({
   site: Site;
   messages: AgentMessage[];
   chatDraft: string;
-  setChatDraft: (s: string) => void;
+  setChatDraft: React.Dispatch<React.SetStateAction<string>>;
   onSend: () => void;
   isSending: boolean;
   isWorking: boolean;
@@ -1154,7 +1155,11 @@ function ChatTab({
     }
   }, [messages.length]);
 
-  const canSend = chatDraft.trim().length >= 2 && !isSending && !isWorking;
+  const chatInputAvailable =
+    site.status === "ready" ||
+    site.status === "awaiting_confirmation" ||
+    site.status === "failed";
+  const canSend = chatDraft.trim().length >= 2 && !isSending && chatInputAvailable;
 
   const [isUploading, setIsUploading] = useState(false);
 
@@ -1264,7 +1269,7 @@ function ChatTab({
           backgroundColor: colors.surface,
         }}
       >
-        {site.status === "ready" ? (
+        {chatInputAvailable ? (
           <View
             style={{
               flexDirection: "row",
@@ -1281,7 +1286,11 @@ function ChatTab({
             <TextInput
               value={chatDraft}
               onChangeText={setChatDraft}
-              placeholder="Ask the agent to change something…"
+              placeholder={
+                site.status === "awaiting_confirmation"
+                  ? "Reply to the agent…"
+                  : "Ask the agent to change something…"
+              }
               placeholderTextColor={colors.mutedForeground}
               multiline
               style={{

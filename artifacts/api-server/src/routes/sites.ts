@@ -23,7 +23,7 @@ import {
 import { jobQueue } from "../lib/queue";
 import { siteEventBus, type SiteEvent } from "../lib/eventBus";
 import { buildProject, buildPlan } from "../lib/generator";
-import { refinePlanAI } from "../lib/llm-generator";
+import { refinePlanAI, chatAI } from "../lib/llm-generator";
 import { logger } from "../lib/logger";
 import {
   deleteSite as puterDeleteSite,
@@ -979,6 +979,8 @@ router.post("/sites/:id/messages", requireAuth, async (req, res) => {
     return;
   }
   const content = parsed.data.content.trim();
+
+  // Save user message.
   await db.insert(messagesTable).values({
     userId: req.user!.id,
     siteId: site.id,
@@ -988,15 +990,43 @@ router.post("/sites/:id/messages", requireAuth, async (req, res) => {
     data: null,
   });
 
-  // Treat "build" / "yes" / "go" / "ship it" as a confirmation when the site
-  // is awaiting one. This makes the chat feel like a real agent.
+  // Load recent conversation history for AI context (last 12 messages).
+  const recentRows = await db
+    .select()
+    .from(messagesTable)
+    .where(eq(messagesTable.siteId, site.id))
+    .orderBy(desc(messagesTable.createdAt))
+    .limit(12);
+  const chatHistory = recentRows
+    .reverse()
+    .filter((m) => m.kind === "text" && (m.role === "user" || m.role === "agent"))
+    .map((m) => ({
+      role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
+      content: m.content,
+    }));
+
+  const siteCtx = { name: site.name, status: site.status, prompt: site.prompt };
+
+  // Helper: post an AI-generated reply to chat.
+  async function postAIReply(fallback?: string) {
+    const reply = await chatAI(siteCtx, chatHistory, site.model ?? undefined).catch(() => fallback ?? "On it.");
+    await db.insert(messagesTable).values({
+      userId: req.user!.id,
+      siteId: site.id,
+      role: "agent",
+      kind: "text",
+      content: reply,
+      data: null,
+    });
+    siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
+  }
+
   const lc = content.toLowerCase();
   const wantsBuild =
-    /^(build|yes|go|ship it|do it|confirm|approve|let'?s go|sounds good)\b/.test(
-      lc,
-    );
+    /^(build|yes|go|ship it|do it|confirm|approve|let'?s go|sounds good)\b/.test(lc);
 
   if (site.status === "awaiting_confirmation" && wantsBuild) {
+    // Start the build.
     const [job] = await db
       .insert(jobsTable)
       .values({
@@ -1010,95 +1040,60 @@ router.post("/sites/:id/messages", requireAuth, async (req, res) => {
       .returning();
     await db
       .update(sitesTable)
-      .set({
-        status: "queued",
-        progress: 0,
-        message: "Queued for build",
-        updatedAt: new Date(),
-      })
+      .set({ status: "queued", progress: 0, message: "Queued for build", updatedAt: new Date() })
       .where(eq(sitesTable.id, site.id));
     await jobQueue.enqueue(job.id);
+    // Let the AI confirm it's building.
+    void postAIReply("Starting the build now.");
+
   } else if (site.status === "awaiting_confirmation" && !wantsBuild) {
-    // Plan refinement loop — user wants to tweak the plan before building.
-    // We do this in the background so the HTTP response isn't held up.
+    // Plan refinement — user wants to change something before building.
     void (async () => {
       try {
-        // Acknowledge the feedback immediately.
-        await db.insert(messagesTable).values({
-          userId: req.user!.id,
-          siteId: site.id,
-          role: "agent",
-          kind: "log",
-          content: "Got it — updating the plan…",
-          data: null,
-        });
-        siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
-
         const currentAnalysis = site.analysis as SiteAnalysis | null;
-        if (!currentAnalysis) return;
+        if (!currentAnalysis) {
+          await postAIReply("Couldn't find the current plan. Try describing your change again.");
+          return;
+        }
 
-        // Ask the AI to apply the requested changes.
-        const updatedAnalysis = await refinePlanAI(
-          currentAnalysis,
-          content,
-          site.model ?? undefined,
-        );
+        // Refine the plan and generate an AI reply simultaneously.
+        const [updatedAnalysis, aiReply] = await Promise.all([
+          refinePlanAI(currentAnalysis, content, site.model ?? undefined),
+          chatAI(siteCtx, chatHistory, site.model ?? undefined).catch(() => "Updated the plan — anything else to change, or ready to build?"),
+        ]);
         const updatedPlan = buildPlan(updatedAnalysis) as SitePlan;
 
-        // Persist the revised plan.
         await db
           .update(sitesTable)
-          .set({
-            analysis: updatedAnalysis,
-            plan: updatedPlan,
-            updatedAt: new Date(),
-          })
+          .set({ analysis: updatedAnalysis, plan: updatedPlan, updatedAt: new Date() })
           .where(eq(sitesTable.id, site.id));
 
-        // Build a readable summary for the chat bubble.
-        const lines: string[] = [`Updated plan: ${updatedPlan.summary}`, "", "Pages:"];
-        for (const p of updatedPlan.pages) {
-          lines.push(`  • ${p.title} — ${p.purpose}`);
-        }
-        lines.push("", `Style: ${updatedPlan.styles.palette} (${updatedPlan.styles.mood})`);
-        if (updatedPlan.features.length > 0) {
-          lines.push(`Features: ${updatedPlan.features.join(", ")}`);
-        }
-
-        // Post the updated plan + re-show the awaiting_confirmation prompt.
+        // Post the AI reply + updated plan.
         await db.insert(messagesTable).values({
           userId: req.user!.id,
           siteId: site.id,
           role: "agent",
-          kind: "plan",
-          content: lines.join("\n"),
-          data: updatedPlan as unknown as Record<string, unknown>,
+          kind: "text",
+          content: aiReply,
+          data: null,
         });
         await db.insert(messagesTable).values({
           userId: req.user!.id,
           siteId: site.id,
           role: "agent",
           kind: "awaiting_confirmation",
-          content: "Plan updated! Anything else to tweak, or ready to build?",
+          content: aiReply,
           data: null,
         });
-
         siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
       } catch (err) {
-        logger.warn({ err }, "plan refinement background task failed");
-        await db.insert(messagesTable).values({
-          userId: req.user!.id,
-          siteId: site.id,
-          role: "agent",
-          kind: "text",
-          content: "Hmm, I had trouble updating the plan. Try rephrasing, or tap Build to proceed.",
-          data: null,
-        });
-        siteEventBus.emitSite({ type: "site_updated", siteId: site.id });
+        logger.warn({ err }, "plan refinement failed");
+        await postAIReply("Had trouble updating the plan. Try rephrasing, or just say 'build' to proceed.");
       }
     })();
+
   } else if (site.status === "ready") {
-    // Treat any chat after ready state as an edit request.
+    // Queue an edit job and reply naturally.
     const [job] = await db
       .insert(jobsTable)
       .values({
@@ -1113,24 +1108,14 @@ router.post("/sites/:id/messages", requireAuth, async (req, res) => {
       .returning();
     await db
       .update(sitesTable)
-      .set({
-        status: "queued",
-        progress: 0,
-        message: "Queued for edit",
-        updatedAt: new Date(),
-      })
+      .set({ status: "queued", progress: 0, message: "Queued for edit", updatedAt: new Date() })
       .where(eq(sitesTable.id, site.id));
     await jobQueue.enqueue(job.id);
+    void postAIReply("On it.");
+
   } else {
-    await db.insert(messagesTable).values({
-      userId: req.user!.id,
-      siteId: site.id,
-      role: "agent",
-      kind: "text",
-      content:
-        "I'll get to that as soon as the current step finishes. You can also tap the buttons below the chat.",
-      data: null,
-    });
+    // Site is mid-build — AI acknowledges the message.
+    void postAIReply("Still building right now — I'll apply that once it's done.");
   }
 
   res.status(202).json({ ok: true });

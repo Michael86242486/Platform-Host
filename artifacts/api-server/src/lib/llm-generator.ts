@@ -198,6 +198,38 @@ function deriveTitle(prompt: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Conversational chat — natural AI reply (no forced structure)
+// ---------------------------------------------------------------------------
+
+const CHAT_SYSTEM = `You are WebForge, a web developer and designer. Talk directly and naturally to the user — like a skilled colleague, not a chatbot. Keep it short: 1 to 3 sentences. No bullet points. No formal structure. No corporate speak. Just say what you mean.`;
+
+export async function chatAI(
+  siteContext: { name: string; status: string; prompt: string },
+  history: PuterAIMessage[],
+  model?: string,
+): Promise<string> {
+  const fallbacks: Record<string, string> = {
+    building: "Building it now — check back in a moment.",
+    analyzing: "Analyzing your request, almost done.",
+    queued: "Queued it up, will start shortly.",
+    ready: "On it.",
+    awaiting_confirmation: "Got it.",
+    default: "Got it, working on that.",
+  };
+  try {
+    const ctx = `Site: "${siteContext.name}" | Status: ${siteContext.status} | Original prompt: ${siteContext.prompt.slice(0, 200)}`;
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: `${CHAT_SYSTEM}\n\n${ctx}` },
+      ...history,
+    ];
+    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL });
+    return text.trim() || fallbacks[siteContext.status] || fallbacks.default;
+  } catch {
+    return fallbacks[siteContext.status] || fallbacks.default;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // PHASE 1b — Plan refinement
 // ---------------------------------------------------------------------------
 
