@@ -67,7 +67,7 @@ export async function streamNarration(input: NarrateInput): Promise<string> {
           delta,
         });
       },
-      { model: "gpt-4o-mini" },
+      { model: "openai/gpt-4o-mini" },
     );
   } catch (err) {
     logger.warn({ err, siteId: input.siteId }, "narration stream failed");

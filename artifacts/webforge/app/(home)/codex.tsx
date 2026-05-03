@@ -252,7 +252,7 @@ export default function CodexScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [model, setModel] = useState<CodexModel>("gpt-5.1-codex");
+  const [model, setModel] = useState<CodexModel>("openai/gpt-5.1-codex");
   const [mode, setMode] = useState<AgentMode>("general");
   const [showModelPicker, setShowModelPicker] = useState(false);
   const scrollRef = useRef<ScrollView>(null);

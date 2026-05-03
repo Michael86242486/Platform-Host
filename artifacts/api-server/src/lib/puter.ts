@@ -669,7 +669,7 @@ export async function puterAIComplete(
   messages: PuterAIMessage[],
   opts: { model?: string; jsonMode?: boolean } = {},
 ): Promise<string> {
-  const model = opts.model ?? "gpt-4o-mini";
+  const model = opts.model ?? "openai/gpt-4o-mini";
   const { token } = await getAuth();
   return rawComplete(token, messages, model, opts.jsonMode ?? false);
 }
@@ -684,7 +684,7 @@ export async function puterAIStream(
   onChunk: (text: string) => void,
   opts: { model?: string } = {},
 ): Promise<string> {
-  const model = opts.model ?? "gpt-4o-mini";
+  const model = opts.model ?? "openai/gpt-4o-mini";
   const { token } = await getAuth();
   return rawStream(token, messages, model, onChunk);
 }

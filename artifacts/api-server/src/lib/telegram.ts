@@ -1617,7 +1617,7 @@ Rules:
         },
       ];
       const body = await puterAIComplete(messages, {
-        model: "gpt-4o-mini",
+        model: "openai/gpt-4o-mini",
         jsonMode: true,
       });
       const parsed = JSON.parse(body);
@@ -1678,7 +1678,7 @@ Keep replies concise — this is a chat, not a doc. For code, use fenced blocks.
         ...history.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
         { role: "user", content: userText },
       ];
-      const reply = await puterAIComplete(messages, { model: "gpt-4o-mini" });
+      const reply = await puterAIComplete(messages, { model: "openai/gpt-4o-mini" });
       await typing;
 
       // Store assistant reply in history

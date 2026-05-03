@@ -20,30 +20,22 @@ declare global {
 }
 
 export type CodexModel =
-  | "gpt-5.3-codex"
-  | "gpt-5.2-codex"
-  | "gpt-5.1-codex-max"
-  | "gpt-5.1-codex"
-  | "gpt-5.1-codex-mini";
+  | "openai/gpt-5.3-codex"
+  | "openai/gpt-5.2-codex"
+  | "openai/gpt-5.1-codex-max"
+  | "openai/gpt-5.1-codex"
+  | "openai/gpt-5.1-codex-mini";
 
 export const CODEX_MODELS: {
   value: CodexModel;
   label: string;
   hint: string;
 }[] = [
-  { value: "gpt-5.3-codex", label: "GPT-5.3 Codex", hint: "Most capable" },
-  { value: "gpt-5.2-codex", label: "GPT-5.2 Codex", hint: "High capability" },
-  {
-    value: "gpt-5.1-codex-max",
-    label: "GPT-5.1 Codex Max",
-    hint: "Extended context",
-  },
-  { value: "gpt-5.1-codex", label: "GPT-5.1 Codex", hint: "Balanced" },
-  {
-    value: "gpt-5.1-codex-mini",
-    label: "GPT-5.1 Codex Mini",
-    hint: "Fastest",
-  },
+  { value: "openai/gpt-5.3-codex",      label: "GPT-5.3 Codex",     hint: "Most capable · free" },
+  { value: "openai/gpt-5.2-codex",      label: "GPT-5.2 Codex",     hint: "High capability · free" },
+  { value: "openai/gpt-5.1-codex-max",  label: "GPT-5.1 Codex Max", hint: "Extended context · free" },
+  { value: "openai/gpt-5.1-codex",      label: "GPT-5.1 Codex",     hint: "Balanced · free" },
+  { value: "openai/gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini",hint: "Fastest · free" },
 ];
 
 export type AgentMode = "general" | "codeReview" | "logAnalysis" | "debug";
