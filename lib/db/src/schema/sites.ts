@@ -101,6 +101,8 @@ export const sitesTable = pgTable(
     model: text("model"),
     /** Array of build snapshots; newest last; capped at 10. */
     checkpoints: jsonb("checkpoints").$type<SiteCheckpoint[] | null>(),
+    /** Short random token for public share links. */
+    shareToken: text("share_token").unique(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

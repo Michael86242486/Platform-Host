@@ -4,6 +4,7 @@ import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 
 import router from "./routes";
+import publicRouter from "./routes/public";
 import { logger } from "./lib/logger";
 import { authMiddleware } from "./middlewares/auth";
 import { customDomain } from "./middlewares/customDomain";
@@ -34,6 +35,9 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use(customDomain);
+
+app.use("/api", publicRouter);
+
 app.use(authMiddleware);
 
 app.use("/api", router);

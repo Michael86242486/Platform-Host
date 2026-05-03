@@ -579,7 +579,7 @@ class JobQueue {
       ? "Agent temporarily offline — auto-retrying in 3 minutes…"
       : message;
     await db.update(jobsTable).set({ status: "failed", message: userMessage, finishedAt: new Date() }).where(eq(jobsTable.id, job.id));
-    await db.update(sitesTable).set({ status: "failed", error: message, message: userMessage, updatedAt: new Date() }).where(eq(jobsTable.id, job.siteId));
+    await db.update(sitesTable).set({ status: "failed", error: message, message: userMessage, updatedAt: new Date() }).where(eq(sitesTable.id, job.siteId));
     await insertAgentMessage(
       job.userId, job.siteId, "build_failed",
       isOffline

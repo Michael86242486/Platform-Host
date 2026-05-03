@@ -281,6 +281,115 @@ router.post("/auth/sign-out", async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+router.post("/auth/email-register", async (req: Request, res: Response) => {
+  try {
+    const bcrypt = await import("bcryptjs");
+    const { email, password, firstName } = req.body as {
+      email?: string;
+      password?: string;
+      firstName?: string;
+    };
+    if (!email || !password) {
+      res.status(400).json({ error: "email and password are required" });
+      return;
+    }
+    if (password.length < 6) {
+      res.status(400).json({ error: "password must be at least 6 characters" });
+      return;
+    }
+
+    const [existing] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.email, email.toLowerCase().trim()))
+      .limit(1);
+
+    if (existing) {
+      if (!existing.passwordHash) {
+        res.status(409).json({ error: "This email is linked to a Replit account. Use the Replit login button instead." });
+      } else {
+        res.status(409).json({ error: "Email already registered. Please log in instead." });
+      }
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        email: email.toLowerCase().trim(),
+        passwordHash,
+        firstName: firstName?.trim() || null,
+      })
+      .returning();
+
+    const sessionUser: SessionUser = {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      profileImageUrl: user.profileImageUrl,
+    };
+    const sessionData: SessionData = {
+      user: sessionUser,
+      access_token: "",
+    };
+    const sid = await createSession(sessionData);
+    res.json({ token: sid });
+  } catch (err) {
+    logger.error({ err }, "email-register failed");
+    res.status(500).json({ error: "Registration failed. Please try again." });
+  }
+});
+
+router.post("/auth/email-login", async (req: Request, res: Response) => {
+  try {
+    const bcrypt = await import("bcryptjs");
+    const { email, password } = req.body as {
+      email?: string;
+      password?: string;
+    };
+    if (!email || !password) {
+      res.status(400).json({ error: "email and password are required" });
+      return;
+    }
+
+    const [user] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.email, email.toLowerCase().trim()))
+      .limit(1);
+
+    if (!user || !user.passwordHash) {
+      res.status(401).json({ error: "Invalid email or password." });
+      return;
+    }
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) {
+      res.status(401).json({ error: "Invalid email or password." });
+      return;
+    }
+
+    const sessionUser: SessionUser = {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      profileImageUrl: user.profileImageUrl,
+    };
+    const sessionData: SessionData = {
+      user: sessionUser,
+      access_token: "",
+    };
+    const sid = await createSession(sessionData);
+    res.json({ token: sid });
+  } catch (err) {
+    logger.error({ err }, "email-login failed");
+    res.status(500).json({ error: "Login failed. Please try again." });
+  }
+});
+
 router.patch("/auth/me", async (req: Request, res: Response) => {
   if (!req.isAuthenticated()) {
     res.status(401).json({ error: "unauthorized" });

@@ -129,16 +129,25 @@ export default function SiteDetailScreen() {
     }
   }, [stream.connected, activeTab, id, qc]);
 
+  const getShareUrl = useCallback(() => {
+    const shareToken = (site as unknown as { shareToken?: string | null })?.shareToken;
+    const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+    if (shareToken) return `${apiBase}/api/public/sites/${shareToken}/preview`;
+    return site?.publicUrl ?? null;
+  }, [site]);
+
   const onShare = async () => {
-    if (!site?.publicUrl) return;
-    await Share.share({ message: `${site.name}\n${site.publicUrl}`, url: site.publicUrl });
+    const shareUrl = getShareUrl();
+    if (!shareUrl || !site) return;
+    await Share.share({ message: `Check out ${site.name}\n${shareUrl}`, url: shareUrl });
   };
 
   const onCopy = async () => {
-    if (!site?.publicUrl) return;
-    await Clipboard.setStringAsync(site.publicUrl);
+    const shareUrl = getShareUrl();
+    if (!shareUrl) return;
+    await Clipboard.setStringAsync(shareUrl);
     void Haptics.selectionAsync();
-    Alert.alert("Copied", "Link copied to clipboard.");
+    Alert.alert("Copied", "Share link copied to clipboard.");
   };
 
   const onDelete = () => {

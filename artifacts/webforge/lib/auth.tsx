@@ -36,6 +36,8 @@ interface AuthContextValue {
   login: () => Promise<void>;
   logout: () => Promise<void>;
   signOut: () => Promise<void>;
+  emailLogin: (email: string, password: string) => Promise<void>;
+  emailRegister: (email: string, password: string, firstName?: string) => Promise<void>;
   updateUser: (fields: { firstName?: string; lastName?: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   getToken: () => Promise<string | null>;
 }
@@ -50,6 +52,8 @@ const AuthContext = createContext<AuthContextValue>({
   login: async () => {},
   logout: async () => {},
   signOut: async () => {},
+  emailLogin: async () => {},
+  emailRegister: async () => {},
   updateUser: async () => ({ ok: false, error: "not initialized" }),
   getToken: async () => null,
 });
@@ -118,6 +122,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return data.user;
   }, []);
 
+  const applySession = useCallback(async (sessionToken: string) => {
+    await storeSet(AUTH_TOKEN_KEY, sessionToken);
+    setToken(sessionToken);
+    const u = await fetchUser(sessionToken);
+    setUser(u);
+    await storeSet(USER_KEY, JSON.stringify(u));
+  }, [fetchUser]);
+
   useEffect(() => {
     void (async () => {
       const stored = await storeGet(AUTH_TOKEN_KEY);
@@ -166,12 +178,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         const data = (await exchangeRes.json()) as { token: string };
         if (data.token) {
-          await storeSet(AUTH_TOKEN_KEY, data.token);
-          setToken(data.token);
           setIsLoading(true);
-          const u = await fetchUser(data.token);
-          setUser(u);
-          await storeSet(USER_KEY, JSON.stringify(u));
+          await applySession(data.token);
           setIsLoading(false);
         } else {
           setLoginError("Login failed — no session returned. Please try again.");
@@ -183,11 +191,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
       }
     })();
-  }, [response, request, redirectUri, fetchUser]);
+  }, [response, request, redirectUri, applySession]);
 
   const login = useCallback(async () => {
     try { await promptAsync(); } catch { /* noop */ }
   }, [promptAsync]);
+
+  const emailLogin = useCallback(async (email: string, password: string) => {
+    setLoginError(null);
+    const apiBase = getApiBaseUrl();
+    const res = await fetch(`${apiBase}/api/auth/email-login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const body = (await res.json()) as { token?: string; error?: string };
+    if (!res.ok) {
+      throw new Error(body.error ?? `Login failed (${res.status})`);
+    }
+    if (!body.token) throw new Error("No session token returned");
+    await applySession(body.token);
+  }, [applySession]);
+
+  const emailRegister = useCallback(async (email: string, password: string, firstName?: string) => {
+    setLoginError(null);
+    const apiBase = getApiBaseUrl();
+    const res = await fetch(`${apiBase}/api/auth/email-register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, firstName }),
+    });
+    const body = (await res.json()) as { token?: string; error?: string };
+    if (!res.ok) {
+      throw new Error(body.error ?? `Registration failed (${res.status})`);
+    }
+    if (!body.token) throw new Error("No session token returned");
+    await applySession(body.token);
+  }, [applySession]);
 
   const logout = useCallback(async () => {
     try {
@@ -249,10 +289,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       signOut: logout,
+      emailLogin,
+      emailRegister,
       updateUser,
       getToken,
     }),
-    [isLoading, user, token, loginError, login, logout, updateUser, getToken],
+    [isLoading, user, token, loginError, login, logout, emailLogin, emailRegister, updateUser, getToken],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

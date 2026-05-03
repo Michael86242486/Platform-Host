@@ -137,6 +137,7 @@ export function siteToDto(site: Site) {
           hasFiles: !!c.files,
         }))
       : [],
+    shareToken: (site as unknown as { shareToken?: string | null }).shareToken ?? null,
     createdAt: site.createdAt.toISOString(),
     updatedAt: site.updatedAt.toISOString(),
   };
@@ -172,6 +173,7 @@ router.post("/sites", requireAuth, async (req, res) => {
       slug,
       prompt,
       model: model ?? null,
+      shareToken: crypto.randomBytes(8).toString("base64url"),
       status: "queued",
       progress: 0,
       message: autoBuildOn
