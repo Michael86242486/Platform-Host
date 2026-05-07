@@ -3,7 +3,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { db, usersTable, otpsTable } from "@workspace/db";
 import { eq, and, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
-import { sendSMS, generateOTPCode, normalizePhone, SMS_CONFIGURED } from "../lib/sms";
+import { sendEmailOTP, generateOTPCode, isValidEmail, EMAIL_OTP_CONFIGURED } from "../lib/email-otp";
 import {
   clearSession,
   getOidcConfig,
@@ -282,65 +282,68 @@ router.post("/auth/sign-out", async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-// ── SMS Verification ────────────────────────────────────────────────────────
+// ── Email OTP Verification ───────────────────────────────────────────────────
 
 /**
- * POST /api/auth/sms/send-otp
- * Body: { phone: string }
- * Generates a 6-digit OTP, stores it, and sends it via SMS.
+ * POST /api/auth/email/send-otp
+ * Body: { email: string }
+ * Generates a 6-digit OTP, stores it in the DB, and emails it via Resend (free).
  */
-router.post("/auth/sms/send-otp", async (req: Request, res: Response) => {
-  if (!SMS_CONFIGURED) {
-    res.status(503).json({ error: "SMS service is not configured." });
+router.post("/auth/email/send-otp", async (req: Request, res: Response) => {
+  if (!EMAIL_OTP_CONFIGURED) {
+    res.status(503).json({
+      error: "Email service not configured. Add RESEND_API_KEY (free at resend.com).",
+    });
     return;
   }
 
-  const { phone } = req.body as { phone?: string };
-  if (!phone || phone.trim().length < 7) {
-    res.status(400).json({ error: "A valid phone number is required." });
+  const { email } = req.body as { email?: string };
+  if (!email || !isValidEmail(email)) {
+    res.status(400).json({ error: "A valid email address is required." });
     return;
   }
 
-  const normalizedPhone = normalizePhone(phone.trim());
+  const normalizedEmail = email.trim().toLowerCase();
 
   try {
     const code = generateOTPCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     await db.insert(otpsTable).values({
-      phone: normalizedPhone,
+      phone: normalizedEmail, // reusing 'phone' column as the OTP identifier
       code,
       expiresAt,
     });
 
-    await sendSMS(
-      normalizedPhone,
-      `Your WebForge verification code is: ${code}\n\nValid for 10 minutes. Do not share this code.`,
-    );
+    await sendEmailOTP(normalizedEmail, code);
 
-    logger.info({ phone: normalizedPhone.slice(0, 7) + "****" }, "OTP sent");
-    res.json({ ok: true, message: "Verification code sent." });
+    res.json({ ok: true, message: "Verification code sent — check your inbox." });
   } catch (err) {
-    logger.error({ err }, "send-otp failed");
+    logger.error({ err }, "email send-otp failed");
     const msg = err instanceof Error ? err.message : "Failed to send verification code.";
     res.status(500).json({ error: msg });
   }
 });
 
 /**
- * POST /api/auth/sms/verify-otp
- * Body: { phone: string; code: string }
- * Verifies the OTP and creates a session for the user.
+ * POST /api/auth/email/verify-otp
+ * Body: { email: string; code: string }
+ * Verifies the OTP, upserts the user, and returns a session token.
  */
-router.post("/auth/sms/verify-otp", async (req: Request, res: Response) => {
-  const { phone, code } = req.body as { phone?: string; code?: string };
+router.post("/auth/email/verify-otp", async (req: Request, res: Response) => {
+  const { email, code } = req.body as { email?: string; code?: string };
 
-  if (!phone || !code) {
-    res.status(400).json({ error: "Phone and code are required." });
+  if (!email || !code) {
+    res.status(400).json({ error: "Email and code are required." });
     return;
   }
 
-  const normalizedPhone = normalizePhone(phone.trim());
+  if (!isValidEmail(email)) {
+    res.status(400).json({ error: "Invalid email address." });
+    return;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
   const trimmedCode = code.trim();
 
   try {
@@ -351,7 +354,7 @@ router.post("/auth/sms/verify-otp", async (req: Request, res: Response) => {
       .from(otpsTable)
       .where(
         and(
-          eq(otpsTable.phone, normalizedPhone),
+          eq(otpsTable.phone, normalizedEmail),
           eq(otpsTable.code, trimmedCode),
           gt(otpsTable.expiresAt, now),
         ),
@@ -374,16 +377,17 @@ router.post("/auth/sms/verify-otp", async (req: Request, res: Response) => {
       .set({ verifiedAt: now })
       .where(eq(otpsTable.id, otp.id));
 
+    // Upsert user by email
     let [user] = await db
       .select()
       .from(usersTable)
-      .where(eq(usersTable.email, `sms:${normalizedPhone}`))
+      .where(eq(usersTable.email, normalizedEmail))
       .limit(1);
 
     if (!user) {
       [user] = await db
         .insert(usersTable)
-        .values({ email: `sms:${normalizedPhone}` })
+        .values({ email: normalizedEmail })
         .returning();
     }
 
@@ -400,10 +404,10 @@ router.post("/auth/sms/verify-otp", async (req: Request, res: Response) => {
     };
 
     const sid = await createSession(sessionData);
-    logger.info({ phone: normalizedPhone.slice(0, 7) + "****" }, "OTP verified — session created");
+    logger.info({ email: normalizedEmail.replace(/(?<=.{3}).(?=.*@)/g, "*") }, "Email OTP verified — session created");
     res.json({ token: sid, user: sessionUser });
   } catch (err) {
-    logger.error({ err }, "verify-otp failed");
+    logger.error({ err }, "email verify-otp failed");
     res.status(500).json({ error: "Verification failed. Please try again." });
   }
 });
