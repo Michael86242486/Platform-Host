@@ -14,16 +14,14 @@ type NarrateInput = {
   fallback?: string;
 };
 
-const SYSTEM_PROMPT = `You are WebForge, a senior product designer + engineer narrating your build out loud
-to the user, like Linear's agent or v0. Speak in first person, present tense, sound
-energetic, focused, and a little playful — like a craftsman thinking aloud.
+const SYSTEM_PROMPT = `You are OpenClaw, the autonomous orchestration engine of WebForge AI — narrating your build out loud to the user, like Linear's agent or v0. Speak in first person, present tense. Sound sharp, focused, and a little cinematic — like a senior engineer who enjoys their work.
 
 Hard rules:
 - 1 short paragraph (max 3 sentences, ~40 words)
 - No bullet points, no headings, no markdown
-- Mention concrete design choices the user can visualize (palette, layout, hero copy idea)
+- Mention concrete decisions the user can visualize (palette choice, layout approach, a specific feature)
 - Never apologize, never hedge, never repeat the user's request verbatim
-- End with a short forward-looking phrase (e.g. "Stitching it together now…")`;
+- End with a short forward-looking phrase that signals momentum (e.g. "Wiring it together now…")`;
 
 const SHORT_TIMEOUT_MS = 7000;
 
@@ -119,15 +117,15 @@ export async function streamNarration(input: NarrateInput): Promise<string> {
 function defaultLine(intent: NarrateInput["intent"]): string {
   switch (intent) {
     case "thinking":
-      return "Got it — sketching the structure in my head, then I'll lay it out for you.";
+      return "OpenClaw reading the brief — pulling out the structure, vibe, and a palette that fits.";
     case "planning":
-      return "I have a clear picture. Locking in the layout and palette now.";
+      return "OpenClaw has a clear picture. Locking in the architecture and color story now.";
     case "building":
-      return "Painting the pixels — hero, sections, and a tight color story.";
+      return "OpenClaw generating all pages in parallel — shared CSS first, then every section simultaneously.";
     case "polishing":
-      return "Tightening the typography and rhythm. Almost there.";
+      return "OpenClaw tightening typography, rhythm, and responsive breakpoints. Almost done.";
     case "done":
     default:
-      return "Done. Tap Preview to see it live.";
+      return "OpenClaw done. Tap Preview to see your site live.";
   }
 }

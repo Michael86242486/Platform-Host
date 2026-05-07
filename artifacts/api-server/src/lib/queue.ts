@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { eq } from "drizzle-orm";
+import { clawPhase } from "./openclaw";
 
 import {
   db,
@@ -42,20 +43,20 @@ const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
 // ---------------------------------------------------------------------------
 
 const PIPELINE_STEPS = [
-  { step: 1, label: "Researching design inspiration",         pctStart: 2,  pctEnd: 14 },
-  { step: 2, label: "Building the full website with AI",      pctStart: 14, pctEnd: 65 },
-  { step: 3, label: "Auditing quality: SEO, accessibility, mobile", pctStart: 65, pctEnd: 73 },
-  { step: 4, label: "Self-review pass (autonomous QA)",        pctStart: 73, pctEnd: 78 },
-  { step: 5, label: "Auto-fixing issues found",               pctStart: 78, pctEnd: 88 },
-  { step: 6, label: "Finalizing hero image",                  pctStart: 88, pctEnd: 92 },
-  { step: 7, label: "Publishing to your live URL",            pctStart: 92, pctEnd: 100 },
+  { step: 1, label: "🔍 OpenClaw Research — studying design inspiration",       pctStart: 2,  pctEnd: 14 },
+  { step: 2, label: "⚙️  OpenClaw Build — parallel page generation",             pctStart: 14, pctEnd: 65 },
+  { step: 3, label: "🔬 OpenClaw Audit — SEO, accessibility, mobile, perf",     pctStart: 65, pctEnd: 73 },
+  { step: 4, label: "🧠 OpenClaw Review — autonomous quality gate",              pctStart: 73, pctEnd: 78 },
+  { step: 5, label: "🔧 OpenClaw Fix — self-correcting issues found",            pctStart: 78, pctEnd: 88 },
+  { step: 6, label: "🖼️  OpenClaw Render — finalizing hero image",               pctStart: 88, pctEnd: 92 },
+  { step: 7, label: "🚀 OpenClaw Deploy — publishing to your live URL",          pctStart: 92, pctEnd: 100 },
 ] as const;
 
 const ANALYSIS_STAGES = [
-  { progress: 12, label: "Reading your prompt",    ms: 250 },
-  { progress: 28, label: "Classifying project",    ms: 250 },
-  { progress: 50, label: "Drafting structure",     ms: 250 },
-  { progress: 75, label: "Choosing palette + mood", ms: 250 },
+  { progress: 12, label: "🧠 OpenClaw — reading your prompt",      ms: 250 },
+  { progress: 28, label: "🧠 OpenClaw — classifying project",      ms: 250 },
+  { progress: 50, label: "🧠 OpenClaw — drafting structure",       ms: 250 },
+  { progress: 75, label: "🧠 OpenClaw — choosing palette + mood",  ms: 250 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -178,9 +179,10 @@ class JobQueue {
     name: string,
     model?: string,
   ): Promise<void> {
+    clawPhase("UNDERSTAND", name);
     await db.update(jobsTable).set({ status: "running", message: ANALYSIS_STAGES[0].label, progress: 1 }).where(eq(jobsTable.id, job.id));
     await db.update(sitesTable).set({ status: "analyzing", progress: 1, message: ANALYSIS_STAGES[0].label, error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
-    await insertAgentMessage(job.userId, siteId, "log", "Starting analysis…", { stage: 0 });
+    await insertAgentMessage(job.userId, siteId, "log", "🧠 OpenClaw initialising — reading your brief…", { stage: 0 });
 
     void streamNarration({
       userId: job.userId, siteId, intent: "thinking",
@@ -244,10 +246,13 @@ class JobQueue {
     }
 
     // Mark running
-    await db.update(jobsTable).set({ status: "running", message: "Starting pipeline…", progress: 1 }).where(eq(jobsTable.id, job.id));
-    await db.update(sitesTable).set({ status: "building", progress: 1, message: "Starting pipeline…", error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
+    clawPhase("BUILD", site.name);
+    await db.update(jobsTable).set({ status: "running", message: "⚡ OpenClaw initialising pipeline…", progress: 1 }).where(eq(jobsTable.id, job.id));
+    await db.update(sitesTable).set({ status: "building", progress: 1, message: "⚡ OpenClaw initialising pipeline…", error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
     await insertAgentMessage(job.userId, siteId, "build_started",
-      job.kind === "edit" ? "Applying your edits…" : "Confirmed. Starting the 7-phase build pipeline.", null);
+      job.kind === "edit"
+        ? "🔧 OpenClaw applying your edits…"
+        : "⚡ OpenClaw engaged. Starting the 7-phase autonomous build pipeline.", null);
 
     // ── EDIT short-circuit ──────────────────────────────────────────────────
     if (job.kind === "edit" && job.instructions && site.files) {

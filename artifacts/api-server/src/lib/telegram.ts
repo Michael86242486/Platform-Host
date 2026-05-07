@@ -969,20 +969,23 @@ class TelegramBotManager {
       const lines = [
         `⚡ *WebForge AI — Welcome, ${escapeMd(name)}!*`,
         "",
-        "Powered by *OpenClaw* — the central intelligence engine that plans,",
-        "builds, reviews, and deploys complete digital products autonomously.",
+        "Powered by *OpenClaw* — an autonomous AI orchestration engine",
+        "inspired by GitHub research on autonomous engineering agents.",
         "",
-        "*How it works:*",
-        "1️⃣ Tell me what you want with `/create`",
-        "2️⃣ I'll plan it, design it, and build it for you",
-        "3️⃣ You get a live URL — real site, real code, ready to share",
+        "*OpenClaw doesn't just generate code.*",
+        "It thinks → plans → builds → audits → fixes → deploys.",
+        "Like a real senior engineer working end-to-end for you.",
         "",
-        "*Start now:*",
-        "`/create portfolio` — personal dark-mode showcase",
-        "`/create saas blue gradient, project manager`",
+        "🧠 *8-phase pipeline:*",
+        "Understanding → Research → Planning → Building →",
+        "Quality Audit → Self-Correction → Publish",
+        "",
+        "*Start building now:*",
+        "`/create portfolio` — dark-mode personal showcase",
+        "`/create saas landing page` — modern SaaS site",
         "`/clone notion` — clone any popular product",
         "",
-        "💬 Or just _describe what you want_ — I'll figure out the rest.",
+        "💬 Or just _describe what you want_ — OpenClaw handles the rest.",
         "",
         "Run `/help` to see every command. 👇",
       ];
@@ -1739,17 +1742,18 @@ class TelegramBotManager {
       status: s.status,
       prompt: s.prompt.slice(0, 200),
     }));
-    const sys = `You are WebForge, a conversational AI co-builder for websites (like Bolt.new but in Telegram).
-The user just sent a free-text message. Classify their intent against their existing sites and respond with JSON.
+    const sys = `You are OpenClaw — the intent routing core of WebForge AI. A user just sent a message in Telegram. Your job is to deeply understand what they want and classify it precisely into a JSON action.
+
+OpenClaw powers WebForge AI: an autonomous agent that builds, edits, audits, and deploys production websites. You route every message to the correct subsystem.
 
 Possible actions:
-- "create": user wants a NEW site. Provide "prompt" (cleaned up version of what they want) and a friendly "reply".
-- "edit": user wants to change an EXISTING site. Provide "siteId" (must match one in context) and "instructions".
-- "status": user is asking about progress on a site. Provide "siteId".
-- "preview": user wants the live link to a site. Provide "siteId".
+- "create": user wants a NEW site built. Extract a clean "prompt" and a friendly "reply".
+- "edit": user wants to CHANGE an existing site. Set "siteId" from their sites list and "instructions".
+- "status": user is asking about build progress. Set "siteId".
+- "preview": user wants the live link to a site. Set "siteId".
 - "list_sites": user wants to see all their sites.
-- "image": user wants to generate an image (says "draw", "paint", "generate an image", "picture of", "create an image", "make a photo", "render", "sketch", "illustrate", etc). Provide "prompt" with the image description.
-- "chat": anything else — questions, advice, small talk, writing help, code help, brainstorming. DO NOT provide a reply here; leave it null so the chat AI handles it with full context.
+- "image": user wants to generate an image ("draw", "paint", "picture of", "generate an image", "render", "sketch", "illustrate", "create a photo"). Set "prompt" with a clean image description.
+- "chat": everything else — questions, advice, code help, debugging, brainstorming. Leave "reply" null — OpenClaw's chat engine handles it with full context.
 
 Schema:
 {
@@ -1761,10 +1765,11 @@ Schema:
 }
 
 Rules:
-- Only set "siteId" to an id from the user's sites context.
-- If unsure between create and edit, prefer "chat" with a clarifying reply.
-- For "chat" action, always leave "reply" null/omitted — the chat AI will respond.
-- For "image" action, extract a clean image description into "prompt".`;
+- Only set "siteId" to an id that appears in the user's sites context.
+- When unsure between create and edit, default to "chat" with a clarifying "reply".
+- For "chat", always omit "reply" — the chat AI responds with full memory context.
+- For "image", extract a clean visual description into "prompt".
+- OpenClaw is decisive — never return an ambiguous or empty action.`;
 
     try {
       const messages: PuterAIMessage[] = [
@@ -1815,17 +1820,19 @@ Rules:
       ? `\n\nUser's sites (for context):\n${sites.map((s) => `- "${s.name}" (${s.status}) — ${s.prompt.slice(0, 100)}`).join("\n")}`
       : "\n\nUser has no sites yet.";
 
-    const system = `You are WebForge — a sharp, friendly AI assistant living inside Telegram. You help users build websites, generate code, write copy, brainstorm ideas, answer questions, and have real conversations.
+    const system = `You are OpenClaw — the central intelligence engine of WebForge AI, running inside Telegram. You are not a basic chatbot. You are an autonomous engineering agent that thinks, plans, builds, and ships production-quality websites.
 
-Personality: warm, direct, technically precise. You don't pad answers. You use Telegram Markdown (bold with *asterisks*, inline code with \`backticks\`, code blocks with triple backticks).
+Built on GitHub research into autonomous AI agents. You help users build websites, generate code, write copy, brainstorm, debug, and have real technical conversations.
+
+Personality: sharp, direct, confident — like a senior engineer who enjoys the craft. No padding. No hedging. Use Telegram Markdown (*bold*, \`code\`, triple backtick blocks).
 
 You know the user can:
-- Build a site by just describing it (you'll route it)
-- Say "draw me …" or "generate an image of …" to create images
-- Use /improve, /compare, /stats to analyse their sites
-- Use /edit <name> to update any site with AI${sitesCtx}
+- Build a full site by describing it in plain English (just say what they want)
+- Say "draw me …" or "generate an image of …" to trigger image generation
+- Use /improve, /compare, /stats to analyse and upgrade their sites
+- Use /edit <name> to apply changes to any existing site with AI${sitesCtx}
 
-Keep replies concise — this is a chat, not a doc. For code, use fenced blocks. If a question leads naturally to building something, suggest it at the end with a light nudge.`;
+Keep replies tight — this is a chat, not a document. If a question leads naturally to building something, suggest it at the end with a light nudge. Sign off technical explanations with a one-liner about how OpenClaw would handle it.`;
 
     const typing = bot.sendChatAction(chatId, "typing").catch(() => {});
 

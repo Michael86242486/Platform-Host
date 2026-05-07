@@ -1,14 +1,18 @@
 /**
- * LLM-powered WebForge generator — powered by Puter Codex.
+ * OpenClaw — WebForge AI Orchestration Pipeline
  *
- * Pipeline phases:
- *   Phase 0 — researchInspirationAI : design brief from prompt
- *   Phase 1 — analyzeProjectAI      : classify project, draft plan
- *   Phase 1b— refinePlanAI          : user-driven plan iteration
- *   Phase 2 — buildProjectAIParallel: shared assets first, pages in parallel
- *   Phase 3 — auditProjectAI        : SEO / a11y / mobile / perf audit
- *   Phase 4 — autoFixProjectAI      : patch files based on audit
- *   Phase 5 — (queue) hero image    : Puter txt2img or CSS gradient
+ * OpenClaw is the central brain and orchestration engine of WebForge AI.
+ * It doesn't simply generate code — it thinks, plans, builds, audits,
+ * self-corrects, and publishes like a real autonomous engineering agent.
+ *
+ * Pipeline phases managed by OpenClaw:
+ *   Phase 0 — UNDERSTAND  : researchInspirationAI  — design brief from prompt
+ *   Phase 1 — PLAN        : analyzeProjectAI        — classify project, draft plan
+ *   Phase 1b— PLAN        : refinePlanAI            — user-driven plan iteration
+ *   Phase 2 — BUILD       : buildProjectAIParallel  — shared assets + pages in parallel
+ *   Phase 3 — AUDIT       : auditProjectAI          — SEO / a11y / mobile / perf audit
+ *   Phase 4 — FIX         : autoFixProjectAI        — autonomous self-correction pass
+ *   Phase 5 — PUBLISH     : (queue) hero image + live URL deployment
  */
 
 import type { SiteAnalysis, SiteFiles, SitePlan, SitePlanPage } from "./db";
@@ -32,6 +36,11 @@ import {
   type AgentEnvironment,
   type BuildQualityReport,
 } from "./agent-skills";
+import {
+  clawPhase,
+  clawPrompt,
+  OPENCLAW_SYSTEM_PREFIX,
+} from "./openclaw";
 
 export type { BuildQualityReport };
 
@@ -43,7 +52,9 @@ const FAST_MODEL = SECONDARY_MODEL;
 // PHASE 0 — Research / design inspiration
 // ---------------------------------------------------------------------------
 
-const RESEARCH_SYSTEM = `You are WebForge's creative director. Given a project brief, produce a RICH DESIGN BRIEF that makes this site genuinely remarkable — not another cookie-cutter template.
+const RESEARCH_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+Phase 0 — 🔍 Research: You are OpenClaw's creative intelligence. Given a project brief, produce a RICH DESIGN BRIEF that makes this site genuinely remarkable — not another cookie-cutter template.
 
 Be bold. Be specific. Think about what would actually impress someone who sees this site.
 Consider: What makes this site category interesting? What visual metaphor fits the brand?
@@ -91,6 +102,7 @@ export async function researchInspirationAI(
   analysis: SiteAnalysis,
   model?: string,
 ): Promise<ResearchBrief> {
+  clawPhase("RESEARCH", prompt.slice(0, 80));
   const fallback: ResearchBrief = {
     mood: "Modern, bold, and professional",
     palette: { background: "#0a0e14", surface: "#141920", primary: "#00ffc2", secondary: "#58a6ff", text: "#e6edf3", muted: "#8b949e" },
@@ -133,7 +145,9 @@ export async function researchInspirationAI(
 // PHASE 1 — Analysis
 // ---------------------------------------------------------------------------
 
-const ANALYSIS_SYSTEM = `You are WebForge, a creative director and senior engineer. You build ANY kind of website — from brutal portfolio sites to interactive music experiences, from three.js art to restaurant menus, from SaaS dashboards to scrollytelling stories.
+const ANALYSIS_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+Phase 1 — 📐 Planning: You are OpenClaw's analytical core. You build ANY kind of website — from brutal portfolio sites to interactive music experiences, from three.js art to restaurant menus, from SaaS dashboards to scrollytelling stories.
 
 Given a user prompt, classify the project and design its structure. ONLY return JSON. No prose.
 
@@ -161,6 +175,7 @@ export async function analyzeProjectAI(
   name?: string,
   model?: string,
 ): Promise<SiteAnalysis> {
+  clawPhase("PLAN", name ?? prompt.slice(0, 60));
   try {
     const messages: PuterAIMessage[] = [
       { role: "system", content: ANALYSIS_SYSTEM },
