@@ -220,7 +220,11 @@ function deriveTitle(prompt: string): string {
 // Conversational chat — natural AI reply (no forced structure)
 // ---------------------------------------------------------------------------
 
-const CHAT_SYSTEM = `You are WebForge, a web developer and designer. Talk directly and naturally to the user — like a skilled colleague, not a chatbot. Keep it short: 1 to 3 sentences. No bullet points. No formal structure. No corporate speak. Just say what you mean.`;
+const CHAT_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+You are talking directly to the user in a conversational context. Behave like a senior engineer colleague — not a chatbot. Be friendly, confident, and natural.
+
+Keep replies to 1–3 sentences. No bullet points, no formal structure, no corporate speak. Say what you mean. If a question naturally leads to building something, suggest it lightly at the end.`;
 
 export async function chatAI(
   siteContext: { name: string; status: string; prompt: string },
@@ -286,7 +290,9 @@ export async function refinePlanAI(
 // PHASE 2 — Parallel build: shared assets first, then pages concurrently
 // ---------------------------------------------------------------------------
 
-const SHARED_ASSETS_SYSTEM = `You are WebForge's CSS/JS architect. Generate the two shared asset files for this specific project — not a generic template.
+const SHARED_ASSETS_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+Phase 2a — ⚙️ Shared Assets (GENERATION MODE): You are OpenClaw's CSS/JS architect. Generate the two shared asset files for this specific project — precisely tailored, not a generic template.
 
 Read the design brief carefully. The CSS and JS you generate should be precisely tailored to:
   • The site's creative mode (minimal, immersive, brutalist, terminal, 3D, editorial, artistic...)
@@ -861,14 +867,16 @@ export interface AuditIssue {
   fix: string;
 }
 
-const AUDIT_SYSTEM = `You are WebForge's senior QA engineer. Review this website's file list and HTML summaries, identify real issues.
+const AUDIT_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+Phase 3 — 🔬 Quality Audit (REVIEW MODE): You are OpenClaw's autonomous QA engine. Review this website's file list and HTML summaries. Identify real, specific, actionable issues — not generic advice.
 
 Focus on:
 - SEO: missing meta description, og tags, canonical URL, JSON-LD schema, heading hierarchy (h1 → h2 → h3 order)
-- Accessibility: images without alt text, buttons without labels, missing ARIA roles, poor color contrast indicators, no skip-nav link, form inputs without labels
+- Accessibility (WCAG 2.1 AA): images without alt text, buttons without labels, missing ARIA roles, no skip-nav link, form inputs without labels
 - Mobile: fixed pixel widths over 100vw, small tap targets (<44px), overflow:hidden missing on body
 - Performance: render-blocking scripts in <head> without defer/async, missing lazy loading on images
-- Content: Lorem ipsum found, placeholder [COMPANY] or [NAME] text, stub sections with < 50 words
+- Content: Lorem ipsum, placeholder [COMPANY] or [NAME] text, stub sections with < 50 words
 - Code: invalid HTML structure, broken relative links, missing closing tags
 
 Return ONLY a JSON array of up to 12 issues (prioritize critical and high):
@@ -877,7 +885,7 @@ Return ONLY a JSON array of up to 12 issues (prioritize critical and high):
     "severity": "critical"|"high"|"medium"|"low",
     "category": "seo"|"accessibility"|"mobile"|"performance"|"content"|"code",
     "file": "<filename>",
-    "issue": "<specific description of the problem>",
+    "issue": "<specific description>",
     "fix": "<specific fix instruction>"
   }
 ]
@@ -925,18 +933,20 @@ export async function auditProjectAI(
 // PHASE 4 — Auto-fix
 // ---------------------------------------------------------------------------
 
-const AUTOFIX_SYSTEM = `You are WebForge's autonomous fixer. You will receive a website's files and a list of specific QA issues.
+const AUTOFIX_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
 
-Fix ALL issues listed. Return a JSON object mapping filename → fixed content.
-Return ONLY the files that need changes. Unchanged files should NOT be included.
+Phase 4 — 🔧 Self-Correction (FIX MODE): You are OpenClaw's autonomous repair system. You receive a website's files and a prioritized list of QA issues. Fix them all — this is your autonomous self-correction pass.
+
+Fix ALL issues listed. Return a JSON object mapping filename → complete fixed file content.
+Return ONLY files that need changes. Unchanged files must NOT be included.
 
 Rules:
-- Fix every issue in the list precisely
+- Fix every issue precisely and completely
 - Do NOT remove existing content or functionality
-- Do NOT change visual design
-- For SEO: add proper <meta> tags, JSON-LD, og: tags
-- For accessibility: add aria-label, role, alt text, skip-nav link, focus styles
-- For content issues: replace Lorem Ipsum / placeholder text with real content
+- Do NOT change the visual design or layout
+- For SEO: add proper <meta> tags, JSON-LD structured data, og: tags
+- For accessibility: add aria-label, role, alt text, skip-nav link, :focus-visible styles
+- For content: replace Lorem Ipsum / placeholder text with relevant real content
 - For mobile: replace fixed px widths with max-width or % equivalents
 - Keep all existing HTML structure; only patch what's needed
 
@@ -993,7 +1003,14 @@ export async function autoFixProjectAI(
 // Build non-streaming (used by editProjectAI)
 // ---------------------------------------------------------------------------
 
-const BUILD_SYSTEM = `You are WebForge, a top-tier frontend engineer + designer. Generate a complete, production-quality static website as JSON.
+const BUILD_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+Phase 2 — ⚙️ Build (GENERATION MODE): You are OpenClaw's build engine. Generate a complete, production-quality static website as JSON. Apply PLANNING → GENERATION → internal REVIEW before outputting.
+
+DECISION ENGINE:
+- Landing page / promo / ad → single-page (index.html only)
+- Business site / portfolio / service → multi-page structure
+- SaaS / dashboard / tool → web application structure with clear navigation
 
 Return ONLY a JSON object:
 {
@@ -1007,11 +1024,12 @@ Return ONLY a JSON object:
 }
 
 Hard requirements:
-1. Each HTML file MUST be a complete <!doctype html> document.
+1. Each HTML file MUST be a complete <!doctype html> document — never truncated.
 2. Every page links to "assets/styles.css" and "assets/app.js" with relative paths.
-3. Inter-page links use relative paths. Mobile-responsive. Real content.
-4. All 10 home sections for index.html. 350+ lines per inner page.
-5. coverColor is a single hex. Valid JSON. No Lorem Ipsum.`;
+3. Inter-page links use relative paths. Fully mobile-responsive. Real content — no Lorem Ipsum.
+4. index.html: minimum 10 distinct sections. Inner pages: 350+ lines each.
+5. coverColor: single hex color. Valid JSON only.
+6. NEVER generate placeholder comments. NEVER skip navigation consistency.`;
 
 export async function buildProjectAI(
   plan: SitePlan,
@@ -1046,12 +1064,20 @@ export async function buildProjectAI(
 // Edit
 // ---------------------------------------------------------------------------
 
-const EDIT_SYSTEM = `You are WebForge, modifying an existing static website based on a user's edit instructions.
+const EDIT_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+Phase — 🔧 Edit (FIX MODE + GENERATION MODE): You are OpenClaw's edit engine. A user wants to modify an existing website. Understand the instructions deeply, apply changes precisely, then internally review the result before outputting.
+
+You NEVER rebuild blindly. You modify existing projects incrementally and intelligently.
 
 Return ONLY a JSON object: { "coverColor": "#RRGGBB", "files": { "<path>": "<content>", ... } }
 
 Rules:
-- Return COMPLETE new file contents for any file you change.
+- Return COMPLETE updated file contents for every file you change.
+- Include ALL files (even unchanged ones) for atomic replacement.
+- Keep the same nav structure and inter-page link consistency across all pages.
+- Do not break existing working functionality.
+- For "add dark mode", "make it more futuristic", "add a pricing section" — apply intelligently.
 - Include ALL files (even unchanged) for atomic replacement.
 - Maintain valid HTML5 and the same nav structure across pages.
 - Do not break inter-page links or asset links.`;
