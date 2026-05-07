@@ -19,10 +19,12 @@ import {
 } from "./generator";
 import { logger } from "./logger";
 import {
-  puterAIComplete,
-  puterAIStream,
-  type PuterAIMessage,
-} from "./puter";
+  aiComplete,
+  aiStream,
+  PRIMARY_MODEL,
+  SECONDARY_MODEL,
+  type AIMessage,
+} from "./ai";
 import {
   getFullSkillsContext,
   buildEnvironmentContext,
@@ -33,7 +35,9 @@ import {
 
 export type { BuildQualityReport };
 
-const CODEX_MODEL = "openai/gpt-5.1-codex-mini";
+type PuterAIMessage = AIMessage;
+const CODEX_MODEL = PRIMARY_MODEL;
+const FAST_MODEL = SECONDARY_MODEL;
 
 // ---------------------------------------------------------------------------
 // PHASE 0 — Research / design inspiration
@@ -102,7 +106,7 @@ export async function researchInspirationAI(
       { role: "system", content: RESEARCH_SYSTEM },
       { role: "user", content: `Project: ${prompt}\n\nAnalysis: ${JSON.stringify(analysis, null, 2)}\n\nReturn the JSON design brief.` },
     ];
-    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    const text = await aiComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty research");
     const parsed = JSON.parse(text) as Partial<ResearchBrief>;
     const VALID_CREATIVE_MODES = ["standard","minimal","immersive","editorial","artistic","terminal","brutalist","3d","scrollytelling"];
@@ -162,7 +166,7 @@ export async function analyzeProjectAI(
       { role: "system", content: ANALYSIS_SYSTEM },
       { role: "user", content: `Project prompt: ${prompt}\n${name ? `Suggested name: ${name}\n` : ""}Return the JSON.` },
     ];
-    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    const text = await aiComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty analysis");
     const parsed = JSON.parse(text) as Partial<SiteAnalysis>;
     return normalizeAnalysis(parsed, prompt, name);
@@ -222,7 +226,7 @@ export async function chatAI(
       { role: "system", content: `${CHAT_SYSTEM}\n\n${ctx}` },
       ...history,
     ];
-    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL });
+    const text = await aiComplete(messages, { model: model ?? FAST_MODEL });
     return text.trim() || fallbacks[siteContext.status] || fallbacks.default;
   } catch {
     return fallbacks[siteContext.status] || fallbacks.default;
@@ -253,7 +257,7 @@ export async function refinePlanAI(
       { role: "system", content: REFINE_PLAN_SYSTEM },
       { role: "user", content: `Current plan:\n${JSON.stringify(currentAnalysis, null, 2)}\n\nUser feedback: "${feedback}"\n\nReturn the updated JSON.` },
     ];
-    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    const text = await aiComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty refinement");
     const parsed = JSON.parse(text) as Partial<SiteAnalysis>;
     return normalizeAnalysis(parsed, currentAnalysis.intent);
@@ -801,7 +805,7 @@ async function streamParseFiles(
     }
   };
 
-  await puterAIStream(
+  await aiStream(
     messages,
     (delta: string) => {
       buffer += delta;
@@ -889,7 +893,7 @@ export async function auditProjectAI(
       },
     ];
 
-    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    const text = await aiComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) return [];
     const parsed = JSON.parse(text);
     if (!Array.isArray(parsed)) return [];
@@ -953,7 +957,7 @@ export async function autoFixProjectAI(
       },
     ];
 
-    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    const text = await aiComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) return files;
 
     const fixedFiles = JSON.parse(text) as Record<string, unknown>;
@@ -1006,7 +1010,7 @@ export async function buildProjectAI(
       { role: "system", content: BUILD_SYSTEM },
       { role: "user", content: `name: ${intentName}\n\nprompt: ${originalPrompt}\n\nplan: ${JSON.stringify(planSummary, null, 2)}` },
     ];
-    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    const text = await aiComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty build response");
     const parsed = JSON.parse(text) as { coverColor?: string; files?: Record<string, unknown> };
     const files = sanitizeFiles(parsed.files, plan);
@@ -1048,7 +1052,7 @@ export async function editProjectAI(
       { role: "system", content: EDIT_SYSTEM },
       { role: "user", content: `name: ${intentName}\n\nedit instructions: ${instructions}\n\ncurrent files:\n${JSON.stringify(currentFiles, null, 2)}` },
     ];
-    const text = await puterAIComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    const text = await aiComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty edit response");
     const parsed = JSON.parse(text) as { coverColor?: string; files?: Record<string, unknown> };
     const fallbackPlan: SitePlan = { type: "website", summary: "", pages: [{ path: "index.html", title: "Home", purpose: "", sections: [] }], styles: { palette: "neon", mood: "" }, features: [], notes: [] };

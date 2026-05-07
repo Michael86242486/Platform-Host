@@ -3,7 +3,8 @@ import crypto from "node:crypto";
 import { db, messagesTable } from "./db";
 import { siteEventBus } from "./eventBus";
 import { logger } from "./logger";
-import { puterAIStream, type PuterAIMessage } from "./puter";
+import { aiStream, FAST_MODEL, type AIMessage as PuterAIMessage } from "./ai";
+const puterAIStream = aiStream;
 
 type NarrateInput = {
   userId: string;
@@ -67,7 +68,7 @@ export async function streamNarration(input: NarrateInput): Promise<string> {
           delta,
         });
       },
-      { model: "openai/gpt-5.1-codex-mini" },
+      { model: FAST_MODEL },
     );
   } catch (err) {
     logger.warn({ err, siteId: input.siteId }, "narration stream failed");

@@ -1,8 +1,9 @@
 import * as oidc from "openid-client";
 import { Router, type IRouter, type Request, type Response } from "express";
-import { db, usersTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { db, usersTable, otpsTable } from "@workspace/db";
+import { eq, and, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { sendSMS, generateOTPCode, normalizePhone, SMS_CONFIGURED } from "../lib/sms";
 import {
   clearSession,
   getOidcConfig,
@@ -279,6 +280,132 @@ router.post("/auth/sign-out", async (req: Request, res: Response) => {
   const sid = getSessionId(req);
   if (sid) await deleteSession(sid);
   res.json({ ok: true });
+});
+
+// ── SMS Verification ────────────────────────────────────────────────────────
+
+/**
+ * POST /api/auth/sms/send-otp
+ * Body: { phone: string }
+ * Generates a 6-digit OTP, stores it, and sends it via SMS.
+ */
+router.post("/auth/sms/send-otp", async (req: Request, res: Response) => {
+  if (!SMS_CONFIGURED) {
+    res.status(503).json({ error: "SMS service is not configured." });
+    return;
+  }
+
+  const { phone } = req.body as { phone?: string };
+  if (!phone || phone.trim().length < 7) {
+    res.status(400).json({ error: "A valid phone number is required." });
+    return;
+  }
+
+  const normalizedPhone = normalizePhone(phone.trim());
+
+  try {
+    const code = generateOTPCode();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    await db.insert(otpsTable).values({
+      phone: normalizedPhone,
+      code,
+      expiresAt,
+    });
+
+    await sendSMS(
+      normalizedPhone,
+      `Your WebForge verification code is: ${code}\n\nValid for 10 minutes. Do not share this code.`,
+    );
+
+    logger.info({ phone: normalizedPhone.slice(0, 7) + "****" }, "OTP sent");
+    res.json({ ok: true, message: "Verification code sent." });
+  } catch (err) {
+    logger.error({ err }, "send-otp failed");
+    const msg = err instanceof Error ? err.message : "Failed to send verification code.";
+    res.status(500).json({ error: msg });
+  }
+});
+
+/**
+ * POST /api/auth/sms/verify-otp
+ * Body: { phone: string; code: string }
+ * Verifies the OTP and creates a session for the user.
+ */
+router.post("/auth/sms/verify-otp", async (req: Request, res: Response) => {
+  const { phone, code } = req.body as { phone?: string; code?: string };
+
+  if (!phone || !code) {
+    res.status(400).json({ error: "Phone and code are required." });
+    return;
+  }
+
+  const normalizedPhone = normalizePhone(phone.trim());
+  const trimmedCode = code.trim();
+
+  try {
+    const now = new Date();
+
+    const [otp] = await db
+      .select()
+      .from(otpsTable)
+      .where(
+        and(
+          eq(otpsTable.phone, normalizedPhone),
+          eq(otpsTable.code, trimmedCode),
+          gt(otpsTable.expiresAt, now),
+        ),
+      )
+      .orderBy(otpsTable.createdAt)
+      .limit(1);
+
+    if (!otp) {
+      res.status(401).json({ error: "Invalid or expired verification code." });
+      return;
+    }
+
+    if (otp.verifiedAt) {
+      res.status(401).json({ error: "This code has already been used." });
+      return;
+    }
+
+    await db
+      .update(otpsTable)
+      .set({ verifiedAt: now })
+      .where(eq(otpsTable.id, otp.id));
+
+    let [user] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.email, `sms:${normalizedPhone}`))
+      .limit(1);
+
+    if (!user) {
+      [user] = await db
+        .insert(usersTable)
+        .values({ email: `sms:${normalizedPhone}` })
+        .returning();
+    }
+
+    const sessionUser: SessionUser = {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      profileImageUrl: user.profileImageUrl,
+    };
+    const sessionData: SessionData = {
+      user: sessionUser,
+      access_token: "",
+    };
+
+    const sid = await createSession(sessionData);
+    logger.info({ phone: normalizedPhone.slice(0, 7) + "****" }, "OTP verified — session created");
+    res.json({ token: sid, user: sessionUser });
+  } catch (err) {
+    logger.error({ err }, "verify-otp failed");
+    res.status(500).json({ error: "Verification failed. Please try again." });
+  }
 });
 
 router.post("/auth/email-register", async (req: Request, res: Response) => {

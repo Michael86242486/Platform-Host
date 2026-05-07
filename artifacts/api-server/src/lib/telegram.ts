@@ -1,7 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { and, desc, eq } from "drizzle-orm";
 
-import { puterAIComplete, type PuterAIMessage } from "./puter";
+import { aiComplete, SECONDARY_MODEL, type AIMessage } from "./ai";
 import { siteEventBus, type SiteEvent } from "./eventBus";
 import { analyzeSiteFiles } from "./analyze.js";
 
@@ -23,6 +23,11 @@ import {
   setSecret,
 } from "./secrets";
 import { inferSiteName, uniqueSlug } from "./slug";
+
+/** @internal compat shims — keeps references below unchanged */
+type PuterAIMessage = AIMessage;
+const puterAIComplete = (msgs: AIMessage[], opts?: { model?: string; jsonMode?: boolean }) =>
+  aiComplete(msgs, { ...opts, model: opts?.model ?? SECONDARY_MODEL });
 
 /** Mirror of the same constant in queue.ts — set on an analyze job's
  * `instructions` column to skip the user-confirmation step and chain
@@ -123,6 +128,79 @@ class TelegramBotManager {
     string,
     Array<{ role: "user" | "assistant"; content: string }>
   >();
+  /**
+   * Channel subscription cache: telegramUserId → timestamp of last successful check.
+   * TTL: 10 minutes to avoid hammering the Telegram API.
+   */
+  private subscribedCache = new Map<string, number>();
+  private readonly CHANNEL = "@mkystudiodev";
+  private readonly CHANNEL_URL = "https://t.me/mkystudiodev";
+  private readonly SUBSCRIBE_TTL = 10 * 60 * 1000;
+
+  // ── Channel subscription gate ─────────────────────────────────────────────
+
+  private async isSubscribedToChannel(
+    bot: TelegramBot,
+    telegramUserId: number,
+  ): Promise<boolean> {
+    const key = String(telegramUserId);
+    const cached = this.subscribedCache.get(key);
+    if (cached && Date.now() - cached < this.SUBSCRIBE_TTL) return true;
+    try {
+      const member = await bot.getChatMember(this.CHANNEL, telegramUserId);
+      const ok = ["creator", "administrator", "member"].includes(member.status);
+      if (ok) this.subscribedCache.set(key, Date.now());
+      return ok;
+    } catch {
+      // If we can't check (bot not admin, channel private), allow through gracefully
+      return true;
+    }
+  }
+
+  private async requireChannel(
+    bot: TelegramBot,
+    chatId: number,
+    telegramUserId: number,
+  ): Promise<boolean> {
+    const subscribed = await this.isSubscribedToChannel(bot, telegramUserId);
+    if (!subscribed) {
+      await bot
+        .sendMessage(
+          chatId,
+          [
+            "⚡ *WebForge AI — Channel Access Required*",
+            "",
+            "To use WebForge AI you must be subscribed to our official channel.",
+            "This keeps the community powered and the AI running. 🔋",
+            "",
+            `👉 [Join ${this.CHANNEL}](${this.CHANNEL_URL})`,
+            "",
+            "Once you've joined, tap the button below or send `/start` to unlock full access.",
+          ].join("\n"),
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "📡 Join Channel — Free Access",
+                    url: this.CHANNEL_URL,
+                  },
+                ],
+                [
+                  {
+                    text: "✅ I've Joined — Unlock Access",
+                    callback_data: "check_subscription",
+                  },
+                ],
+              ],
+            },
+          },
+        )
+        .catch(() => {});
+    }
+    return subscribed;
+  }
 
   async startAll(): Promise<void> {
     const bots = await db
@@ -809,28 +887,104 @@ class TelegramBotManager {
   ): void {
     void botId;
 
+    // ── Callback query handler (inline button taps) ────────────────────────
+    bot.on("callback_query", async (query) => {
+      if (!query.message) return;
+      const chatId = query.message.chat.id;
+      const telegramUserId = query.from.id;
+      await bot.answerCallbackQuery(query.id).catch(() => {});
+
+      if (query.data === "check_subscription") {
+        // Clear cache so we re-check fresh
+        this.subscribedCache.delete(String(telegramUserId));
+        const subscribed = await this.isSubscribedToChannel(bot, telegramUserId);
+        if (subscribed) {
+          const name = query.from.first_name ?? "there";
+          await bot.sendMessage(
+            chatId,
+            [
+              `🎉 *Access granted, ${escapeMd(name)}!*`,
+              "",
+              "You're now connected to *WebForge AI* — powered by OpenClaw.",
+              "",
+              "⚡ Build your first site:",
+              "`/create portfolio` — minimal dark-mode showcase",
+              "`/create saas landing page` — modern SaaS site",
+              "`/clone notion` — clone any popular product",
+              "",
+              "Or just describe what you want — I'll handle the rest.",
+            ].join("\n"),
+            { parse_mode: "Markdown" },
+          ).catch(() => {});
+        } else {
+          await bot.sendMessage(
+            chatId,
+            `❌ Subscription not detected yet.\n\nJoin [${this.CHANNEL}](${this.CHANNEL_URL}) and tap the button again.`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: "📡 Join Channel", url: this.CHANNEL_URL },
+                  { text: "✅ I've Joined", callback_data: "check_subscription" },
+                ]],
+              },
+            },
+          ).catch(() => {});
+        }
+      }
+    });
+
     bot.onText(/^\/start\b/i, async (msg) => {
       const name = msg.from?.first_name ?? "there";
+      const telegramUserId = msg.from?.id ?? 0;
+
+      const subscribed = await this.isSubscribedToChannel(bot, telegramUserId);
+      if (!subscribed) {
+        await bot.sendMessage(
+          msg.chat.id,
+          [
+            `⚡ *Hey ${escapeMd(name)} — Welcome to WebForge AI*`,
+            "",
+            "I'm an AI that builds complete, beautiful websites in minutes.",
+            "Powered by *OpenClaw* — the most capable AI builder on Telegram.",
+            "",
+            "🔒 *One quick step to unlock access:*",
+            `Subscribe to our channel → [${this.CHANNEL}](${this.CHANNEL_URL})`,
+            "",
+            "It's free. It keeps this bot running. Takes 2 seconds.",
+          ].join("\n"),
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "📡 Join Channel — It's Free", url: this.CHANNEL_URL }],
+                [{ text: "✅ I've Subscribed — Let Me In", callback_data: "check_subscription" }],
+              ],
+            },
+          },
+        );
+        return;
+      }
+
       const lines = [
-        `👋 *Welcome, ${escapeMd(name)}!*`,
+        `⚡ *WebForge AI — Welcome, ${escapeMd(name)}!*`,
         "",
-        "I'm *WebForge AI* — I build complete, beautiful websites for you using AI.",
+        "Powered by *OpenClaw* — the central intelligence engine that plans,",
+        "builds, reviews, and deploys complete digital products autonomously.",
         "",
-        "*Here's how it works:*",
+        "*How it works:*",
         "1️⃣ Tell me what you want with `/create`",
-        "2️⃣ I'll show you a plan + an AI-generated visual preview",
-        "3️⃣ Pick a build mode:",
-        "   • 🚀 Simple — fast, straightforward build",
-        "   • 🤖 Autonomous — I review and auto-fix my own code",
-        "   • 📋 Background — runs in parallel; chat stays free",
-        "4️⃣ You get a live URL to share — with a real screenshot in this chat",
+        "2️⃣ I'll plan it, design it, and build it for you",
+        "3️⃣ You get a live URL — real site, real code, ready to share",
         "",
-        "*Try it now:*",
-        "`/create portfolio`",
-        "`/create saas blue gradient, project management tool`",
-        "`/clone notion` _(or any popular product)_",
+        "*Start now:*",
+        "`/create portfolio` — personal dark-mode showcase",
+        "`/create saas blue gradient, project manager`",
+        "`/clone notion` — clone any popular product",
         "",
-        "Run `/help` to see all commands. 👇",
+        "💬 Or just _describe what you want_ — I'll figure out the rest.",
+        "",
+        "Run `/help` to see every command. 👇",
       ];
       this.clearState(msg.chat.id);
       await bot.sendMessage(msg.chat.id, lines.join("\n"), {
@@ -845,6 +999,7 @@ class TelegramBotManager {
     });
 
     bot.onText(/^\/create\b\s*(.*)$/i, async (msg, match) => {
+      if (!(await this.requireChannel(bot, msg.chat.id, msg.from?.id ?? 0))) return;
       const prompt = (match?.[1] ?? "").trim();
       if (prompt) {
         await this.runCreate(ownerUserId, bot, msg.chat.id, prompt);
@@ -859,6 +1014,7 @@ class TelegramBotManager {
     });
 
     bot.onText(/^\/clone\b\s*(.*)$/i, async (msg, match) => {
+      if (!(await this.requireChannel(bot, msg.chat.id, msg.from?.id ?? 0))) return;
       const target = (match?.[1] ?? "").trim();
       if (!target) {
         await bot.sendMessage(
@@ -1314,6 +1470,8 @@ class TelegramBotManager {
       if (!text || text.startsWith("/")) return;
       const state = this.state.get(String(msg.chat.id));
       if (!state?.awaiting) {
+        // Gate: require channel subscription before any free-text handling
+        if (!(await this.requireChannel(bot, msg.chat.id, msg.from?.id ?? 0))) return;
         // No pending state — interpret with LLM and route.
         await this.handleFreeText(ownerUserId, bot, msg.chat.id, text).catch(
           (err) => {
@@ -1617,7 +1775,6 @@ Rules:
         },
       ];
       const body = await puterAIComplete(messages, {
-        model: "openai/gpt-4o-mini",
         jsonMode: true,
       });
       const parsed = JSON.parse(body);
@@ -1678,7 +1835,7 @@ Keep replies concise — this is a chat, not a doc. For code, use fenced blocks.
         ...history.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
         { role: "user", content: userText },
       ];
-      const reply = await puterAIComplete(messages, { model: "openai/gpt-4o-mini" });
+      const reply = await puterAIComplete(messages);
       await typing;
 
       // Store assistant reply in history

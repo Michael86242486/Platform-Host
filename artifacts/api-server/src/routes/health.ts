@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
 import { HealthCheckResponse } from "@workspace/api-zod";
 
-import { PUTER_CONFIGURED, puterPing } from "../lib/puter";
+import { PUTER_CONFIGURED } from "../lib/puter";
+import { aiPing } from "../lib/ai";
 
 const router: IRouter = Router();
 
@@ -11,13 +12,11 @@ router.get("/healthz", (_req, res) => {
 });
 
 /**
- * /api/health — extended status used by the agent + dashboard. Includes a live
- * Puter ping so we can surface broken hosting credentials early instead of
- * letting the first build fail.
+ * /api/health — extended status including AI engine + DB readiness.
  */
 router.get("/health", async (_req, res) => {
-  const [puter, dbCheck] = await Promise.all([
-    puterPing(),
+  const [aiStatus, dbCheck] = await Promise.all([
+    aiPing(),
     (async () => {
       try {
         const { pool } = await import("../lib/db");
@@ -34,7 +33,8 @@ router.get("/health", async (_req, res) => {
   res.json({
     status: dbCheck.ok ? "ok" : "degraded",
     db: dbCheck,
-    puter: { configured: PUTER_CONFIGURED, ...puter },
+    ai: aiStatus,
+    hosting: { configured: PUTER_CONFIGURED },
     auth: {
       clerk: Boolean(process.env.CLERK_SECRET_KEY),
       magicLink: true,
