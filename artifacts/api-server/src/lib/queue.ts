@@ -137,10 +137,24 @@ class JobQueue {
   async resumeOrphans(): Promise<void> {
     const queued = await db.select().from(jobsTable).where(eq(jobsTable.status, "queued"));
     for (const j of queued) void this.enqueue(j.id);
+
+    // Jobs that were mid-flight when the server restarted: mark them failed
+    // (not re-queued from scratch) so the user can decide to retry explicitly.
+    // Re-queueing from progress 0 would blow away all the work already done and
+    // show a confusing "restart" to the user.
     const stuck = await db.select().from(jobsTable).where(eq(jobsTable.status, "running"));
     for (const j of stuck) {
-      await db.update(jobsTable).set({ status: "queued", progress: 0 }).where(eq(jobsTable.id, j.id));
-      void this.enqueue(j.id);
+      await db.update(jobsTable).set({
+        status: "failed",
+        message: "Server restarted mid-build — tap Retry to rebuild",
+        finishedAt: new Date(),
+      }).where(eq(jobsTable.id, j.id));
+      await db.update(sitesTable).set({
+        status: "failed",
+        error: "Server restarted mid-build",
+        message: "Server restarted — tap Retry to rebuild",
+        updatedAt: new Date(),
+      }).where(eq(sitesTable.id, j.siteId));
     }
   }
 

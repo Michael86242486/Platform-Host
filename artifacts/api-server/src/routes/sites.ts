@@ -1760,6 +1760,33 @@ a{color:inherit;text-decoration:none}
     renderFiles(d.files || []);
   }
 
+  function showFailedBanner(msg){
+    var banner = document.getElementById("failedBanner");
+    if (!banner){
+      banner = document.createElement("div");
+      banner.id = "failedBanner";
+      banner.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#0d1117;color:#f85149;font-size:13px;text-align:center;padding:24px;z-index:10";
+      banner.innerHTML = '<div style="font-size:28px">⚠️</div>'
+        + '<div id="failedMsg" style="max-width:320px;line-height:1.5"></div>'
+        + '<div style="display:flex;gap:10px;margin-top:4px">'
+        + '<a href="javascript:location.reload()" style="padding:8px 16px;border-radius:8px;background:#161b22;border:1px solid #2a313c;color:#c9d1d9;text-decoration:none;font-size:12px">↺ Reload</a>'
+        + '<a id="retryLink" href="#" style="padding:8px 16px;border-radius:8px;background:linear-gradient(135deg,#00ffc2,#58a6ff);color:#0d1117;font-size:12px;font-weight:700;text-decoration:none">Retry Build</a>'
+        + '</div>';
+      document.getElementById("left").appendChild(banner);
+    }
+    document.getElementById("failedMsg").textContent = msg || "Build failed";
+    // Telegram retry command helper
+    document.getElementById("retryLink").href = "https://t.me/" + (window._wfBotUsername || "webforgebot") + "?start=retry";
+    document.getElementById("retryLink").onclick = function(e){
+      e.preventDefault();
+      // Copy /retry command to clipboard
+      var cmd = "/retry " + initial.name;
+      if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(cmd).then(function(){ toast("Copied: " + cmd + " — paste into Telegram bot"); });
+      } else { toast("Run in Telegram: " + cmd); }
+    };
+  }
+
   async function poll(){
     if (stopped) return;
     try {
@@ -1767,15 +1794,24 @@ a{color:inherit;text-decoration:none}
       if (r.ok){
         var d = await r.json();
         setStatus(d);
+        if (d.status === "failed"){
+          stopped = true;
+          showFailedBanner(d.message || "Build failed — use /retry in Telegram to rebuild");
+          return;
+        }
         if (d.totalBytes !== lastBytes || d.status !== lastStatus){
-          refreshFrame();
+          // Only reload the iframe if bytes increased (new content) or status changed to ready.
+          // Don't reload on autofix passes where bytes might temporarily decrease.
+          var bytesIncreased = d.totalBytes > lastBytes;
+          var statusChanged = d.status !== lastStatus;
+          if (bytesIncreased || statusChanged) {
+            refreshFrame();
+          }
           lastBytes = d.totalBytes;
           lastStatus = d.status;
         }
         if (d.status === "ready"){
           pollMs = 5000;
-        } else if (d.status === "failed"){
-          stopped = true;
         }
       }
     } catch (e) {}

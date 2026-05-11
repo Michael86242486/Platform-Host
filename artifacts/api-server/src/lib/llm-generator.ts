@@ -1047,6 +1047,12 @@ Rules:
 
 Return JSON: { "<filename>": "<complete fixed file content>", ... }`;
 
+// Max chars to send per file in autofix. We only send HTML files for text/SEO
+// fixes; JS and CSS files are skipped unless they are small enough to send
+// whole — sending truncated JS/CSS and replacing the original with a partial
+// response is the #1 cause of broken sites after the QA pass.
+const AUTOFIX_MAX_FILE_CHARS = 20_000;
+
 export async function autoFixProjectAI(
   files: SiteFiles,
   issues: AuditIssue[],
@@ -1055,17 +1061,37 @@ export async function autoFixProjectAI(
   if (issues.length === 0) return files;
 
   try {
-    // Group issues by file and only pass those files
-    const affectedFiles = new Set(issues.map((i) => i.file));
+    // Only fix issues whose file is small enough to send whole.
+    // Skip large JS/CSS files — a truncated fix is worse than no fix.
+    const fixableIssues = issues.filter((i) => {
+      const content = files[i.file];
+      if (!content) return false;
+      // Never send large JS/CSS through autofix (truncation breaks them)
+      if ((i.file.endsWith(".js") || i.file.endsWith(".css")) && content.length > AUTOFIX_MAX_FILE_CHARS) {
+        return false;
+      }
+      return true;
+    });
+
+    if (fixableIssues.length === 0) {
+      logger.info("autoFixProjectAI: all issues are in large JS/CSS files — skipping to preserve site integrity");
+      return files;
+    }
+
+    const affectedFiles = new Set(fixableIssues.map((i) => i.file));
     const filesToFix: SiteFiles = {};
     for (const f of affectedFiles) {
       if (files[f]) {
-        // Truncate very large files to avoid token overflow
-        filesToFix[f] = files[f].slice(0, 12000);
+        // Send the complete file — never truncate. If it's too big skip it.
+        if (files[f].length <= AUTOFIX_MAX_FILE_CHARS) {
+          filesToFix[f] = files[f];
+        }
       }
     }
 
-    const issuesSummary = issues
+    if (Object.keys(filesToFix).length === 0) return files;
+
+    const issuesSummary = fixableIssues
       .map((i, n) => `${n + 1}. [${i.severity.toUpperCase()}] ${i.file}: ${i.issue} → Fix: ${i.fix}`)
       .join("\n");
 
@@ -1083,9 +1109,23 @@ export async function autoFixProjectAI(
     const fixedFiles = JSON.parse(text) as Record<string, unknown>;
     const result: SiteFiles = { ...files };
     for (const [path, content] of Object.entries(fixedFiles)) {
-      if (typeof content === "string" && content.length > 100 && files[path] !== undefined) {
-        result[path] = content;
+      if (typeof content !== "string") continue;
+      if (files[path] === undefined) continue;
+      const original = files[path];
+      // Safety: never replace a file with a version that lost more than 25% of
+      // its content — this catches the AI returning truncated output.
+      const minAcceptableLength = Math.floor(original.length * 0.75);
+      if (content.length < minAcceptableLength) {
+        logger.warn({ path, originalLen: original.length, fixedLen: content.length },
+          "autoFixProjectAI: rejected fix — too short vs original (likely truncated)");
+        continue;
       }
+      // For HTML: require closing </html> to catch mid-stream cuts
+      if (path.endsWith(".html") && !content.toLowerCase().includes("</html>")) {
+        logger.warn({ path }, "autoFixProjectAI: rejected HTML fix — missing </html>");
+        continue;
+      }
+      result[path] = content;
     }
     return result;
   } catch (err) {
