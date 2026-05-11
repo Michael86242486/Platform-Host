@@ -44,6 +44,17 @@ import {
 
 export type { BuildQualityReport };
 
+// WebForge brand logo URL — served from the API server's /static directory
+// Falls back to a data-URI badge so generated sites always have branding.
+const WEBFORGE_LOGO_URL: string = (() => {
+  const domain = process.env["REPLIT_DEV_DOMAIN"] || process.env["PUBLIC_BASE_URL"];
+  if (domain) {
+    const base = domain.startsWith("http") ? domain : `https://${domain}`;
+    return `${base}/static/webforge-logo.jpg`;
+  }
+  return ""; // CSS fallback badge used instead when no public URL
+})();
+
 type PuterAIMessage = AIMessage;
 const CODEX_MODEL = PRIMARY_MODEL;
 const FAST_MODEL = SECONDARY_MODEL;
@@ -361,7 +372,9 @@ If using Chart.js: initChart(id, config) helper, theme colors
 Always: remove all console.log. Use event delegation where possible.
 Keep only what the HTML pages will call — no dead code.`;
 
-const PAGE_BUILD_SYSTEM = `You are WebForge's creative builder. Generate ONE complete HTML page for this project.
+const PAGE_BUILD_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+Phase 2b — ⚙️ Page Build (GENERATION MODE): You are OpenClaw's creative page builder. Generate ONE complete HTML page for this project. Apply PLANNING → GENERATION → internal REVIEW before outputting.
 
 You have full creative freedom over structure, layout, and content. Read the design brief carefully:
   • creativeMode tells you the aesthetic approach
@@ -393,7 +406,79 @@ REQUIRED — every page, no exceptions
 • <a href="#main-content">Skip to main content</a> as first body element
 • REAL content — invent specific, plausible details. No placeholders, no Lorem ipsum.
 • All images: picsum.photos/seed/[unique-word]/800/500 with descriptive alt=""
-• WebForge credit in footer: <p style="text-align:center;padding:16px;font-size:11px;color:rgba(120,120,140,0.7)">made with <strong>WebForge</strong></p>
+• WebForge branding in footer — ALWAYS include this exact block at the bottom of <body>:
+  <footer class="wf-credit" style="text-align:center;padding:24px 16px;border-top:1px solid rgba(255,255,255,0.08);margin-top:auto">
+    <a href="https://t.me/mkystudiodev" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:10px;text-decoration:none;opacity:0.75;transition:opacity .2s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.75">
+      __WF_LOGO__
+      <span style="font-size:12px;letter-spacing:.5px">Built with <strong>WebForge AI</strong> — powered by OpenClaw</span>
+    </a>
+  </footer>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FULL-STACK & INTERACTIVE FEATURES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OpenClaw builds COMPLETE, FULLY FUNCTIONAL applications — not just static brochures.
+
+For sites with LOGIN / AUTH pages:
+  • Build a fully working login form with email + password validation
+  • Use localStorage to persist user sessions: localStorage.setItem('wf_user', JSON.stringify({email, name, loggedIn: true}))
+  • On submit: validate fields → show loading state → simulate API call (setTimeout 800ms) → store session → redirect to dashboard
+  • "Remember me" checkbox → sessionStorage vs localStorage
+  • Logout button: localStorage.removeItem('wf_user') → redirect to login
+  • Show/hide password toggle button with eye icon (⚡ actually works)
+  • Form validation: required fields, email format, password length, real error messages
+  • Auth guard on protected pages: check localStorage on DOMContentLoaded, redirect if not logged in
+
+For sites with DASHBOARD / APP pages:
+  • Real data displayed in cards, tables, charts — populated via JavaScript
+  • Sidebar navigation with active state highlighting
+  • Stats cards with count-up animations
+  • Data tables with sorting/filtering capability
+  • Chart.js charts with realistic mock data
+  • User profile dropdown in nav (pulls from localStorage session)
+  • Mobile-responsive sidebar (hamburger toggle)
+
+For EXAM / QUIZ / LEARNING platforms (e.g. ExamAiBot style):
+  • Question card interface with multiple-choice options (A/B/C/D)
+  • Progress bar showing question X of Y
+  • Timer countdown if timed exam (JavaScript setInterval)
+  • Answer selection: highlight selected option, prevent re-selection after submit
+  • Submit button → show correct/incorrect feedback with explanation
+  • Score calculation and results summary page
+  • Leaderboard table with mock student scores
+  • Category/subject selector for different exam types
+  • "Start Exam" → "Questions" → "Results" flow using JS state machine
+  • Student registration form → practice history stored in localStorage
+
+For E-COMMERCE sites:
+  • Product grid with real product cards (image, name, price, "Add to Cart" button)
+  • Shopping cart with localStorage persistence
+  • Cart item count badge in navbar (updates live)
+  • Add/remove from cart with quantity controls
+  • Checkout form with validation
+  • Order summary calculation
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+UI QUALITY — MANDATORY STANDARDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ALL buttons MUST have:
+  • onclick handler or href — no dead buttons
+  • :hover state with visual feedback (background, shadow, scale transform)
+  • :active state for press feedback
+  • cursor: pointer
+  • Minimum 44px tap target
+
+ALL forms MUST have:
+  • Input validation on submit (required fields, email format, etc.)
+  • Real error messages displayed near the relevant field
+  • Loading state on submit button ("Processing…" text + disabled)
+  • Success feedback after submission
+  • No form that just refreshes the page without handling
+
+ALL navigation MUST:
+  • Highlight the current page's nav link (active state)
+  • Work on mobile (hamburger menu for screens < 768px)
+  • Smooth scroll for anchor links
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CREATIVE DIRECTION — be specific, be bold
@@ -625,8 +710,14 @@ Output the FILE marker then the complete HTML, then ===END===.`,
   try {
     const result = await streamParseFiles(messages, {}, async () => {}, model ?? CODEX_MODEL);
     const files: SiteFiles = {};
+    const logoImg = WEBFORGE_LOGO_URL
+      ? `<img src="${WEBFORGE_LOGO_URL}" alt="WebForge AI" style="height:28px;width:auto;vertical-align:middle">`
+      : `<span style="font-weight:800;letter-spacing:-1px;background:linear-gradient(135deg,#3b82f6,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent">WF</span>`;
     for (const [k, v] of Object.entries(result.files)) {
-      if (v && v.trim().length > 100) files[k] = v;
+      if (v && v.trim().length > 100) {
+        // Replace the __WF_LOGO__ placeholder with the actual logo element
+        files[k] = v.replace(/__WF_LOGO__/g, logoImg);
+      }
     }
     if (files[page.path] && !files[filename]) {
       files[filename] = files[page.path];
@@ -878,6 +969,10 @@ Focus on:
 - Performance: render-blocking scripts in <head> without defer/async, missing lazy loading on images
 - Content: Lorem ipsum, placeholder [COMPANY] or [NAME] text, stub sections with < 50 words
 - Code: invalid HTML structure, broken relative links, missing closing tags
+- UI Quality — CRITICAL: buttons without onclick/href handlers (dead buttons), forms that don't call event.preventDefault() (causes page refresh), missing :hover/:focus styles on interactive elements, inputs without proper type attributes
+- Login/Auth: login forms without client-side validation JS, no password show/hide toggle, no loading state on submit, no error message display
+- Navigation: nav links that don't work (href="#" with no scroll handler), hamburger menu icon without toggle JS, active page not highlighted in nav
+- Dashboard/App pages: empty data sections, charts without data, tables without rows, stats cards showing 0 or placeholder values
 
 Return ONLY a JSON array of up to 12 issues (prioritize critical and high):
 [
@@ -1137,6 +1232,135 @@ function sanitizeFiles(raw: Record<string, unknown> | undefined, plan: SitePlan)
     if (homePage && out[homePage.path]) { out["index.html"] = out[homePage.path]; }
   }
   return fillMissingFromFallback(out, plan);
+}
+
+// ---------------------------------------------------------------------------
+// ROADMAP GENERATOR — Multi-phase product roadmap with OpenClaw
+// ---------------------------------------------------------------------------
+
+export interface RoadmapPhase {
+  phase: number;
+  title: string;
+  duration: string;
+  priority: "must-have" | "should-have" | "nice-to-have";
+  features: string[];
+  milestone: string;
+  techStack: string[];
+}
+
+export interface ProductRoadmap {
+  productName: string;
+  productType: string;
+  tagline: string;
+  summary: string;
+  targetAudience: string;
+  coreValueProp: string;
+  phases: RoadmapPhase[];
+  buildPrompt: string;        // Enhanced prompt to pass to the build pipeline
+  estimatedBuildTime: string;
+}
+
+const ROADMAP_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+Mode: PLANNING (Roadmap Generation). You are OpenClaw's product strategist and architect. A user has described a product idea. Generate a detailed, multi-phase product roadmap that will guide the build pipeline.
+
+Think like a senior product manager + technical architect. Ask yourself:
+- What is the core user problem being solved?
+- What are the must-have features for MVP vs nice-to-have?
+- What is the right tech stack for this product type?
+- What makes this product special vs competitors?
+
+Apply the DECISION ENGINE:
+- "landing page / promo" → single-phase, 1 milestone, STANDARD build
+- "business website / portfolio / blog" → 2-3 phases, MULTI-PAGE build
+- "SaaS / dashboard / tool / AI platform" → 3-4 phases, WEB APPLICATION build
+- "exam platform / quiz / learning app / education tech" → 3 phases with auth + content + analytics
+- "e-commerce / store" → 3 phases with products + cart + checkout
+- "social platform / community" → 4 phases with auth + content + social + moderation
+
+Return ONLY a JSON object:
+{
+  "productName": string,
+  "productType": string,
+  "tagline": string,
+  "summary": string,
+  "targetAudience": string,
+  "coreValueProp": string,
+  "phases": [
+    {
+      "phase": 1,
+      "title": string,
+      "duration": "Week 1-2",
+      "priority": "must-have",
+      "features": ["specific feature 1", "specific feature 2", ...],
+      "milestone": "What is working at end of this phase",
+      "techStack": ["HTML5", "CSS3", "Alpine.js", ...]
+    }
+  ],
+  "buildPrompt": "A comprehensive, detailed build prompt that captures all requirements",
+  "estimatedBuildTime": "~3 minutes with OpenClaw"
+}
+
+Rules:
+- Phase 1 is always the MVP / core product (must-have only)
+- Later phases add depth, polish, advanced features
+- Features must be SPECIFIC — not "add auth" but "Email + password login with localStorage session persistence"
+- buildPrompt must be a rich, comprehensive description for the build pipeline
+- Maximum 4 phases for any product
+- Each phase has 3-7 features`;
+
+export async function generateRoadmapAI(
+  productIdea: string,
+  model?: string,
+): Promise<ProductRoadmap> {
+  clawPhase("UNDERSTAND", productIdea.slice(0, 80));
+
+  const fallback: ProductRoadmap = {
+    productName: productIdea.slice(0, 40),
+    productType: "website",
+    tagline: "Built with WebForge AI",
+    summary: productIdea,
+    targetAudience: "General users",
+    coreValueProp: productIdea,
+    phases: [{
+      phase: 1,
+      title: "MVP Launch",
+      duration: "Week 1",
+      priority: "must-have",
+      features: ["Homepage", "Core functionality", "Mobile responsive design", "Contact/CTA section"],
+      milestone: "Fully working MVP deployed",
+      techStack: ["HTML5", "CSS3", "JavaScript", "Alpine.js"],
+    }],
+    buildPrompt: productIdea,
+    estimatedBuildTime: "~2 minutes with OpenClaw",
+  };
+
+  try {
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: ROADMAP_SYSTEM },
+      { role: "user", content: `Product idea: "${productIdea}"\n\nGenerate a multi-phase product roadmap. Return JSON only.` },
+    ];
+    const text = await aiComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
+    if (!text) throw new Error("empty roadmap response");
+    const parsed = JSON.parse(text) as Partial<ProductRoadmap>;
+
+    return {
+      productName: parsed.productName ?? fallback.productName,
+      productType: parsed.productType ?? fallback.productType,
+      tagline: parsed.tagline ?? fallback.tagline,
+      summary: parsed.summary ?? fallback.summary,
+      targetAudience: parsed.targetAudience ?? fallback.targetAudience,
+      coreValueProp: parsed.coreValueProp ?? fallback.coreValueProp,
+      phases: Array.isArray(parsed.phases) && parsed.phases.length > 0
+        ? parsed.phases.slice(0, 4) as RoadmapPhase[]
+        : fallback.phases,
+      buildPrompt: parsed.buildPrompt ?? productIdea,
+      estimatedBuildTime: parsed.estimatedBuildTime ?? fallback.estimatedBuildTime,
+    };
+  } catch (err) {
+    logger.warn({ err: String(err) }, "generateRoadmapAI failed; using fallback");
+    return fallback;
+  }
 }
 
 function fillMissingFromFallback(files: SiteFiles, plan: SitePlan): SiteFiles {

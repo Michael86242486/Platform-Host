@@ -2,6 +2,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { and, desc, eq } from "drizzle-orm";
 
 import { aiComplete, SECONDARY_MODEL, type AIMessage } from "./ai";
+import { generateRoadmapAI, type ProductRoadmap } from "./llm-generator";
 import { siteEventBus, type SiteEvent } from "./eventBus";
 import { analyzeSiteFiles } from "./analyze.js";
 
@@ -94,6 +95,8 @@ const TEMPLATES: ReadonlyArray<{
 interface ChatState {
   awaiting?:
     | { kind: "create" }
+    | { kind: "roadmap" }
+    | { kind: "roadmap_refine"; buildPrompt: string }
     | { kind: "edit"; siteId: string }
     | { kind: "host_token" }
     | { kind: "host_purpose"; pendingId: string; username: string }
@@ -115,6 +118,8 @@ class TelegramBotManager {
   private botLastChat = new Map<string, number>();
   /** Map of userId → timestamp when we last sent a re-engagement nudge. */
   private lastNudgeSent = new Map<string, number>();
+  /** Short-lived roadmap build prompt storage (promptKey → buildPrompt) */
+  private roadmapPrompts = new Map<string, string>();
   /** pendingId -> in-memory record before we commit it to DB. */
   private pendingHosted = new Map<
     string,
@@ -894,6 +899,45 @@ class TelegramBotManager {
       const telegramUserId = query.from.id;
       await bot.answerCallbackQuery(query.id).catch(() => {});
 
+      // Roadmap callbacks (keys stored in-memory to avoid 64-byte limit)
+      if (query.data?.startsWith("rmp_build:")) {
+        const promptKey = query.data.slice("rmp_build:".length);
+        const buildPrompt = this.roadmapPrompts.get(promptKey) ?? "";
+        const userId = this.botOwner.get(record.id) ?? ownerUserId;
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: query.message!.message_id },
+        ).catch(() => {});
+        if (!buildPrompt) {
+          await bot.sendMessage(chatId, "⏱ Roadmap expired — please run `/roadmap` again.", { parse_mode: "Markdown" });
+          return;
+        }
+        await bot.sendMessage(chatId, "🚀 *OpenClaw build initiated!* Running the full 9-step pipeline…", { parse_mode: "Markdown" });
+        await this.runCreate(userId, bot, chatId, buildPrompt);
+        return;
+      }
+
+      if (query.data?.startsWith("rmp_refine:")) {
+        const promptKey = query.data.slice("rmp_refine:".length);
+        const buildPrompt = this.roadmapPrompts.get(promptKey) ?? "";
+        this.setState(chatId, { awaiting: { kind: "roadmap_refine", buildPrompt } });
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: query.message!.message_id },
+        ).catch(() => {});
+        await bot.sendMessage(chatId, "✏️ What would you like to change or add to the roadmap? I'll regenerate it.");
+        return;
+      }
+
+      if (query.data === "rmp_cancel") {
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: query.message!.message_id },
+        ).catch(() => {});
+        await bot.sendMessage(chatId, "✅ Roadmap cancelled. Use `/create` or `/roadmap` to start again.");
+        return;
+      }
+
       if (query.data === "check_subscription") {
         // Clear cache so we re-check fresh
         this.subscribedCache.delete(String(telegramUserId));
@@ -982,8 +1026,9 @@ class TelegramBotManager {
         "",
         "*Start building now:*",
         "`/create portfolio` — dark-mode personal showcase",
-        "`/create saas landing page` — modern SaaS site",
+        "`/create saas landing page` — modern SaaS site with working login",
         "`/clone notion` — clone any popular product",
+        "`/roadmap examaibot` — plan an AI exam platform, then build it",
         "",
         "💬 Or just _describe what you want_ — OpenClaw handles the rest.",
         "",
@@ -1079,6 +1124,33 @@ class TelegramBotManager {
 
     bot.onText(/^\/compare(?:\s+(.+))?$/i, async (msg, match) => {
       await this.sendCompare(ownerUserId, bot, msg.chat.id, match?.[1] ?? "");
+    });
+
+    // ── /roadmap command ─────────────────────────────────────────────────────
+    bot.onText(/^\/roadmap\b\s*(.*)$/i, async (msg, match) => {
+      if (!(await this.requireChannel(bot, msg.chat.id, msg.from?.id ?? 0))) return;
+      const idea = (match?.[1] ?? "").trim();
+      if (idea) {
+        await this.runRoadmap(ownerUserId, bot, msg.chat.id, idea);
+      } else {
+        this.setState(msg.chat.id, { awaiting: { kind: "roadmap" } });
+        await bot.sendMessage(
+          msg.chat.id,
+          [
+            "🗺 *OpenClaw Roadmap Planner*",
+            "",
+            "Describe your product idea and OpenClaw will generate a complete multi-phase roadmap with feature prioritization before building.",
+            "",
+            "*Examples:*",
+            "• _\"An AI exam platform where students practice with auto-generated quizzes\"_",
+            "• _\"A SaaS dashboard for freelancers to track projects and invoices\"_",
+            "• _\"A portfolio site with an interactive 3D skills section\"_",
+            "",
+            "What do you want to build?",
+          ].join("\n"),
+          { parse_mode: "Markdown" },
+        );
+      }
     });
 
     bot.onText(/^\/credits\b/i, async (msg) => {
@@ -1485,6 +1557,17 @@ class TelegramBotManager {
       }
 
       switch (state.awaiting.kind) {
+        case "roadmap":
+          this.clearState(msg.chat.id);
+          await this.runRoadmap(ownerUserId, bot, msg.chat.id, text);
+          return;
+        case "roadmap_refine": {
+          const { buildPrompt } = state.awaiting;
+          this.clearState(msg.chat.id);
+          // Refine the existing roadmap idea with the user's feedback
+          await this.runRoadmap(ownerUserId, bot, msg.chat.id, `${buildPrompt}\n\nAdditional requirements: ${text}`);
+          return;
+        }
         case "create":
           this.clearState(msg.chat.id);
           await this.runCreate(ownerUserId, bot, msg.chat.id, text);
@@ -1891,6 +1974,7 @@ Use Telegram Markdown (*bold*, \`code\`, triple backtick blocks). Keep replies t
       "*Build & clone*",
       "👋  `/start` — Start here / show welcome",
       "🪄  `/create <idea>` — Have AI build a website for you",
+      "🗺  `/roadmap <idea>` — Plan a full product roadmap first, then build",
       "⚡  `/clone <product>` — Instant clone (e.g. `/clone notion`)",
       "🎨  `/templates` — Browse ready-made site templates",
       "🧩  `/template <key>` — Build a template instantly",
@@ -2044,6 +2128,112 @@ Use Telegram Markdown (*bold*, \`code\`, triple backtick blocks). Keep replies t
         )
         .catch(() => {});
     }
+  }
+
+  // ── /roadmap — multi-phase product planning before build ──────────────────
+
+  private async runRoadmap(
+    userId: string,
+    bot: TelegramBot,
+    chatId: number,
+    idea: string,
+  ): Promise<void> {
+    const thinking = await bot.sendMessage(
+      chatId,
+      [
+        "🗺 *OpenClaw Roadmap Planner*",
+        "",
+        `📝 Idea: _${escapeMd(idea.slice(0, 120))}_`,
+        "",
+        "🧠 Analysing your product idea…",
+        "📐 Planning phases and milestones…",
+        "🎯 Prioritising features…",
+      ].join("\n"),
+      { parse_mode: "Markdown" },
+    );
+
+    let roadmap: ProductRoadmap;
+    try {
+      roadmap = await generateRoadmapAI(idea);
+    } catch (err) {
+      logger.warn({ err: String(err) }, "generateRoadmapAI failed");
+      await bot.editMessageText(
+        "❌ Roadmap generation failed. Use `/create` to build directly.",
+        { chat_id: chatId, message_id: thinking.message_id },
+      ).catch(() => {});
+      return;
+    }
+
+    const priorityEmoji = (p: string) =>
+      p === "must-have" ? "🔴" : p === "should-have" ? "🟡" : "🟢";
+
+    const phaseLines: string[] = [];
+    for (const phase of roadmap.phases) {
+      phaseLines.push(`*Phase ${phase.phase} — ${escapeMd(phase.title)}* (${escapeMd(phase.duration)})`);
+      phaseLines.push(`  🎯 Milestone: _${escapeMd(phase.milestone)}_`);
+      for (const f of phase.features.slice(0, 5)) {
+        phaseLines.push(`  ${priorityEmoji(phase.priority)} ${escapeMd(f)}`);
+      }
+      phaseLines.push(`  🛠 Stack: \`${escapeMd(phase.techStack.slice(0, 4).join(" · "))}\``);
+      phaseLines.push("");
+    }
+
+    const lines = [
+      `🗺 *${escapeMd(roadmap.productName)}*`,
+      `_${escapeMd(roadmap.tagline)}_`,
+      "",
+      `📦 Type: ${escapeMd(roadmap.productType)} · 👥 Audience: ${escapeMd(roadmap.targetAudience)}`,
+      "",
+      `💡 *Core Value:* ${escapeMd(roadmap.coreValueProp)}`,
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━",
+      "*OpenClaw Build Roadmap*",
+      "━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      ...phaseLines,
+      `⏱ Estimated build time: ${escapeMd(roadmap.estimatedBuildTime)}`,
+      "",
+      "🚀 *Ready to build Phase 1 MVP?*",
+      "_Tap \\\"Build Now\\\" to start the 9\\-step OpenClaw pipeline_",
+    ];
+
+    // Telegram callback_data is limited to 64 bytes — we store the prompt
+    // in memory and pass a short key instead.
+    const promptKey = `rdmp_${Date.now()}`;
+    this.roadmapPrompts.set(promptKey, roadmap.buildPrompt);
+    // Clean up after 30 minutes
+    setTimeout(() => this.roadmapPrompts.delete(promptKey), 30 * 60 * 1000);
+
+    await bot.editMessageText(lines.join("\n"), {
+      chat_id: chatId,
+      message_id: thinking.message_id,
+      parse_mode: "MarkdownV2",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "🚀 Build Now (Phase 1 MVP)", callback_data: `rmp_build:${promptKey}` },
+          ],
+          [
+            { text: "✏️ Refine Roadmap", callback_data: `rmp_refine:${promptKey}` },
+            { text: "❌ Cancel", callback_data: "rmp_cancel" },
+          ],
+        ],
+      },
+    }).catch(async () => {
+      // MarkdownV2 parse error fallback — send plain text version
+      await bot.sendMessage(
+        chatId,
+        `🗺 ${roadmap.productName} roadmap generated!\n\n${roadmap.summary}\n\n${roadmap.phases.length} phases planned. Tap below to build.`,
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "🚀 Build Now", callback_data: `rmp_build:${promptKey}` },
+              { text: "❌ Cancel", callback_data: "rmp_cancel" },
+            ]],
+          },
+        },
+      );
+    });
   }
 
   private async runCreate(
