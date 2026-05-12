@@ -15,7 +15,7 @@ export interface SiteAnalysis {
     | "website" | "saas" | "portfolio" | "restaurant" | "ecommerce"
     | "event" | "editorial" | "art" | "music" | "game" | "tool"
     | "bot" | "docs" | "nonprofit" | "personal" | "agency"
-    | "directory" | "backend";
+    | "directory" | "backend" | "mvp" | "dashboard" | "landing";
   intent: string;
   audience: string | null;
   features: string[];
@@ -76,11 +76,19 @@ export const sitesTable = pgTable(
     message: text("message"),
     error: text("error"),
     coverColor: text("cover_color"),
-    /** Structured project analysis (set in the analyze phase). */
+    projectType: text("project_type", {
+      enum: [
+        "website", "game", "saas", "ecommerce", "portfolio",
+        "dashboard", "landing", "mvp", "api", "tool", "bot",
+      ],
+    }).default("website"),
+    githubRepo: text("github_repo"),
+    githubBranch: text("github_branch").default("main"),
+    githubSyncStatus: text("github_sync_status", {
+      enum: ["none", "syncing", "synced", "failed"],
+    }).default("none"),
     analysis: jsonb("analysis").$type<SiteAnalysis | null>(),
-    /** Build plan returned to the user before construction starts. */
     plan: jsonb("plan").$type<SitePlan | null>(),
-    /** Map of file path -> file content. Replaces single html/css/js columns. */
     files: jsonb("files").$type<SiteFiles | null>(),
     customDomain: text("custom_domain").unique(),
     customDomainStatus: text("custom_domain_status", {
@@ -88,24 +96,15 @@ export const sitesTable = pgTable(
     }),
     customDomainToken: text("custom_domain_token"),
     customDomainError: text("custom_domain_error"),
-    /** Puter subdomain assigned to this site (unique). The live URL is
-     *  `https://<puterSubdomain>.puter.site/`. */
     puterSubdomain: text("puter_subdomain").unique(),
-    /** Cached public Puter URL for this site (returned to clients). */
     puterPublicUrl: text("puter_public_url"),
-    /** Root directory inside Puter that holds this site's files. */
     puterRootDir: text("puter_root_dir"),
-    /** Status of the upload to Puter cloud hosting. */
     puterStatus: text("puter_status", {
       enum: ["pending", "uploading", "hosted", "failed"],
     }),
-    /** Last error encountered while uploading to Puter (if any). */
     puterError: text("puter_error"),
-    /** Codex/LLM model used to build this site (e.g. "gpt-4o-mini"). */
     model: text("model"),
-    /** Array of build snapshots; newest last; capped at 10. */
     checkpoints: jsonb("checkpoints").$type<SiteCheckpoint[] | null>(),
-    /** Short random token for public share links. */
     shareToken: text("share_token").unique(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -117,6 +116,7 @@ export const sitesTable = pgTable(
   (t) => [
     index("sites_user_id_idx").on(t.userId),
     index("sites_custom_domain_idx").on(t.customDomain),
+    index("sites_project_type_idx").on(t.projectType),
   ],
 );
 

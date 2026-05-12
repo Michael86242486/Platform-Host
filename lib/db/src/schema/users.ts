@@ -8,6 +8,10 @@ export const usersTable = pgTable("users", {
   firstName: text("first_name"),
   lastName: text("last_name"),
   profileImageUrl: text("profile_image_url"),
+  githubUsername: text("github_username"),
+  githubAccessToken: text("github_access_token"),
+  githubAvatarUrl: text("github_avatar_url"),
+  plan: text("plan", { enum: ["free", "pro", "enterprise"] }).default("free"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
