@@ -1050,7 +1050,7 @@ class TelegramBotManager {
       if (!(await this.requireChannel(bot, msg.chat.id, msg.from?.id ?? 0))) return;
       const prompt = (match?.[1] ?? "").trim();
       if (prompt) {
-        await this.runCreate(ownerUserId, bot, msg.chat.id, prompt);
+        await this.runCreate(await this.resolveUserId(msg.chat.id, ownerUserId), bot, msg.chat.id, prompt);
       } else {
         this.setState(msg.chat.id, { awaiting: { kind: "create" } });
         await bot.sendMessage(
@@ -1095,11 +1095,62 @@ class TelegramBotManager {
         `surface). Match ${target}'s real palette, typography mood, and tone. ` +
         `Multi-page, mobile-responsive, fully functional with localStorage. ` +
         `No external assets — emojis and CSS-only visuals.`;
-      await this.runCreate(ownerUserId, bot, msg.chat.id, clonePrompt);
+      await this.runCreate(await this.resolveUserId(msg.chat.id, ownerUserId), bot, msg.chat.id, clonePrompt);
+    });
+
+    // ── /link — connect Telegram account to WebForge account ─────────────────
+    bot.onText(/^\/link\b\s*([A-Z0-9]{6,10})?$/i, async (msg, match) => {
+      const code = (match?.[1] ?? "").trim().toUpperCase();
+      if (!code) {
+        await bot.sendMessage(
+          msg.chat.id,
+          [
+            "🔗 *Link your WebForge account*",
+            "",
+            "In the WebForge app, go to *Settings → Telegram Link* and copy your link code.",
+            "Then send it here:",
+            "",
+            "`/link YOURCODE`",
+          ].join("\n"),
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      const [user] = await db
+        .select({ id: usersTable.id, firstName: usersTable.firstName })
+        .from(usersTable)
+        .where(eq(usersTable.telegramLinkCode, code))
+        .limit(1);
+      if (!user) {
+        await bot.sendMessage(
+          msg.chat.id,
+          "❌ Invalid or expired code. Generate a fresh one in WebForge → Settings → Telegram Link.",
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+      await db.update(usersTable).set({
+        telegramChatId: String(msg.chat.id),
+        telegramLinkCode: null,
+        updatedAt: new Date(),
+      }).where(eq(usersTable.id, user.id));
+      const name = user.firstName ?? msg.from?.first_name ?? "there";
+      await bot.sendMessage(
+        msg.chat.id,
+        [
+          `✅ *Linked! Hey ${escapeMd(name)}!*`,
+          "",
+          "Your Telegram account is now connected to your WebForge account.",
+          "All builds, edits and notifications will sync to your account.",
+          "",
+          "Try `/create` to build your first site.",
+        ].join("\n"),
+        { parse_mode: "Markdown" },
+      );
     });
 
     bot.onText(/^\/(mysites|mysite)\b/i, async (msg) => {
-      await this.listSites(ownerUserId, bot, msg.chat.id);
+      await this.listSites(await this.resolveUserId(msg.chat.id, ownerUserId), bot, msg.chat.id);
     });
 
     bot.onText(/^\/cancel\b/i, async (msg) => {
@@ -1131,7 +1182,7 @@ class TelegramBotManager {
       if (!(await this.requireChannel(bot, msg.chat.id, msg.from?.id ?? 0))) return;
       const idea = (match?.[1] ?? "").trim();
       if (idea) {
-        await this.runRoadmap(ownerUserId, bot, msg.chat.id, idea);
+        await this.runRoadmap(await this.resolveUserId(msg.chat.id, ownerUserId), bot, msg.chat.id, idea);
       } else {
         this.setState(msg.chat.id, { awaiting: { kind: "roadmap" } });
         await bot.sendMessage(
@@ -1443,7 +1494,7 @@ class TelegramBotManager {
     bot.onText(/^\/status\b\s*(.*)$/i, async (msg, match) => {
       const arg = (match?.[1] ?? "").trim();
       if (arg) {
-        await this.sendStatus(ownerUserId, bot, msg.chat.id, arg);
+        await this.sendStatus(await this.resolveUserId(msg.chat.id, ownerUserId), bot, msg.chat.id, arg);
       } else {
         this.setState(msg.chat.id, { awaiting: { kind: "status_site" } });
         await bot.sendMessage(msg.chat.id, "Which site? Send name or id.");
@@ -1453,7 +1504,7 @@ class TelegramBotManager {
     bot.onText(/^\/preview\b\s*(.*)$/i, async (msg, match) => {
       const arg = (match?.[1] ?? "").trim();
       if (arg) {
-        await this.sendPreview(ownerUserId, bot, msg.chat.id, arg);
+        await this.sendPreview(await this.resolveUserId(msg.chat.id, ownerUserId), bot, msg.chat.id, arg);
       } else {
         this.setState(msg.chat.id, { awaiting: { kind: "preview_site" } });
         await bot.sendMessage(msg.chat.id, "Which site? Send name or id.");
@@ -1462,8 +1513,9 @@ class TelegramBotManager {
 
     bot.onText(/^\/edit\b\s*(.*)$/i, async (msg, match) => {
       const arg = (match?.[1] ?? "").trim();
+      const resolvedUid = await this.resolveUserId(msg.chat.id, ownerUserId);
       if (arg) {
-        const site = await this.findSite(ownerUserId, arg);
+        const site = await this.findSite(resolvedUid, arg);
         if (!site) {
           await bot.sendMessage(msg.chat.id, "❌ No site matched.");
           return;
@@ -1487,7 +1539,8 @@ class TelegramBotManager {
 
     bot.onText(/^\/retry\b\s*(.*)$/i, async (msg, match) => {
       const arg = (match?.[1] ?? "").trim();
-      if (arg) await this.retrySite(ownerUserId, bot, msg.chat.id, arg);
+      const uid = await this.resolveUserId(msg.chat.id, ownerUserId);
+      if (arg) await this.retrySite(uid, bot, msg.chat.id, arg);
       else {
         this.setState(msg.chat.id, { awaiting: { kind: "retry_site" } });
         await bot.sendMessage(msg.chat.id, "Which site to retry?");
@@ -1496,7 +1549,8 @@ class TelegramBotManager {
 
     bot.onText(/^\/delete\b\s*(.*)$/i, async (msg, match) => {
       const arg = (match?.[1] ?? "").trim();
-      if (arg) await this.deleteSite(ownerUserId, bot, msg.chat.id, arg);
+      const uid = await this.resolveUserId(msg.chat.id, ownerUserId);
+      if (arg) await this.deleteSite(uid, bot, msg.chat.id, arg);
       else {
         this.setState(msg.chat.id, { awaiting: { kind: "delete_site" } });
         await bot.sendMessage(msg.chat.id, "Which site to delete?");
@@ -1504,7 +1558,7 @@ class TelegramBotManager {
     });
 
     bot.onText(/^\/(tasks|queue)\b/i, async (msg) => {
-      await this.listJobs(ownerUserId, bot, msg.chat.id);
+      await this.listJobs(await this.resolveUserId(msg.chat.id, ownerUserId), bot, msg.chat.id);
     });
 
     bot.onText(/^\/hostbot\b/i, async (msg) => {
@@ -1548,7 +1602,8 @@ class TelegramBotManager {
         // Gate: require channel subscription before any free-text handling
         if (!(await this.requireChannel(bot, msg.chat.id, msg.from?.id ?? 0))) return;
         // No pending state — interpret with LLM and route.
-        await this.handleFreeText(ownerUserId, bot, msg.chat.id, text).catch(
+        const freeUid = await this.resolveUserId(msg.chat.id, ownerUserId);
+        await this.handleFreeText(freeUid, bot, msg.chat.id, text).catch(
           (err) => {
             logger.warn({ err }, "free-text route failed");
           },
@@ -1556,26 +1611,26 @@ class TelegramBotManager {
         return;
       }
 
+      const resolvedUid = await this.resolveUserId(msg.chat.id, ownerUserId);
       switch (state.awaiting.kind) {
         case "roadmap":
           this.clearState(msg.chat.id);
-          await this.runRoadmap(ownerUserId, bot, msg.chat.id, text);
+          await this.runRoadmap(resolvedUid, bot, msg.chat.id, text);
           return;
         case "roadmap_refine": {
           const { buildPrompt } = state.awaiting;
           this.clearState(msg.chat.id);
-          // Refine the existing roadmap idea with the user's feedback
-          await this.runRoadmap(ownerUserId, bot, msg.chat.id, `${buildPrompt}\n\nAdditional requirements: ${text}`);
+          await this.runRoadmap(resolvedUid, bot, msg.chat.id, `${buildPrompt}\n\nAdditional requirements: ${text}`);
           return;
         }
         case "create":
           this.clearState(msg.chat.id);
-          await this.runCreate(ownerUserId, bot, msg.chat.id, text);
+          await this.runCreate(resolvedUid, bot, msg.chat.id, text);
           return;
         case "edit": {
           const siteId = state.awaiting.siteId;
           this.clearState(msg.chat.id);
-          await this.runEdit(ownerUserId, bot, msg.chat.id, siteId, text);
+          await this.runEdit(resolvedUid, bot, msg.chat.id, siteId, text);
           return;
         }
         case "host_token":
@@ -1621,19 +1676,19 @@ class TelegramBotManager {
           return;
         case "delete_site":
           this.clearState(msg.chat.id);
-          await this.deleteSite(ownerUserId, bot, msg.chat.id, text);
+          await this.deleteSite(resolvedUid, bot, msg.chat.id, text);
           return;
         case "preview_site":
           this.clearState(msg.chat.id);
-          await this.sendPreview(ownerUserId, bot, msg.chat.id, text);
+          await this.sendPreview(resolvedUid, bot, msg.chat.id, text);
           return;
         case "retry_site":
           this.clearState(msg.chat.id);
-          await this.retrySite(ownerUserId, bot, msg.chat.id, text);
+          await this.retrySite(resolvedUid, bot, msg.chat.id, text);
           return;
         case "status_site":
           this.clearState(msg.chat.id);
-          await this.sendStatus(ownerUserId, bot, msg.chat.id, text);
+          await this.sendStatus(resolvedUid, bot, msg.chat.id, text);
           return;
         case "confirm_build": {
           const siteId = state.awaiting.siteId;
@@ -1644,7 +1699,7 @@ class TelegramBotManager {
             )
           ) {
             this.clearState(msg.chat.id);
-            await this.confirmBuild(ownerUserId, bot, msg.chat.id, siteId);
+            await this.confirmBuild(resolvedUid, bot, msg.chat.id, siteId);
           } else {
             // treat as edit instructions on the plan
             this.clearState(msg.chat.id);
@@ -1669,6 +1724,24 @@ class TelegramBotManager {
   }
   private clearState(chatId: number | string): void {
     this.state.delete(String(chatId));
+  }
+
+  /**
+   * Resolves which WebForge userId should handle a message from a given chatId.
+   * If the chatId is linked to a WebForge account via /link, returns that account.
+   * Falls back to the bot owner's userId when no link exists.
+   */
+  private async resolveUserId(chatId: number, ownerUserId: string): Promise<string> {
+    try {
+      const [linked] = await db
+        .select({ id: usersTable.id })
+        .from(usersTable)
+        .where(eq(usersTable.telegramChatId, String(chatId)))
+        .limit(1);
+      return linked?.id ?? ownerUserId;
+    } catch {
+      return ownerUserId;
+    }
   }
 
   /**

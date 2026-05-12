@@ -176,17 +176,35 @@ function derivePages(
   features: string[],
   prompt: string,
 ): string[] {
-  if (type !== "website") return ["index"];
-  const set = new Set<string>(["index", "about", "services", "contact"]);
-  if (features.some((f) => /Storefront|menu|gallery|Portfolio/i.test(f))) set.add("services");
-  if (features.some((f) => /authentication|dashboard|account/i.test(f))) {
-    set.add("login");
-    set.add("dashboard");
-  } else {
+  const p = prompt.toLowerCase();
+
+  // Games and interactive experiences are single-file
+  const singleOutputTypes: SiteAnalysis["type"][] = ["game", "art", "music", "tool", "bot", "backend"];
+  if (singleOutputTypes.includes(type)) return ["index"];
+
+  // Detect game keywords even if type was miscategorized
+  const gameKeywords = ["game","chess","tetris","snake","platformer","fifa","shooter","puzzle","arcade","sprite","player movement","gameplay","2d game","3d game","rpg"];
+  if (gameKeywords.some((kw) => p.includes(kw))) return ["index"];
+
+  // Domain-specific page structures
+  if (type === "restaurant") return ["index", "menu", "reservations", "about"];
+  if (type === "portfolio") return ["index", "work", "about", "contact"];
+  if (type === "ecommerce") return ["index", "products", "cart"];
+  if (type === "saas") {
+    const hasDashboard = features.some((f) => /dashboard|account|member/i.test(f));
+    return hasDashboard ? ["index", "features", "pricing", "login", "dashboard"] : ["index", "features", "pricing"];
+  }
+
+  // Generic website — build only pages that make sense
+  const set = new Set<string>(["index"]);
+  if (/about|team|story|founder|mission/i.test(p)) set.add("about");
+  if (/contact|email|phone|reach|form/i.test(p)) set.add("contact");
+  if (/service|offer|work|portfolio|showcase|case stud/i.test(p)) set.add("services");
+  if (/blog|news|article|writing|post/i.test(p)) set.add("blog");
+  if (features.some((f) => /authentication|login|sign.in|account/i.test(f))) {
     set.add("login");
     set.add("dashboard");
   }
-  if (/blog|news|writing/.test(prompt.toLowerCase())) set.add("blog");
   return Array.from(set);
 }
 
@@ -210,7 +228,9 @@ export function buildPlan(analysis: SiteAnalysis): SitePlan {
         ? `Tuned for ${analysis.audience}.`
         : "Audience inferred from prompt context.",
       `Color system: ${palette.id} (${palette.mood}).`,
-      "Multi-page output with shared styles + nav.",
+      pages.length === 1
+        ? "Single-file build — all logic and UI in one page."
+        : `${pages.length} pages with shared styles + nav.`,
     ],
   };
 }

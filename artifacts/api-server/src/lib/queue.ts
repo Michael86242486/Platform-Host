@@ -315,9 +315,13 @@ class JobQueue {
       analysis, plan, updatedAt: new Date(),
     }).where(eq(sitesTable.id, siteId));
 
-    await insertAgentMessage(job.userId, siteId, "analysis",
-      `Detected: ${analysis.type} — "${analysis.intent}". ${analysis.features.length} features, ${analysis.pages.length} pages.`,
-      { analysis });
+    const typeLabel = analysis.type === "game" ? "🎮 game" : analysis.type === "art" ? "🎨 art" : analysis.type === "music" ? "🎵 music" : analysis.type === "tool" ? "🛠️ tool" : analysis.type === "saas" ? "🚀 SaaS" : analysis.type === "portfolio" ? "💼 portfolio" : analysis.type === "ecommerce" ? "🛒 store" : analysis.type === "restaurant" ? "🍽️ restaurant" : `🌐 ${analysis.type}`;
+    const analysisMsg = [
+      `${typeLabel} detected — ${analysis.intent}`,
+      analysis.features.length > 0 ? `\nFeatures: ${analysis.features.slice(0, 4).join(", ")}` : "",
+      analysis.pages.length === 1 ? "\nThis is a single-file build — everything goes into one powerful page." : `\nPages planned: ${analysis.pages.join(", ")}`,
+    ].join("").trim();
+    await insertAgentMessage(job.userId, siteId, "analysis", analysisMsg, { analysis });
     await insertAgentMessage(job.userId, siteId, "plan", planSummary(plan), { plan });
     await saveCheckpoint(siteId, "Analysis complete — plan ready");
 
@@ -809,10 +813,22 @@ function injectHeroImage(files: SiteFiles, research: ResearchBrief, siteName: st
 // ---------------------------------------------------------------------------
 
 function planSummary(plan: SitePlan): string {
-  const lines: string[] = [`Plan: ${plan.summary}`, "", "Pages:"];
-  for (const p of plan.pages) lines.push(`  • ${p.title} — ${p.purpose}`);
-  lines.push("", `Style: ${plan.styles.palette} (${plan.styles.mood})`);
-  if (plan.features.length > 0) lines.push(`Features: ${plan.features.join(", ")}`);
+  const isSingle = plan.pages.length === 1;
+  const lines: string[] = [];
+  lines.push(`✦ ${plan.summary}`);
+  lines.push("");
+  if (isSingle) {
+    lines.push(`📄 Single-file build — all the magic in one page.`);
+    lines.push(`   ${plan.pages[0].title}: ${plan.pages[0].purpose}`);
+  } else {
+    lines.push(`📄 ${plan.pages.length} pages:`);
+    for (const p of plan.pages) lines.push(`   • ${p.title} — ${p.purpose}`);
+  }
+  lines.push("");
+  lines.push(`🎨 ${plan.styles.palette} · ${plan.styles.mood}`);
+  if (plan.features.length > 0) {
+    lines.push(`⚡ ${plan.features.slice(0, 5).join(" · ")}`);
+  }
   return lines.join("\n");
 }
 

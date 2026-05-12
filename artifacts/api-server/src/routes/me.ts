@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
+import crypto from "node:crypto";
 
 import { requireAuth } from "../middlewares/auth";
 import { db, usersTable } from "../lib/db";
@@ -15,6 +16,7 @@ router.get("/me", requireAuth, (req, res) => {
     firstName: u.firstName,
     lastName: u.lastName,
     profileImageUrl: u.profileImageUrl,
+    telegramChatId: u.telegramChatId ?? null,
     createdAt: new Date().toISOString(),
   });
 });
@@ -49,6 +51,41 @@ router.patch("/me", requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch {
     res.status(500).json({ error: "update_failed" });
+  }
+});
+
+// ── Telegram link code ────────────────────────────────────────────────────────
+
+router.post("/me/telegram-link-code", requireAuth, async (req, res) => {
+  const userId = req.user!.id;
+  // Generate a 8-char uppercase alphanumeric code
+  const code = crypto.randomBytes(6).toString("base64url").toUpperCase().slice(0, 8).replace(/[^A-Z0-9]/g, "X").slice(0, 8);
+  try {
+    await db.update(usersTable).set({ telegramLinkCode: code, updatedAt: new Date() }).where(eq(usersTable.id, userId));
+    res.json({ code });
+  } catch {
+    res.status(500).json({ error: "link_code_failed" });
+  }
+});
+
+router.get("/me/telegram-status", requireAuth, async (req, res) => {
+  const userId = req.user!.id;
+  const [user] = await db.select({ telegramChatId: usersTable.telegramChatId, telegramLinkCode: usersTable.telegramLinkCode }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+  if (!user) { res.status(404).json({ error: "not_found" }); return; }
+  res.json({
+    linked: !!user.telegramChatId,
+    chatId: user.telegramChatId ?? null,
+    pendingCode: user.telegramLinkCode ?? null,
+  });
+});
+
+router.delete("/me/telegram-link", requireAuth, async (req, res) => {
+  const userId = req.user!.id;
+  try {
+    await db.update(usersTable).set({ telegramChatId: null, telegramLinkCode: null, updatedAt: new Date() }).where(eq(usersTable.id, userId));
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: "unlink_failed" });
   }
 });
 

@@ -12,6 +12,8 @@ export const usersTable = pgTable("users", {
   githubAccessToken: text("github_access_token"),
   githubAvatarUrl: text("github_avatar_url"),
   plan: text("plan", { enum: ["free", "pro", "enterprise"] }).default("free"),
+  telegramChatId: text("telegram_chat_id"),
+  telegramLinkCode: text("telegram_link_code"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

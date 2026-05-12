@@ -158,7 +158,7 @@ export async function researchInspirationAI(
 
 const ANALYSIS_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
 
-Phase 1 — 📐 Planning: You are OpenClaw's analytical core. You build ANY kind of website — from brutal portfolio sites to interactive music experiences, from three.js art to restaurant menus, from SaaS dashboards to scrollytelling stories.
+Phase 1 — 📐 Planning: You are OpenClaw's analytical core. You build ANY kind of project — from playable games to interactive music experiences, from SaaS dashboards to restaurant menus, from brutalist portfolios to canvas-based art.
 
 Given a user prompt, classify the project and design its structure. ONLY return JSON. No prose.
 
@@ -167,19 +167,50 @@ Schema:
   "type": string,                   // Best-fit category — choose from: "saas" | "portfolio" | "restaurant" | "ecommerce" | "event" | "editorial" | "art" | "music" | "game" | "tool" | "bot" | "docs" | "nonprofit" | "personal" | "agency" | "directory" | "website"
   "intent": string,                 // Clean human title (max 60 chars)
   "audience": string | null,        // e.g. "indie game developers", or null
-  "features": string[],             // 3-8 SPECIFIC features this site will have
-  "pages": string[],                // page slugs — must include "index". Choose pages that make sense for this specific project.
+  "features": string[],             // 3-8 SPECIFIC features (what the build will actually DO)
+  "pages": string[],                // page slugs — must include "index". CHOOSE WISELY — see rules below.
   "styleHints": string[]            // ["minimal","bold","editorial","brutalist","dark","playful","luxury","terminal","3d","artistic","retro", ...]
 }
 
-IMPORTANT GUIDELINES:
-- Pages must always include "index". Other pages should be specific to this project type.
-- Single-page sites: just ["index"] is valid if the project suits it.
-- Creative sites can have unusual page names: ["index","manifesto","work","contact"]
-- Restaurants: ["index","menu","reservations","about"]
-- Portfolio: ["index","work","about","contact"] or just ["index"] for minimal
-- Features must be SPECIFIC: not "Hero section" but "Live audio waveform visualizer in hero"
-- Let the user's prompt guide the creative direction — read it carefully.`;
+════════════════════════════════════════════════════════
+CRITICAL PAGE RULES — READ THESE FIRST
+════════════════════════════════════════════════════════
+
+🎮 GAMES (FIFA, chess, tetris, snake, platformer, shooter, puzzle, arcade, RPG, etc.):
+  → type = "game"
+  → pages = ["index"] ONLY
+  → A game is a SINGLE HTML file with a full game engine inside it
+  → NEVER add "about", "contact", "services", "pricing" to a game
+  → Features describe the gameplay: "Ball physics with bouncing and spin", "AI goalkeeper with reaction timing"
+
+🎨 ART / MUSIC / CREATIVE:
+  → type = "art" or "music"
+  → pages = ["index"] unless there are genuinely distinct sections (e.g. ["index","gallery"])
+  → NEVER add business pages to a creative project
+
+🛠️ TOOLS / CALCULATORS / UTILITIES:
+  → type = "tool"
+  → pages = ["index"] unless the tool has genuinely separate modes/sections
+  → No "about", "contact", "services" unless explicitly requested
+
+🍽️ RESTAURANTS: pages = ["index","menu","reservations","about"]
+💼 PORTFOLIO: pages = ["index","work","about","contact"] or just ["index"] for minimal single-pagers
+🏢 SAAS: pages = ["index","features","pricing","login","dashboard"]
+🛒 ECOMMERCE: pages = ["index","products","cart","checkout"]
+📄 GENERAL WEBSITES: pick only pages that make GENUINE sense for this specific project
+  → "about", "contact", "services" should ONLY appear if the project actually needs them
+  → Do NOT default to 6 pages for everything. Most projects need 1-3 pages.
+
+════════════════════════════════════════════════════════
+FEATURE RULES
+════════════════════════════════════════════════════════
+Features must be SPECIFIC and REAL — not template placeholders:
+  ✗ BAD:  "Hero section", "About page", "Contact form"
+  ✓ GOOD: "Real-time ball physics with HTML5 Canvas", "Score tracking persisted to localStorage"
+  ✓ GOOD: "AI-driven enemy pathfinding using BFS algorithm"
+  ✓ GOOD: "3D product viewer with Three.js orbit controls"
+
+Let the user's prompt guide EVERYTHING — read it carefully and build what they ACTUALLY asked for.`;
 
 export async function analyzeProjectAI(
   prompt: string,
@@ -209,11 +240,33 @@ function normalizeAnalysis(raw: Partial<SiteAnalysis>, prompt: string, name?: st
   ] as const;
   const type = (validTypes as readonly string[]).includes(raw.type as string)
     ? (raw.type as SiteAnalysis["type"]) : "website";
+
+  // Smart fallback features — not generic "Hero section" garbage
   const features = Array.isArray(raw.features) && raw.features.length > 0
-    ? raw.features.slice(0, 8).map(String) : ["Hero", "About", "Contact"];
-  const pagesRaw = Array.isArray(raw.pages) && raw.pages.length > 0
-    ? raw.pages.map((p) => String(p).toLowerCase().replace(/[^a-z0-9]/g, "")) : ["index", "about", "contact"];
-  const pages = Array.from(new Set(["index", ...pagesRaw])).slice(0, 8);
+    ? raw.features.slice(0, 8).map(String)
+    : ["Core functionality", "Responsive layout", "Interactive UI"];
+
+  // CRITICAL: Single-output project types get exactly one page.
+  // Games, art, music, tools are SINGLE-FILE interactive experiences.
+  // Never force about/contact/services onto them.
+  const singlePageTypes: SiteAnalysis["type"][] = ["game", "art", "music", "tool", "bot", "backend"];
+  let pages: string[];
+  if (singlePageTypes.includes(type)) {
+    pages = ["index"];
+  } else {
+    const pagesRaw = Array.isArray(raw.pages) && raw.pages.length > 0
+      ? raw.pages.map((p) => String(p).toLowerCase().replace(/[^a-z0-9]/g, ""))
+      : ["index"];
+    pages = Array.from(new Set(["index", ...pagesRaw])).slice(0, 8);
+  }
+
+  // Also check prompt keywords — if someone asks for a game and AI misclassified it, override
+  const promptLower = prompt.toLowerCase();
+  const gameKeywords = ["game","chess","tetris","snake","platformer","fifa","shooter","puzzle","arcade","sprite","player movement","game engine","physics engine","gameplay","2d game","3d game","rpg","multiplayer game"];
+  if (gameKeywords.some((kw) => promptLower.includes(kw))) {
+    pages = ["index"];
+  }
+
   const styleHints = Array.isArray(raw.styleHints) ? raw.styleHints.slice(0, 5).map(String) : [];
   const intent = (typeof raw.intent === "string" && raw.intent.trim()) || name?.trim() || deriveTitle(prompt);
   return {

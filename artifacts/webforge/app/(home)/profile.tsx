@@ -1,9 +1,12 @@
 import { Feather } from "@expo/vector-icons";
 
 import { useAuth, useUser } from "@/lib/auth";
+import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
+import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -39,6 +42,72 @@ export default function ProfileScreen() {
   const [saving, setSaving]       = useState(false);
   const [saved, setSaved]         = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Telegram link state
+  const [tgLinked, setTgLinked] = useState<boolean | null>(null);
+  const [tgCode, setTgCode] = useState<string | null>(null);
+  const [tgCopied, setTgCopied] = useState(false);
+  const [tgLoading, setTgLoading] = useState(false);
+  const [tgUnlinking, setTgUnlinking] = useState(false);
+  const tgCopiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const { getToken } = useAuth();
+  const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+
+  const fetchTgStatus = useCallback(async () => {
+    try {
+      const token = await getToken();
+      const res = await fetch(`${apiBase}/api/me/telegram-status`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const d = await res.json() as { linked: boolean; chatId: string | null; pendingCode: string | null };
+        setTgLinked(d.linked);
+        setTgCode(d.pendingCode);
+      }
+    } catch { }
+  }, [getToken, apiBase]);
+
+  useEffect(() => { void fetchTgStatus(); }, [fetchTgStatus]);
+
+  const onGenerateLinkCode = async () => {
+    setTgLoading(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${apiBase}/api/me/telegram-link-code`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const d = await res.json() as { code: string };
+        setTgCode(d.code);
+      }
+    } catch { } finally {
+      setTgLoading(false);
+    }
+  };
+
+  const onCopyCode = async () => {
+    if (!tgCode) return;
+    await Clipboard.setStringAsync(tgCode);
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setTgCopied(true);
+    if (tgCopiedTimer.current) clearTimeout(tgCopiedTimer.current);
+    tgCopiedTimer.current = setTimeout(() => setTgCopied(false), 2000);
+  };
+
+  const onUnlink = async () => {
+    setTgUnlinking(true);
+    try {
+      const token = await getToken();
+      await fetch(`${apiBase}/api/me/telegram-link`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setTgLinked(false);
+      setTgCode(null);
+    } catch { } finally {
+      setTgUnlinking(false);
+    }
+  };
 
   const sitesQuery = useListSites({
     query: { queryKey: getListSitesQueryKey() },
@@ -380,6 +449,140 @@ export default function ProfileScreen() {
               <NameRow label="First name" value={user?.firstName} colors={colors} />
               <NameRow label="Last name"  value={user?.lastName}  colors={colors} />
               <NameRow label="Email"      value={user?.email}     colors={colors} mono />
+            </View>
+          )}
+        </Surface>
+
+        {/* ── Telegram Link ── */}
+        <Surface padded style={{ marginBottom: 16, gap: 14 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Feather name="send" size={14} color={colors.mutedForeground} />
+            <MonoText style={{ color: colors.mutedForeground, fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase", flex: 1 }}>
+              Telegram Link
+            </MonoText>
+            {tgLinked && (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: `${colors.success}18`, borderWidth: 1, borderColor: `${colors.success}44` }}>
+                <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: colors.success }} />
+                <MonoText style={{ color: colors.success, fontSize: 9 }}>LINKED</MonoText>
+              </View>
+            )}
+          </View>
+
+          {tgLinked ? (
+            <View style={{ gap: 10 }}>
+              <Text style={{ color: colors.mutedForeground, fontSize: 13, lineHeight: 19 }}>
+                Your Telegram account is connected. All builds and notifications sync to your account.
+              </Text>
+              <Pressable
+                onPress={onUnlink}
+                disabled={tgUnlinking}
+                style={({ pressed }) => ({
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderColor: colors.destructive + "55",
+                  backgroundColor: `${colors.destructive}0D`,
+                  opacity: pressed || tgUnlinking ? 0.6 : 1,
+                })}
+              >
+                {tgUnlinking ? (
+                  <ActivityIndicator size="small" color={colors.destructive} />
+                ) : (
+                  <>
+                    <Feather name="x" size={13} color={colors.destructive} />
+                    <Text style={{ color: colors.destructive, fontFamily: "Inter_500Medium", fontSize: 13 }}>Unlink Telegram</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          ) : (
+            <View style={{ gap: 12 }}>
+              <Text style={{ color: colors.mutedForeground, fontSize: 13, lineHeight: 19 }}>
+                Link your Telegram account so builds you start on the bot appear in your WebForge account — no data collision.
+              </Text>
+
+              {tgCode ? (
+                <View style={{ gap: 10 }}>
+                  <View style={{ backgroundColor: colors.cardElevated, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 8 }}>
+                    <MonoText style={{ color: colors.mutedForeground, fontSize: 10, letterSpacing: 1.2 }}>YOUR LINK CODE</MonoText>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                      <Text style={{ color: colors.primary, fontFamily: "Inter_700Bold", fontSize: 28, letterSpacing: 4, flex: 1 }}>
+                        {tgCode}
+                      </Text>
+                      <Pressable
+                        onPress={onCopyCode}
+                        style={({ pressed }) => ({
+                          padding: 8,
+                          borderRadius: 8,
+                          backgroundColor: tgCopied ? `${colors.success}22` : colors.background,
+                          borderWidth: 1,
+                          borderColor: tgCopied ? colors.success : colors.border,
+                          opacity: pressed ? 0.7 : 1,
+                        })}
+                      >
+                        <Feather name={tgCopied ? "check" : "copy"} size={16} color={tgCopied ? colors.success : colors.mutedForeground} />
+                      </Pressable>
+                    </View>
+                  </View>
+                  <Text style={{ color: colors.mutedForeground, fontSize: 12, lineHeight: 18 }}>
+                    In your Telegram bot, send: <Text style={{ color: colors.foreground, fontFamily: "Inter_600SemiBold" }}>/link {tgCode}</Text>
+                  </Text>
+                  <Pressable
+                    onPress={() => void Linking.openURL("https://t.me")}
+                    style={({ pressed }) => ({
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                      paddingVertical: 11,
+                      borderRadius: 10,
+                      backgroundColor: "#2AABEE18",
+                      borderWidth: 1,
+                      borderColor: "#2AABEE44",
+                      opacity: pressed ? 0.7 : 1,
+                    })}
+                  >
+                    <Feather name="send" size={14} color="#2AABEE" />
+                    <Text style={{ color: "#2AABEE", fontFamily: "Inter_600SemiBold", fontSize: 14 }}>Open Telegram</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={onGenerateLinkCode}
+                    style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, alignItems: "center", paddingVertical: 4 })}
+                  >
+                    <Text style={{ color: colors.mutedForeground, fontSize: 12 }}>Generate new code</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable
+                  onPress={onGenerateLinkCode}
+                  disabled={tgLoading}
+                  style={({ pressed }) => ({
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                    paddingVertical: 12,
+                    borderRadius: 10,
+                    backgroundColor: "#2AABEE1A",
+                    borderWidth: 1,
+                    borderColor: "#2AABEE55",
+                    opacity: pressed || tgLoading ? 0.6 : 1,
+                  })}
+                >
+                  {tgLoading ? (
+                    <ActivityIndicator size="small" color="#2AABEE" />
+                  ) : (
+                    <>
+                      <Feather name="link" size={15} color="#2AABEE" />
+                      <Text style={{ color: "#2AABEE", fontFamily: "Inter_600SemiBold", fontSize: 14 }}>Generate Link Code</Text>
+                    </>
+                  )}
+                </Pressable>
+              )}
             </View>
           )}
         </Surface>

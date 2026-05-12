@@ -97,7 +97,7 @@ export default function SiteDetailScreen() {
 
   const messagesQuery = useListSiteMessages(String(id), {
     query: {
-      enabled: activeTab === "chat" || activeTab === "console",
+      enabled: activeTab === "chat" || activeTab === "console" || activeTab === "intel",
       queryKey: getListSiteMessagesQueryKey(String(id)),
       refetchInterval: (q) => {
         const s = siteQuery.data as Site | undefined;
@@ -408,6 +408,7 @@ export default function SiteDetailScreen() {
             site={site}
             accent={accent}
             colors={colors}
+            messages={messagesQuery.data ?? []}
             onFixWithAI={(prompt) => {
               setChatDraft(prompt);
               setActiveTab("chat");
@@ -1592,6 +1593,129 @@ function ThinkingBar({ accent }: { accent: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared Build Phase Timeline component (used by Console + Intel tabs)
+// ---------------------------------------------------------------------------
+
+function IntelBuildTimeline({
+  completedPhases,
+  activePhase,
+  phaseTimestamps,
+  isRunning,
+  accent,
+  colors,
+}: {
+  completedPhases: Set<number>;
+  activePhase: number | null;
+  phaseTimestamps: Map<number, string>;
+  isRunning: boolean;
+  accent: string;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View
+      style={{
+        marginHorizontal: 16,
+        marginTop: 16,
+        marginBottom: 4,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: colors.border,
+        overflow: "hidden",
+        backgroundColor: colors.surface,
+      }}
+    >
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+          backgroundColor: colors.cardElevated,
+        }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Feather name="cpu" size={12} color={colors.mutedForeground} />
+          <MonoText style={{ color: colors.mutedForeground, fontSize: 10, letterSpacing: 1.4, textTransform: "uppercase" }}>
+            Build Timeline
+          </MonoText>
+        </View>
+        {isRunning && (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+            <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: accent }} />
+            <MonoText style={{ color: accent, fontSize: 9 }}>LIVE</MonoText>
+          </View>
+        )}
+        {!isRunning && completedPhases.size === 7 && (
+          <MonoText style={{ color: colors.success, fontSize: 9 }}>COMPLETE</MonoText>
+        )}
+      </View>
+      <View style={{ paddingHorizontal: 14, paddingVertical: 8, gap: 0 }}>
+        {PIPELINE_PHASES.map((phase) => {
+          const done = completedPhases.has(phase.n);
+          const active = !done && activePhase === phase.n;
+          const pending = !done && !active;
+          const phaseColor = done ? colors.success : active ? accent : colors.mutedForeground;
+          const ts = phaseTimestamps.get(phase.n);
+          return (
+            <View
+              key={phase.n}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+                paddingVertical: 6,
+                borderTopWidth: phase.n > 1 ? 1 : 0,
+                borderTopColor: colors.border + "33",
+              }}
+            >
+              <View
+                style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: 10,
+                  borderWidth: done ? 0 : 1.5,
+                  borderColor: phaseColor,
+                  backgroundColor: done ? phaseColor + "22" : active ? accent + "18" : "transparent",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                {done ? (
+                  <Feather name="check" size={11} color={colors.success} />
+                ) : active ? (
+                  <ActivityIndicator size="small" color={accent} style={{ transform: [{ scale: 0.55 }] }} />
+                ) : (
+                  <MonoText style={{ color: colors.mutedForeground + "88", fontSize: 8 }}>{phase.n}</MonoText>
+                )}
+              </View>
+              <Text
+                style={{
+                  flex: 1,
+                  color: pending ? colors.mutedForeground + "99" : done ? colors.foreground : accent,
+                  fontSize: 12,
+                  fontFamily: done ? "Inter_600SemiBold" : active ? "Inter_500Medium" : "Inter_400Regular",
+                }}
+              >
+                {phase.label}
+              </Text>
+              {done && ts && (
+                <MonoText style={{ color: colors.mutedForeground + "77", fontSize: 9 }}>{ts}</MonoText>
+              )}
+              {active && (
+                <MonoText style={{ color: accent, fontSize: 9 }}>in progress</MonoText>
+              )}
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Console tab — real-time build log
 // ---------------------------------------------------------------------------
 
@@ -1742,16 +1866,35 @@ function ConsoleTab({
   const completedPhases = useMemo(() => {
     const done = new Set<number>();
     for (const m of logMessages) {
-      const match = m.content.match(/✓ Step (\d+)\/7/);
-      if (match) done.add(parseInt(match[1], 10));
+      const d = m.data as Record<string, unknown> | null;
+      const phase = typeof d?.phase === "number" ? d.phase : null;
+      if (phase && m.content.startsWith("✓")) done.add(phase);
     }
     return done;
   }, [logMessages]);
 
+  const phaseTimestamps = useMemo(() => {
+    const ts = new Map<number, string>();
+    for (const m of logMessages) {
+      const d = m.data as Record<string, unknown> | null;
+      const phase = typeof d?.phase === "number" ? d.phase : null;
+      if (phase && m.content.startsWith("✓") && !ts.has(phase)) {
+        const date = new Date(m.createdAt);
+        ts.set(phase, date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }));
+      }
+    }
+    return ts;
+  }, [logMessages]);
+
   const activePhase = useMemo(() => {
-    const match = (site.message ?? "").match(/Step (\d+)\/7/);
-    return match ? parseInt(match[1], 10) : null;
-  }, [site.message]);
+    let highest = 0;
+    for (const m of logMessages) {
+      const d = m.data as Record<string, unknown> | null;
+      const phase = typeof d?.phase === "number" ? d.phase : null;
+      if (phase && m.content.startsWith("✦")) highest = Math.max(highest, phase);
+    }
+    return highest > 0 ? highest : null;
+  }, [logMessages]);
 
   const latestQualityReport = useMemo<QualityReport | null>(() => {
     for (let i = logMessages.length - 1; i >= 0; i--) {
@@ -1878,7 +2021,14 @@ function ConsoleTab({
                     {phase.label}
                   </Text>
                   {done && (
-                    <MonoText style={{ color: colors.success, fontSize: 10 }}>✓</MonoText>
+                    <>
+                      <MonoText style={{ color: colors.success, fontSize: 10 }}>✓</MonoText>
+                      {phaseTimestamps.has(phase.n) && (
+                        <MonoText style={{ color: colors.mutedForeground + "88", fontSize: 9 }}>
+                          {phaseTimestamps.get(phase.n)}
+                        </MonoText>
+                      )}
+                    </>
                   )}
                   {active && (
                     <MonoText style={{ color: accent, fontSize: 10 }}>running</MonoText>
@@ -2853,11 +3003,13 @@ function IntelTab({
   site,
   accent,
   colors,
+  messages,
   onFixWithAI,
 }: {
   site: Site;
   accent: string;
   colors: ReturnType<typeof useColors>;
+  messages: AgentMessage[];
   onFixWithAI: (prompt: string) => void;
 }) {
   const { getToken } = useAuth();
@@ -2909,11 +3061,62 @@ function IntelTab({
     return lines.join("\n");
   }, [report]);
 
+  // Build phase timeline derived from messages
+  const intelLogMessages = useMemo(() =>
+    messages.filter((m) =>
+      m.kind === "build_started" || m.kind === "build_progress" || m.kind === "build_done" || m.kind === "build_failed"
+    ),
+    [messages],
+  );
+  const intelCompletedPhases = useMemo(() => {
+    const done = new Set<number>();
+    for (const m of intelLogMessages) {
+      const d = m.data as Record<string, unknown> | null;
+      const phase = typeof d?.phase === "number" ? d.phase : null;
+      if (phase && m.content.startsWith("✓")) done.add(phase);
+    }
+    return done;
+  }, [intelLogMessages]);
+  const intelPhaseTimestamps = useMemo(() => {
+    const ts = new Map<number, string>();
+    for (const m of intelLogMessages) {
+      const d = m.data as Record<string, unknown> | null;
+      const phase = typeof d?.phase === "number" ? d.phase : null;
+      if (phase && m.content.startsWith("✓") && !ts.has(phase)) {
+        const date = new Date(m.createdAt);
+        ts.set(phase, date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }));
+      }
+    }
+    return ts;
+  }, [intelLogMessages]);
+  const intelActivePhase = useMemo(() => {
+    let highest = 0;
+    for (const m of intelLogMessages) {
+      const d = m.data as Record<string, unknown> | null;
+      const phase = typeof d?.phase === "number" ? d.phase : null;
+      if (phase && m.content.startsWith("✦")) highest = Math.max(highest, phase);
+    }
+    return highest > 0 ? highest : null;
+  }, [intelLogMessages]);
+
+  const hasBuildTimeline = intelLogMessages.length > 0;
+  const isBuildRunning = site.status !== "ready" && site.status !== "failed" && hasBuildTimeline;
+
   if (loading) {
     return (
       <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 48 }}>
         {(site.analysis || site.plan) && (
           <ProjectIntentDashboard site={site} accent={accent} colors={colors} />
+        )}
+        {hasBuildTimeline && (
+          <IntelBuildTimeline
+            completedPhases={intelCompletedPhases}
+            activePhase={intelActivePhase}
+            phaseTimestamps={intelPhaseTimestamps}
+            isRunning={isBuildRunning}
+            accent={accent}
+            colors={colors}
+          />
         )}
         <View style={{ alignItems: "center", justifyContent: "center", gap: 16, padding: 48 }}>
           <ActivityIndicator size="large" color={accent} />
@@ -2930,6 +3133,16 @@ function IntelTab({
       <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 48 }}>
         {(site.analysis || site.plan) && (
           <ProjectIntentDashboard site={site} accent={accent} colors={colors} />
+        )}
+        {hasBuildTimeline && (
+          <IntelBuildTimeline
+            completedPhases={intelCompletedPhases}
+            activePhase={intelActivePhase}
+            phaseTimestamps={intelPhaseTimestamps}
+            isRunning={isBuildRunning}
+            accent={accent}
+            colors={colors}
+          />
         )}
         <View style={{ alignItems: "center", justifyContent: "center", padding: 32, gap: 16 }}>
           <Feather name="alert-circle" size={36} color={colors.destructive} />
@@ -2959,6 +3172,18 @@ function IntelTab({
       contentContainerStyle={{ paddingBottom: 48 }}
       showsVerticalScrollIndicator={false}
     >
+      {/* ── Build Phase Timeline ── */}
+      {hasBuildTimeline && (
+        <IntelBuildTimeline
+          completedPhases={intelCompletedPhases}
+          activePhase={intelActivePhase}
+          phaseTimestamps={intelPhaseTimestamps}
+          isRunning={isBuildRunning}
+          accent={accent}
+          colors={colors}
+        />
+      )}
+
       {/* ── Hero: overall score ── */}
       <LinearGradient
         colors={[`${gc}18`, `${gc}06`, "transparent"]}
