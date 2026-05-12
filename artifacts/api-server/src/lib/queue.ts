@@ -39,21 +39,75 @@ const MAX_CONCURRENCY = 3;
 const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
 
 // ---------------------------------------------------------------------------
-// Pipeline step definitions (displayed in chat + progress bar)
+// Dynamic phase labels — WebForge Core reasons about what phases are needed
+// per project rather than following a fixed pipeline. Labels are generated
+// contextually so every build feels architecturally intentional.
 // ---------------------------------------------------------------------------
 
-const PIPELINE_STEPS = [
-  { step: 1, label: "🔍 OpenClaw Research — studying design inspiration",       pctStart: 2,  pctEnd: 14 },
-  { step: 2, label: "⚙️  OpenClaw Build — parallel page generation",             pctStart: 14, pctEnd: 65 },
-  { step: 3, label: "🔬 OpenClaw Audit — SEO, accessibility, mobile, perf",     pctStart: 65, pctEnd: 73 },
-  { step: 4, label: "🧠 OpenClaw Review — autonomous quality gate",              pctStart: 73, pctEnd: 78 },
-  { step: 5, label: "🔧 OpenClaw Fix — self-correcting issues found",            pctStart: 78, pctEnd: 88 },
-  { step: 6, label: "🖼️  OpenClaw Render — finalizing hero image",               pctStart: 88, pctEnd: 92 },
-  { step: 7, label: "🚀 OpenClaw Deploy — publishing to your live URL",          pctStart: 92, pctEnd: 100 },
-] as const;
+function getPhaseLabel(phase: "research" | "build" | "audit" | "review" | "fix" | "render" | "deploy", ctx: BuildContext): string {
+  switch (phase) {
+    case "research":
+      return ctx.isGame
+        ? "🎮 WebForge — analyzing game mechanics and interactive requirements"
+        : ctx.isSimple
+          ? "🔍 WebForge — reading brief and reasoning about architecture"
+          : "🔍 WebForge — deep project analysis: domain, stack, UX patterns";
+    case "build":
+      return ctx.isGame
+        ? "⚙️  WebForge — engineering game loop, physics, and AI opponents"
+        : ctx.isSimple
+          ? "⚙️  WebForge — building focused, intentional output"
+          : `⚙️  WebForge — adaptive parallel build for ${ctx.pageCount}-surface project`;
+    case "audit":
+      return "🔬 WebForge — quality reasoning: SEO, accessibility, mobile, performance";
+    case "review":
+      return "🧠 WebForge — autonomous self-critique and architectural review";
+    case "fix":
+      return "🔧 WebForge — self-correcting detected issues";
+    case "render":
+      return "🖼️  WebForge — finalizing visual identity";
+    case "deploy":
+      return "🚀 WebForge — deploying engineered output to live URL";
+  }
+}
+
+// Dynamic progress ranges — computed per-build based on project complexity
+function getPhaseRange(phase: "research" | "build" | "audit" | "review" | "fix" | "render" | "deploy", ctx: BuildContext): { pctStart: number; pctEnd: number } {
+  if (ctx.isGame) {
+    return {
+      research: { pctStart: 2,  pctEnd: 8  },
+      build:    { pctStart: 8,  pctEnd: 78 },
+      audit:    { pctStart: 78, pctEnd: 78 },
+      review:   { pctStart: 78, pctEnd: 85 },
+      fix:      { pctStart: 85, pctEnd: 90 },
+      render:   { pctStart: 90, pctEnd: 93 },
+      deploy:   { pctStart: 93, pctEnd: 100 },
+    }[phase];
+  }
+  if (ctx.isSimple) {
+    return {
+      research: { pctStart: 2,  pctEnd: 10 },
+      build:    { pctStart: 10, pctEnd: 72 },
+      audit:    { pctStart: 72, pctEnd: 78 },
+      review:   { pctStart: 78, pctEnd: 82 },
+      fix:      { pctStart: 82, pctEnd: 88 },
+      render:   { pctStart: 88, pctEnd: 92 },
+      deploy:   { pctStart: 92, pctEnd: 100 },
+    }[phase];
+  }
+  return {
+    research: { pctStart: 2,  pctEnd: 14 },
+    build:    { pctStart: 14, pctEnd: 65 },
+    audit:    { pctStart: 65, pctEnd: 73 },
+    review:   { pctStart: 73, pctEnd: 78 },
+    fix:      { pctStart: 78, pctEnd: 88 },
+    render:   { pctStart: 88, pctEnd: 92 },
+    deploy:   { pctStart: 92, pctEnd: 100 },
+  }[phase];
+}
 
 // ---------------------------------------------------------------------------
-// Context detection — drives adaptive pipeline behaviour
+// Context detection — drives adaptive build behaviour
 // ---------------------------------------------------------------------------
 
 interface BuildContext {
@@ -90,10 +144,10 @@ function detectBuildContext(prompt: string, plan: SitePlan | null, jobKind: stri
 }
 
 const ANALYSIS_STAGES = [
-  { progress: 12, label: "🧠 OpenClaw — reading your prompt",      ms: 250 },
-  { progress: 28, label: "🧠 OpenClaw — classifying project",      ms: 250 },
-  { progress: 50, label: "🧠 OpenClaw — drafting structure",       ms: 250 },
-  { progress: 75, label: "🧠 OpenClaw — choosing palette + mood",  ms: 250 },
+  { progress: 12, label: "🧠 WebForge — analyzing project intent and domain type",      ms: 250 },
+  { progress: 28, label: "🧠 WebForge — detecting architecture, stack, and tradeoffs", ms: 250 },
+  { progress: 50, label: "🧠 WebForge — reasoning about unique engineering approach",  ms: 250 },
+  { progress: 75, label: "🧠 WebForge — finalizing adaptive architecture plan",        ms: 250 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -233,7 +287,7 @@ class JobQueue {
     clawPhase("UNDERSTAND", name);
     await db.update(jobsTable).set({ status: "running", message: ANALYSIS_STAGES[0].label, progress: 1 }).where(eq(jobsTable.id, job.id));
     await db.update(sitesTable).set({ status: "analyzing", progress: 1, message: ANALYSIS_STAGES[0].label, error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
-    await insertAgentMessage(job.userId, siteId, "log", "🧠 OpenClaw initialising — reading your brief…", { stage: 0 });
+    await insertAgentMessage(job.userId, siteId, "log", "🧠 WebForge Core initialising — analyzing project intent and domain type…", { stage: 0 });
 
     void streamNarration({
       userId: job.userId, siteId, intent: "thinking",
@@ -296,21 +350,21 @@ class JobQueue {
       await db.update(sitesTable).set({ analysis, plan }).where(eq(sitesTable.id, siteId));
     }
 
-    // Detect what we're building and adapt the pipeline accordingly
+    // WebForge Core detects context to reason about what approach this project requires
     const ctx = detectBuildContext(site.prompt, plan, job.kind);
 
     const startMsg = job.kind === "edit"
-      ? "🔧 OpenClaw applying your edits…"
+      ? "🔧 WebForge Core — applying your edits with architectural awareness…"
       : ctx.isGame
-        ? "🎮 OpenClaw engaged — building your game directly, no fluff."
+        ? "🎮 WebForge Core — reasoning about game architecture, going straight to engine code."
         : ctx.isSimple
-          ? "⚡ OpenClaw engaged — quick build, straight to code."
-          : `⚡ OpenClaw engaged — adaptive pipeline for ${ctx.pageCount}-page build.`;
+          ? "⚡ WebForge Core — reasoning about this project, building intentionally."
+          : `⚡ WebForge Core — analyzing ${ctx.pageCount}-surface project, adapting architecture dynamically.`;
 
     // Mark running
     clawPhase("BUILD", site.name);
-    await db.update(jobsTable).set({ status: "running", message: "⚡ OpenClaw initialising…", progress: 1 }).where(eq(jobsTable.id, job.id));
-    await db.update(sitesTable).set({ status: "building", progress: 1, message: "⚡ OpenClaw initialising…", error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
+    await db.update(jobsTable).set({ status: "running", message: "⚡ WebForge Core initialising…", progress: 1 }).where(eq(jobsTable.id, job.id));
+    await db.update(sitesTable).set({ status: "building", progress: 1, message: "⚡ WebForge Core initialising…", error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
     await insertAgentMessage(job.userId, siteId, "build_started", startMsg, null);
 
     // ── EDIT short-circuit ──────────────────────────────────────────────────
@@ -324,10 +378,11 @@ class JobQueue {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PHASE 1 — Research design inspiration  (2 → 14%)
-    // Skipped for: games (they need code focus, not design inspiration)
+    // PHASE 1 — Research / analysis (range determined dynamically per project)
+    // WebForge Core reasons about whether research adds value for this project
     // ═══════════════════════════════════════════════════════════════════════
-    const ph1 = PIPELINE_STEPS[0];
+    const ph1Label = getPhaseLabel("research", ctx);
+    const ph1Range = getPhaseRange("research", ctx);
     const GAME_FALLBACK_RESEARCH: ResearchBrief = {
       mood: "Dark cinematic game aesthetic", palette: { background: "#0a0a0f", surface: "#12121a", primary: "#00ffc2", secondary: "#ff6b6b", text: "#e6edf3", muted: "#8b949e" },
       typography: "Display: clamp(2rem,5vw,4rem) 900-weight monospace. Body: 1rem system-ui.", layout: "Full-screen canvas, minimal UI overlay, score/stats panel",
@@ -336,9 +391,9 @@ class JobQueue {
     let research: ResearchBrief;
 
     if (ctx.needsResearch) {
-      await setProgress(job.id, siteId, ph1.pctStart, `⟳ ${ph1.label}`);
+      await setProgress(job.id, siteId, ph1Range.pctStart, `⟳ ${ph1Label}`);
       await insertAgentMessage(job.userId, siteId, "build_progress",
-        `✦ ${ph1.label}`, { phase: 1, progress: ph1.pctStart });
+        `✦ ${ph1Label}`, { phase: 1, progress: ph1Range.pctStart });
       void streamNarration({
         userId: job.userId, siteId, intent: "thinking",
         context: `Researching design inspiration for "${site.name}". Prompt: ${site.prompt.slice(0, 300)}.`,
@@ -353,28 +408,30 @@ class JobQueue {
           competitors: ["vercel.com", "linear.app"], heroImagePrompt: `${site.name} hero image`, uniqueTwist: "Animated gradient hero", techStack: ["Chart.js 4", "Alpine.js 3", "Lucide icons"],
         };
       }
-      await setProgress(job.id, siteId, ph1.pctEnd, `✓ ${ph1.label}`);
+      await setProgress(job.id, siteId, ph1Range.pctEnd, `✓ ${ph1Label}`);
       await insertAgentMessage(job.userId, siteId, "build_progress",
-        `✓ ${ph1.label}\n   Mood: ${research.mood}\n   Stack: ${research.techStack.join(", ")}`,
-        { phase: 1, progress: ph1.pctEnd, research });
-      await saveCheckpoint(siteId, "Research complete", undefined, ph1.pctEnd);
+        `✓ ${ph1Label}\n   Mood: ${research.mood}\n   Stack: ${research.techStack.join(", ")}`,
+        { phase: 1, progress: ph1Range.pctEnd, research });
+      await saveCheckpoint(siteId, "Research complete", undefined, ph1Range.pctEnd);
     } else {
       // Games / edits: skip research, use targeted fallback
       research = GAME_FALLBACK_RESEARCH;
-      await setProgress(job.id, siteId, ph1.pctEnd, ctx.isGame ? "🎮 Game build — skipping design research" : "⚡ Skipping research");
+      await setProgress(job.id, siteId, ph1Range.pctEnd, ctx.isGame ? "🎮 WebForge — reasoning about game architecture" : "⚡ WebForge — reasoning about architecture");
       await insertAgentMessage(job.userId, siteId, "build_progress",
-        ctx.isGame ? "🎮 Game detected — skipping design research, going straight to code." : "⚡ Skipping research phase for this build type.",
-        { phase: 1, progress: ph1.pctEnd });
+        ctx.isGame ? "🎮 Game detected — WebForge reasoning about engine architecture, going straight to code." : "⚡ WebForge reasoning about architecture for this project type.",
+        { phase: 1, progress: ph1Range.pctEnd });
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PHASE 2 — Parallel website build  (14 → 65%)
+    // PHASE 2 — Adaptive build (range and label determined by project context)
+    // WebForge Core engineers the output uniquely for each project type
     // ═══════════════════════════════════════════════════════════════════════
-    const ph2 = PIPELINE_STEPS[1];
-    await setProgress(job.id, siteId, ph2.pctStart, `⟳ ${ph2.label}`);
+    const ph2Label = getPhaseLabel("build", ctx);
+    const ph2Range = getPhaseRange("build", ctx);
+    await setProgress(job.id, siteId, ph2Range.pctStart, `⟳ ${ph2Label}`);
     await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✦ ${ph2.label}\n   Building ${plan.pages.length} page${plan.pages.length !== 1 ? "s" : ""}…`,
-      { phase: 2, progress: ph2.pctStart });
+      `✦ ${ph2Label}\n   Building ${plan.pages.length} surface${plan.pages.length !== 1 ? "s" : ""}…`,
+      { phase: 2, progress: ph2Range.pctStart });
     void streamNarration({
       userId: job.userId, siteId, intent: "building",
       context: `Building "${site.name}" (${ctx.isGame ? "game" : `${plan.pages.length} pages`}). Style: ${research.mood}. Stack: ${research.techStack.join(", ")}.`,
@@ -382,7 +439,7 @@ class JobQueue {
     });
 
     await db.update(sitesTable).set({ files: {}, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
-    await saveCheckpoint(siteId, `Build started · ${plan.pages.length} pages · ${siteModel ?? "default model"}`, {}, ph2.pctStart);
+    await saveCheckpoint(siteId, `Build started · ${plan.pages.length} pages · ${siteModel ?? "default model"}`, {}, ph2Range.pctStart);
 
     const availableSecretNames = Object.keys(await getDecryptedSecrets(job.userId));
     const promptWithSecrets = availableSecretNames.length > 0
@@ -398,7 +455,7 @@ class JobQueue {
       async ({ coverColor, files, currentFile, bytes }) => {
         const fileCount = Object.keys(files).length;
         const byteProgress = Math.min(Math.round(bytes / 400), 45);
-        const pct = Math.min(ph2.pctStart + byteProgress, ph2.pctEnd - 2);
+        const pct = Math.min(ph2Range.pctStart + byteProgress, ph2Range.pctEnd - 2);
         const label = currentFile ? streamLabel(currentFile) : "Streaming bytes…";
         await db.update(sitesTable).set({ status: "building", files: files as Record<string, string>, coverColor, progress: pct, message: label, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
         await db.update(jobsTable).set({ progress: pct, message: label }).where(eq(jobsTable.id, job.id));
@@ -435,29 +492,32 @@ class JobQueue {
       },
     );
 
-    await setProgress(job.id, siteId, ph2.pctEnd, `✓ ${ph2.label}`);
+    await setProgress(job.id, siteId, ph2Range.pctEnd, `✓ ${ph2Label}`);
     const builtFileCount = Object.keys(buildOut.files).length;
     const builtBytes = Object.values(buildOut.files).reduce((s, v) => s + v.length, 0);
     await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✓ ${ph2.label}\n   ${builtFileCount} files · ${(builtBytes / 1024).toFixed(1)} KB`,
-      { phase: 2, progress: ph2.pctEnd, fileCount: builtFileCount, bytes: builtBytes });
-    await saveCheckpoint(siteId, `Build complete · ${builtFileCount} files · ${(builtBytes / 1024).toFixed(1)} KB`, buildOut.files, ph2.pctEnd);
+      `✓ ${ph2Label}\n   ${builtFileCount} files · ${(builtBytes / 1024).toFixed(1)} KB`,
+      { phase: 2, progress: ph2Range.pctEnd, fileCount: builtFileCount, bytes: builtBytes });
+    await saveCheckpoint(siteId, `Build complete · ${builtFileCount} files · ${(builtBytes / 1024).toFixed(1)} KB`, buildOut.files, ph2Range.pctEnd);
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PHASES 3-5 — Audit + Review + Fix
-    // Skipped for: games (Canvas JS doesn't benefit from web SEO/a11y audits)
-    //              simple 1-page builds (overhead not worth it)
+    // PHASES 3-5 — Audit + Review + Fix (dynamically applied)
+    // WebForge Core decides whether these add value for this project type.
+    // Games and focused builds skip web audits (not applicable to canvas/engine).
     // ═══════════════════════════════════════════════════════════════════════
-    const ph3 = PIPELINE_STEPS[2];
-    const ph4 = PIPELINE_STEPS[3];
-    const ph5 = PIPELINE_STEPS[4];
+    const ph3Label = getPhaseLabel("audit", ctx);
+    const ph3Range = getPhaseRange("audit", ctx);
+    const ph4Label = getPhaseLabel("review", ctx);
+    const ph4Range = getPhaseRange("review", ctx);
+    const ph5Label = getPhaseLabel("fix", ctx);
+    const ph5Range = getPhaseRange("fix", ctx);
     let finalBuildFiles = buildOut.files;
 
     if (ctx.needsAudit) {
       // Phase 3 — Audit
-      await setProgress(job.id, siteId, ph3.pctStart, `⟳ ${ph3.label}`);
+      await setProgress(job.id, siteId, ph3Range.pctStart, `⟳ ${ph3Label}`);
       await insertAgentMessage(job.userId, siteId, "build_progress",
-        `✦ ${ph3.label}`, { phase: 3, progress: ph3.pctStart });
+        `✦ ${ph3Label}`, { phase: 3, progress: ph3Range.pctStart });
 
       let issues: AuditIssue[] = [];
       try {
@@ -466,15 +526,15 @@ class JobQueue {
         logger.warn({ err: String(err) }, "Audit failed (non-fatal)");
       }
 
-      await setProgress(job.id, siteId, ph3.pctEnd, `✓ ${ph3.label}`, "building");
+      await setProgress(job.id, siteId, ph3Range.pctEnd, `✓ ${ph3Label}`, "building");
       await insertAgentMessage(job.userId, siteId, "build_progress",
-        `✓ ${ph3.label}\n   Found ${issues.length} issue${issues.length !== 1 ? "s" : ""}`,
-        { phase: 3, progress: ph3.pctEnd, issueCount: issues.length });
+        `✓ ${ph3Label}\n   Found ${issues.length} issue${issues.length !== 1 ? "s" : ""}`,
+        { phase: 3, progress: ph3Range.pctEnd, issueCount: issues.length });
 
       // Phase 4 — Review
-      await setProgress(job.id, siteId, ph4.pctStart, `⟳ ${ph4.label}`);
+      await setProgress(job.id, siteId, ph4Range.pctStart, `⟳ ${ph4Label}`);
       await insertAgentMessage(job.userId, siteId, "build_progress",
-        `✦ ${ph4.label}`, { phase: 4, progress: ph4.pctStart });
+        `✦ ${ph4Label}`, { phase: 4, progress: ph4Range.pctStart });
       if (issues.length > 0) {
         const issueLines = issues
           .map((i, n) => `   ${n + 1}. [${i.severity.toUpperCase()}] ${i.file}: ${i.issue}`)
@@ -482,60 +542,61 @@ class JobQueue {
         await insertAgentMessage(job.userId, siteId, "build_progress",
           `QA Report:\n${issueLines}`, { phase: 4, issues });
       }
-      await setProgress(job.id, siteId, ph4.pctEnd, `✓ ${ph4.label}`);
+      await setProgress(job.id, siteId, ph4Range.pctEnd, `✓ ${ph4Label}`);
       await insertAgentMessage(job.userId, siteId, "build_progress",
-        `✓ ${ph4.label}\n   ${issues.length > 0 ? `${issues.length} items queued for auto-fix` : "No issues found — looking great"}`,
-        { phase: 4, progress: ph4.pctEnd });
+        `✓ ${ph4Label}\n   ${issues.length > 0 ? `${issues.length} items queued for auto-fix` : "No issues found — engineered correctly"}`,
+        { phase: 4, progress: ph4Range.pctEnd });
 
       // Phase 5 — Auto-fix
       if (issues.length > 0) {
-        await setProgress(job.id, siteId, ph5.pctStart, `⟳ ${ph5.label}`);
+        await setProgress(job.id, siteId, ph5Range.pctStart, `⟳ ${ph5Label}`);
         await insertAgentMessage(job.userId, siteId, "build_progress",
-          `✦ Fixing ${issues.length} issue${issues.length !== 1 ? "s" : ""}…`,
-          { phase: 5, progress: ph5.pctStart });
+          `✦ ${ph5Label} — correcting ${issues.length} issue${issues.length !== 1 ? "s" : ""}…`,
+          { phase: 5, progress: ph5Range.pctStart });
         try {
           finalBuildFiles = await autoFixProjectAI(buildOut.files, issues, siteModel);
           const fixedCount = Object.keys(finalBuildFiles).filter((k) => finalBuildFiles[k] !== buildOut.files[k]).length;
-          await setProgress(job.id, siteId, ph5.pctEnd, `✓ ${ph5.label}`);
+          await setProgress(job.id, siteId, ph5Range.pctEnd, `✓ ${ph5Label}`);
           await insertAgentMessage(job.userId, siteId, "build_progress",
-            `✓ ${ph5.label}\n   Patched ${fixedCount} file${fixedCount !== 1 ? "s" : ""}`,
-            { phase: 5, progress: ph5.pctEnd });
-          await saveCheckpoint(siteId, `Auto-fix complete · ${fixedCount} files patched`, finalBuildFiles, ph5.pctEnd);
+            `✓ ${ph5Label}\n   Patched ${fixedCount} file${fixedCount !== 1 ? "s" : ""}`,
+            { phase: 5, progress: ph5Range.pctEnd });
+          await saveCheckpoint(siteId, `Auto-fix complete · ${fixedCount} files patched`, finalBuildFiles, ph5Range.pctEnd);
         } catch (err) {
           logger.warn({ err: String(err) }, "Auto-fix failed (non-fatal)");
-          await setProgress(job.id, siteId, ph5.pctEnd, "↷ Fix skipped");
+          await setProgress(job.id, siteId, ph5Range.pctEnd, "↷ Fix skipped");
         }
       } else {
-        await setProgress(job.id, siteId, ph5.pctEnd, "✓ No fixes needed");
+        await setProgress(job.id, siteId, ph5Range.pctEnd, "✓ Architecture clean — no fixes needed");
         await insertAgentMessage(job.userId, siteId, "build_progress",
-          `✓ ${ph5.label} — nothing to fix`, { phase: 5, progress: ph5.pctEnd });
+          `✓ ${ph5Label} — architecture clean, no corrections needed`, { phase: 5, progress: ph5Range.pctEnd });
       }
     } else {
-      // Games and simple builds skip audit/fix entirely
+      // Games and focused builds skip audit — WebForge Core reasoned it adds no value here
       const skipMsg = ctx.isGame
-        ? "🎮 Game build — skipping web audit (not applicable to canvas games)"
-        : "⚡ Simple build — skipping audit for speed";
-      await setProgress(job.id, siteId, ph5.pctEnd, skipMsg);
+        ? "🎮 WebForge — game engine complete, web audits not applicable"
+        : "⚡ WebForge — focused build, audit overhead skipped";
+      await setProgress(job.id, siteId, ph5Range.pctEnd, skipMsg);
       await insertAgentMessage(job.userId, siteId, "build_progress", skipMsg,
-        { phase: 5, progress: ph5.pctEnd });
+        { phase: 5, progress: ph5Range.pctEnd });
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PHASE 6 — Hero image  (88 → 92%)
+    // PHASE 6 — Visual finalization (range dynamically computed)
     // ═══════════════════════════════════════════════════════════════════════
-    const ph6 = PIPELINE_STEPS[5];
-    await setProgress(job.id, siteId, ph6.pctStart, `⟳ Step 6/7: ${ph6.label}`);
+    const ph6Label = getPhaseLabel("render", ctx);
+    const ph6Range = getPhaseRange("render", ctx);
+    await setProgress(job.id, siteId, ph6Range.pctStart, `⟳ ${ph6Label}`);
     await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✦ Step 6/7: ${ph6.label}`,
-      { phase: 6, progress: ph6.pctStart });
+      `✦ ${ph6Label}`,
+      { phase: 6, progress: ph6Range.pctStart });
 
     // Inject a theme-consistent hero image into index.html via picsum seed
     finalBuildFiles = injectHeroImage(finalBuildFiles, research, site.name);
 
-    await setProgress(job.id, siteId, ph6.pctEnd, `✓ Step 6/7: ${ph6.label}`);
+    await setProgress(job.id, siteId, ph6Range.pctEnd, `✓ ${ph6Label}`);
     await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✓ Step 6/7: ${ph6.label}\n   Hero image embedded`,
-      { phase: 6, progress: ph6.pctEnd });
+      `✓ ${ph6Label}\n   Visual identity finalized`,
+      { phase: 6, progress: ph6Range.pctEnd });
 
     // ═══════════════════════════════════════════════════════════════════════
     // Inject secrets & finalize
@@ -557,14 +618,16 @@ class JobQueue {
     plan: SitePlan,
     isEdit: boolean,
   ): Promise<void> {
-    const ph7 = PIPELINE_STEPS[6];
-    await setProgress(job.id, siteId, ph7.pctStart, `⟳ Step 7/7: ${ph7.label}`);
+    const finalCtx: BuildContext = { isGame: false, isSimple: false, isEdit, needsResearch: true, needsAudit: true, pageCount: plan.pages.length };
+    const ph7Label = getPhaseLabel("deploy", finalCtx);
+    const ph7Range = getPhaseRange("deploy", finalCtx);
+    await setProgress(job.id, siteId, ph7Range.pctStart, `⟳ ${ph7Label}`);
     await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✦ Step 7/7: ${ph7.label}`,
-      { phase: 7, progress: ph7.pctStart });
+      `✦ ${ph7Label}`,
+      { phase: 7, progress: ph7Range.pctStart });
 
     await db.update(sitesTable).set({
-      status: "building", progress: ph7.pctStart,
+      status: "building", progress: ph7Range.pctStart,
       message: "Uploading to Puter cloud hosting…",
       files: finalFiles, coverColor,
       plan: isEdit ? { ...plan, notes: [...plan.notes, `Edit applied: ${new Date().toISOString()}`] } : plan,
@@ -591,7 +654,7 @@ class JobQueue {
             opts: {
               concurrency: 6,
               onFile: async (rel, idx) => {
-                const pct = Math.min(98, ph7.pctStart + Math.round((idx / Math.max(totalFiles, 1)) * (98 - ph7.pctStart)));
+                const pct = Math.min(98, ph7Range.pctStart + Math.round((idx / Math.max(totalFiles, 1)) * (98 - ph7Range.pctStart)));
                 await db.update(sitesTable).set({ progress: pct, message: `Uploading ${rel} (${idx}/${totalFiles})`, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
                 siteEventBus.emitSite({ type: "site_updated", siteId });
               },
@@ -636,11 +699,11 @@ class JobQueue {
 
     if (puterStatus === "hosted" && puterPublicUrl) {
       await insertAgentMessage(job.userId, siteId, "build_done",
-        `✓ Step 7/7: ${ph7.label}\n\n${stepSummary}\n\n🎉 ${site.name} is LIVE!\n🌐 ${puterPublicUrl}`,
+        `✓ ${ph7Label}\n\n${stepSummary}\n\n🎉 ${site.name} is LIVE!\n🌐 ${puterPublicUrl}`,
         { files: Object.keys(finalFiles), publicUrl: puterPublicUrl, totalBytes, phase: 7 });
     } else {
       await insertAgentMessage(job.userId, siteId, "build_done",
-        `✓ Step 7/7: Build complete\n\n${stepSummary}`,
+        `✓ ${ph7Label}\n\n${stepSummary}`,
         { files: Object.keys(finalFiles), puterStatus, puterError, totalBytes, phase: 7 });
     }
 

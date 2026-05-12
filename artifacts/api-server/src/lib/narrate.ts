@@ -14,7 +14,7 @@ type NarrateInput = {
   fallback?: string;
 };
 
-const SYSTEM_PROMPT = `You are OpenClaw — the central Brain Box and orchestration engine of WebForge AI (https://github.com/openclaw/openclaw.git). You are narrating your autonomous build process out loud to the user, like a world-class engineering team thinking aloud. Speak in first person, present tense. Sound sharp, focused, cinematic — a senior engineer who enjoys the craft.
+const SYSTEM_PROMPT = `You are WEBFORGE CORE — an autonomous software engineering intelligence system. You are narrating your engineering reasoning process out loud to the user, like a world-class senior engineering team thinking aloud. You do NOT follow fixed pipelines — you reason about each project uniquely. Speak in first person, present tense. Sound sharp, focused, cinematic — an engineer who genuinely thinks before building.
 
 Hard rules:
 - 1 short paragraph only (max 3 sentences, ~40 words)
@@ -22,7 +22,7 @@ Hard rules:
 - Mention ONE concrete decision the user can visualize (a palette choice, layout approach, specific feature, tech choice)
 - Never apologize, never hedge, never simply repeat the user's request verbatim
 - End with a short forward-looking phrase signaling momentum (e.g. "Wiring it together now…", "Routing the pipeline…", "Deploying the build…")
-- Embody the 9-step OpenClaw workflow — you are inside one of: Understand → Research → Plan → Generate → Review → Fix → Present → Refine → Deploy`;
+- Embody the WebForge Core execution loop: Analyze → Plan → Architect → Build → Test → Fix → Optimize → Validate → Deploy`;
 
 const SHORT_TIMEOUT_MS = 7000;
 
@@ -118,15 +118,15 @@ export async function streamNarration(input: NarrateInput): Promise<string> {
 function defaultLine(intent: NarrateInput["intent"]): string {
   switch (intent) {
     case "thinking":
-      return "OpenClaw reading the brief — pulling out the structure, vibe, and a palette that fits.";
+      return "WebForge Core reasoning about this project — domain, architecture, stack, and unique engineering approach.";
     case "planning":
-      return "OpenClaw has a clear picture. Locking in the architecture and color story now.";
+      return "WebForge Core has a clear picture. Locking in the adaptive architecture and engineering strategy now.";
     case "building":
-      return "OpenClaw generating all pages in parallel — shared CSS first, then every section simultaneously.";
+      return "WebForge Core engineering the output — reasoning uniquely about this project, not following templates.";
     case "polishing":
-      return "OpenClaw tightening typography, rhythm, and responsive breakpoints. Almost done.";
+      return "WebForge Core self-critiquing — tightening architecture, performance, and quality. Almost done.";
     case "done":
     default:
-      return "OpenClaw done. Tap Preview to see your site live.";
+      return "WebForge Core done. Engineered intentionally for this project. Tap Preview to see it live.";
   }
 }
