@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
-import { setAuthTokenGetter, setBaseUrl } from "@workspace/api-client-react";
+import { customFetch, setAuthTokenGetter, setBaseUrl } from "@workspace/api-client-react";
 
 import { useAuth } from "./auth";
 
@@ -31,6 +31,40 @@ export function useApiAuth(): void {
       setAuthTokenGetter(null);
     };
   }, [isSignedIn]);
+}
+
+/**
+ * Thin REST client hook — wraps customFetch with get/post/patch/del helpers.
+ * Auth token is handled automatically via setAuthTokenGetter (wired in useApiAuth).
+ */
+export function useApiClient() {
+  const get = useCallback(<T = unknown>(path: string): Promise<T> => {
+    return customFetch<T>(`/api${path}`, { method: "GET", responseType: "json" });
+  }, []);
+
+  const post = useCallback(<T = unknown>(path: string, body?: unknown): Promise<T> => {
+    return customFetch<T>(`/api${path}`, {
+      method: "POST",
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers: { "Content-Type": "application/json" },
+      responseType: "json",
+    });
+  }, []);
+
+  const patch = useCallback(<T = unknown>(path: string, body?: unknown): Promise<T> => {
+    return customFetch<T>(`/api${path}`, {
+      method: "PATCH",
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers: { "Content-Type": "application/json" },
+      responseType: "json",
+    });
+  }, []);
+
+  const del = useCallback(<T = unknown>(path: string): Promise<T> => {
+    return customFetch<T>(`/api${path}`, { method: "DELETE", responseType: "json" });
+  }, []);
+
+  return { get, post, patch, del };
 }
 
 export const PUBLIC_API_URL = API_URL;

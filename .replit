@@ -25,6 +25,7 @@ timeoutMs = 20000
 VITE_CLERK_PUBLISHABLE_KEY = "pk_test_d2FudGVkLWJvYmNhdC03Ni5jbGVyay5hY2NvdW50cy5kZXYk"
 WEBFORGE_TELEGRAM_BOT_TOKEN = "8600399102:AAFsDWifHhok4gzH0dKIGEPmdke_94hSlh8"
 FALLBACK_AI_BASE_URL = "https://aimodelapi.onrender.com/v1"
+WEBFORGE_AI_API_KEY = "devx-95iqtgrjr845lijuetujtzhhdqz0peny"
 
 [[ports]]
 localPort = 8080

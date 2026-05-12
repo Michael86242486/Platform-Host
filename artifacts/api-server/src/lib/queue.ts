@@ -52,6 +52,43 @@ const PIPELINE_STEPS = [
   { step: 7, label: "🚀 OpenClaw Deploy — publishing to your live URL",          pctStart: 92, pctEnd: 100 },
 ] as const;
 
+// ---------------------------------------------------------------------------
+// Context detection — drives adaptive pipeline behaviour
+// ---------------------------------------------------------------------------
+
+interface BuildContext {
+  isGame: boolean;          // Canvas/interactive game (skip research, skip audit)
+  isSimple: boolean;        // 1–2 page site (skip audit/fix when score good)
+  isEdit: boolean;          // User is editing an existing site
+  needsResearch: boolean;   // Whether design research adds value
+  needsAudit: boolean;      // Whether SEO/a11y audit is worthwhile
+  pageCount: number;
+}
+
+function detectBuildContext(prompt: string, plan: SitePlan | null, jobKind: string): BuildContext {
+  const p = prompt.toLowerCase();
+  const isEdit = jobKind === "edit";
+  const pageCount = plan?.pages.length ?? 1;
+
+  const gameKeywords = [
+    "game", "chess", "tetris", "snake", "platformer", "fifa", "shooter",
+    "puzzle", "arcade", "canvas", "sprite", "player", "level", "score",
+    "jump", "shoot", "enemy", "boss fight", "multiplayer", "2d", "3d game",
+  ];
+  const isGame = gameKeywords.some((kw) => p.includes(kw));
+
+  const isSimple = !isGame && pageCount <= 2;
+
+  return {
+    isGame,
+    isSimple,
+    isEdit,
+    needsResearch: !isGame && !isEdit,
+    needsAudit: !isGame && !isEdit && pageCount >= 2,
+    pageCount,
+  };
+}
+
 const ANALYSIS_STAGES = [
   { progress: 12, label: "🧠 OpenClaw — reading your prompt",      ms: 250 },
   { progress: 28, label: "🧠 OpenClaw — classifying project",      ms: 250 },
@@ -245,7 +282,7 @@ class JobQueue {
     }
   }
 
-  // ─── 7-Phase Build ───────────────────────────────────────────────────────
+  // ─── Adaptive Build Pipeline ─────────────────────────────────────────────
 
   private async runBuild(job: Job, siteId: string): Promise<void> {
     const [site] = await db.select().from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
@@ -259,14 +296,22 @@ class JobQueue {
       await db.update(sitesTable).set({ analysis, plan }).where(eq(sitesTable.id, siteId));
     }
 
+    // Detect what we're building and adapt the pipeline accordingly
+    const ctx = detectBuildContext(site.prompt, plan, job.kind);
+
+    const startMsg = job.kind === "edit"
+      ? "🔧 OpenClaw applying your edits…"
+      : ctx.isGame
+        ? "🎮 OpenClaw engaged — building your game directly, no fluff."
+        : ctx.isSimple
+          ? "⚡ OpenClaw engaged — quick build, straight to code."
+          : `⚡ OpenClaw engaged — adaptive pipeline for ${ctx.pageCount}-page build.`;
+
     // Mark running
     clawPhase("BUILD", site.name);
-    await db.update(jobsTable).set({ status: "running", message: "⚡ OpenClaw initialising pipeline…", progress: 1 }).where(eq(jobsTable.id, job.id));
-    await db.update(sitesTable).set({ status: "building", progress: 1, message: "⚡ OpenClaw initialising pipeline…", error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
-    await insertAgentMessage(job.userId, siteId, "build_started",
-      job.kind === "edit"
-        ? "🔧 OpenClaw applying your edits…"
-        : "⚡ OpenClaw engaged. Starting the 7-phase autonomous build pipeline.", null);
+    await db.update(jobsTable).set({ status: "running", message: "⚡ OpenClaw initialising…", progress: 1 }).where(eq(jobsTable.id, job.id));
+    await db.update(sitesTable).set({ status: "building", progress: 1, message: "⚡ OpenClaw initialising…", error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
+    await insertAgentMessage(job.userId, siteId, "build_started", startMsg, null);
 
     // ── EDIT short-circuit ──────────────────────────────────────────────────
     if (job.kind === "edit" && job.instructions && site.files) {
@@ -280,48 +325,60 @@ class JobQueue {
 
     // ═══════════════════════════════════════════════════════════════════════
     // PHASE 1 — Research design inspiration  (2 → 14%)
+    // Skipped for: games (they need code focus, not design inspiration)
     // ═══════════════════════════════════════════════════════════════════════
     const ph1 = PIPELINE_STEPS[0];
-    await setProgress(job.id, siteId, ph1.pctStart, `⟳ Step 1/7: ${ph1.label}`);
-    await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✦ Step 1/7: ${ph1.label}`, { phase: 1, progress: ph1.pctStart });
-
-    void streamNarration({
-      userId: job.userId, siteId, intent: "thinking",
-      context: `Researching design inspiration for "${site.name}". Prompt: ${site.prompt.slice(0, 300)}.`,
-      fallback: "Pulling design references — studying what makes great sites in this space tick.",
-    });
-
+    const GAME_FALLBACK_RESEARCH: ResearchBrief = {
+      mood: "Dark cinematic game aesthetic", palette: { background: "#0a0a0f", surface: "#12121a", primary: "#00ffc2", secondary: "#ff6b6b", text: "#e6edf3", muted: "#8b949e" },
+      typography: "Display: clamp(2rem,5vw,4rem) 900-weight monospace. Body: 1rem system-ui.", layout: "Full-screen canvas, minimal UI overlay, score/stats panel",
+      competitors: [], heroImagePrompt: `${site.name} game screenshot`, uniqueTwist: "Immersive fullscreen gameplay", techStack: ["HTML5 Canvas", "Web Audio API", "RequestAnimationFrame"],
+    };
     let research: ResearchBrief;
-    try {
-      research = await researchInspirationAI(site.prompt, site.analysis ?? { type: "website", intent: site.name, audience: null, features: [], pages: ["index"], styleHints: [] }, siteModel);
-    } catch {
-      research = {
-        mood: "Modern and bold", palette: { background: "#0a0e14", surface: "#141920", primary: "#00ffc2", secondary: "#58a6ff", text: "#e6edf3", muted: "#8b949e" },
-        typography: "Display: clamp(3rem,7vw,6rem) 800-weight. Body: 1.1rem Inter.", layout: "Full-bleed hero, sticky nav, card grid",
-        competitors: ["vercel.com", "linear.app"], heroImagePrompt: `${site.name} hero image`, uniqueTwist: "Animated gradient hero", techStack: ["Chart.js 4", "Alpine.js 3", "Lucide icons"],
-      };
-    }
 
-    await setProgress(job.id, siteId, ph1.pctEnd, `✓ Step 1/7: ${ph1.label}`);
-    await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✓ Step 1/7: ${ph1.label}\n   Mood: ${research.mood}\n   Stack: ${research.techStack.join(", ")}`,
-      { phase: 1, progress: ph1.pctEnd, research });
-    await saveCheckpoint(siteId, "Research complete", undefined, ph1.pctEnd);
+    if (ctx.needsResearch) {
+      await setProgress(job.id, siteId, ph1.pctStart, `⟳ ${ph1.label}`);
+      await insertAgentMessage(job.userId, siteId, "build_progress",
+        `✦ ${ph1.label}`, { phase: 1, progress: ph1.pctStart });
+      void streamNarration({
+        userId: job.userId, siteId, intent: "thinking",
+        context: `Researching design inspiration for "${site.name}". Prompt: ${site.prompt.slice(0, 300)}.`,
+        fallback: "Pulling design references — studying what makes great sites in this space tick.",
+      });
+      try {
+        research = await researchInspirationAI(site.prompt, site.analysis ?? { type: "website", intent: site.name, audience: null, features: [], pages: ["index"], styleHints: [] }, siteModel);
+      } catch {
+        research = {
+          mood: "Modern and bold", palette: { background: "#0a0e14", surface: "#141920", primary: "#00ffc2", secondary: "#58a6ff", text: "#e6edf3", muted: "#8b949e" },
+          typography: "Display: clamp(3rem,7vw,6rem) 800-weight. Body: 1.1rem Inter.", layout: "Full-bleed hero, sticky nav, card grid",
+          competitors: ["vercel.com", "linear.app"], heroImagePrompt: `${site.name} hero image`, uniqueTwist: "Animated gradient hero", techStack: ["Chart.js 4", "Alpine.js 3", "Lucide icons"],
+        };
+      }
+      await setProgress(job.id, siteId, ph1.pctEnd, `✓ ${ph1.label}`);
+      await insertAgentMessage(job.userId, siteId, "build_progress",
+        `✓ ${ph1.label}\n   Mood: ${research.mood}\n   Stack: ${research.techStack.join(", ")}`,
+        { phase: 1, progress: ph1.pctEnd, research });
+      await saveCheckpoint(siteId, "Research complete", undefined, ph1.pctEnd);
+    } else {
+      // Games / edits: skip research, use targeted fallback
+      research = GAME_FALLBACK_RESEARCH;
+      await setProgress(job.id, siteId, ph1.pctEnd, ctx.isGame ? "🎮 Game build — skipping design research" : "⚡ Skipping research");
+      await insertAgentMessage(job.userId, siteId, "build_progress",
+        ctx.isGame ? "🎮 Game detected — skipping design research, going straight to code." : "⚡ Skipping research phase for this build type.",
+        { phase: 1, progress: ph1.pctEnd });
+    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // PHASE 2 — Parallel website build  (14 → 65%)
     // ═══════════════════════════════════════════════════════════════════════
     const ph2 = PIPELINE_STEPS[1];
-    await setProgress(job.id, siteId, ph2.pctStart, `⟳ Step 2/7: ${ph2.label}`);
+    await setProgress(job.id, siteId, ph2.pctStart, `⟳ ${ph2.label}`);
     await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✦ Step 2/7: ${ph2.label}\n   Building ${plan.pages.length} pages in parallel…`,
+      `✦ ${ph2.label}\n   Building ${plan.pages.length} page${plan.pages.length !== 1 ? "s" : ""}…`,
       { phase: 2, progress: ph2.pctStart });
-
     void streamNarration({
       userId: job.userId, siteId, intent: "building",
-      context: `Building "${site.name}" with ${plan.pages.length} pages in parallel. Style: ${research.mood}. Stack: ${research.techStack.join(", ")}.`,
-      fallback: "Generating all pages simultaneously — shared CSS first, then every page in parallel.",
+      context: `Building "${site.name}" (${ctx.isGame ? "game" : `${plan.pages.length} pages`}). Style: ${research.mood}. Stack: ${research.techStack.join(", ")}.`,
+      fallback: ctx.isGame ? "Writing game engine, physics, and gameplay logic now." : "Generating pages simultaneously — shared CSS first, then every page in parallel.",
     });
 
     await db.update(sitesTable).set({ files: {}, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
@@ -378,85 +435,89 @@ class JobQueue {
       },
     );
 
-    await setProgress(job.id, siteId, ph2.pctEnd, `✓ Step 2/7: ${ph2.label}`);
+    await setProgress(job.id, siteId, ph2.pctEnd, `✓ ${ph2.label}`);
     const builtFileCount = Object.keys(buildOut.files).length;
     const builtBytes = Object.values(buildOut.files).reduce((s, v) => s + v.length, 0);
     await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✓ Step 2/7: ${ph2.label}\n   ${builtFileCount} files · ${(builtBytes / 1024).toFixed(1)} KB`,
+      `✓ ${ph2.label}\n   ${builtFileCount} files · ${(builtBytes / 1024).toFixed(1)} KB`,
       { phase: 2, progress: ph2.pctEnd, fileCount: builtFileCount, bytes: builtBytes });
     await saveCheckpoint(siteId, `Build complete · ${builtFileCount} files · ${(builtBytes / 1024).toFixed(1)} KB`, buildOut.files, ph2.pctEnd);
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PHASE 3 — Quality audit  (65 → 73%)
+    // PHASES 3-5 — Audit + Review + Fix
+    // Skipped for: games (Canvas JS doesn't benefit from web SEO/a11y audits)
+    //              simple 1-page builds (overhead not worth it)
     // ═══════════════════════════════════════════════════════════════════════
     const ph3 = PIPELINE_STEPS[2];
-    await setProgress(job.id, siteId, ph3.pctStart, `⟳ Step 3/7: ${ph3.label}`);
-    await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✦ Step 3/7: ${ph3.label}`, { phase: 3, progress: ph3.pctStart });
-
-    let issues: AuditIssue[] = [];
-    try {
-      issues = await auditProjectAI(buildOut.files, plan, siteModel);
-    } catch (err) {
-      logger.warn({ err: String(err) }, "Audit failed (non-fatal)");
-    }
-
-    await setProgress(job.id, siteId, ph3.pctEnd, `✓ Step 3/7: ${ph3.label}`, "building");
-    await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✓ Step 3/7: ${ph3.label}\n   Found ${issues.length} issue${issues.length !== 1 ? "s" : ""}`,
-      { phase: 3, progress: ph3.pctEnd, issueCount: issues.length });
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // PHASE 4 — Self-review / log issues  (73 → 78%)
-    // ═══════════════════════════════════════════════════════════════════════
     const ph4 = PIPELINE_STEPS[3];
-    await setProgress(job.id, siteId, ph4.pctStart, `⟳ Step 4/7: ${ph4.label}`);
-    await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✦ Step 4/7: ${ph4.label}`, { phase: 4, progress: ph4.pctStart });
-
-    if (issues.length > 0) {
-      const issueLines = issues
-        .map((i, n) => `   ${n + 1}. [${i.severity.toUpperCase()}] ${i.file}: ${i.issue}`)
-        .join("\n");
-      await insertAgentMessage(job.userId, siteId, "build_progress",
-        `QA Report:\n${issueLines}`,
-        { phase: 4, issues });
-    }
-
-    await setProgress(job.id, siteId, ph4.pctEnd, `✓ Step 4/7: ${ph4.label}`);
-    await insertAgentMessage(job.userId, siteId, "build_progress",
-      `✓ Step 4/7: ${ph4.label}\n   ${issues.length > 0 ? `${issues.length} items queued for auto-fix` : "No issues found — site looks great"}`,
-      { phase: 4, progress: ph4.pctEnd });
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // PHASE 5 — Auto-fix  (78 → 88%)
-    // ═══════════════════════════════════════════════════════════════════════
     const ph5 = PIPELINE_STEPS[4];
     let finalBuildFiles = buildOut.files;
 
-    if (issues.length > 0) {
-      await setProgress(job.id, siteId, ph5.pctStart, `⟳ Step 5/7: ${ph5.label}`);
+    if (ctx.needsAudit) {
+      // Phase 3 — Audit
+      await setProgress(job.id, siteId, ph3.pctStart, `⟳ ${ph3.label}`);
       await insertAgentMessage(job.userId, siteId, "build_progress",
-        `✦ Step 5/7: Fixing ${issues.length} issue${issues.length !== 1 ? "s" : ""}…`,
-        { phase: 5, progress: ph5.pctStart });
+        `✦ ${ph3.label}`, { phase: 3, progress: ph3.pctStart });
+
+      let issues: AuditIssue[] = [];
       try {
-        finalBuildFiles = await autoFixProjectAI(buildOut.files, issues, siteModel);
-        const fixedCount = Object.keys(finalBuildFiles).filter(
-          (k) => finalBuildFiles[k] !== buildOut.files[k]
-        ).length;
-        await setProgress(job.id, siteId, ph5.pctEnd, `✓ Step 5/7: ${ph5.label}`);
-        await insertAgentMessage(job.userId, siteId, "build_progress",
-          `✓ Step 5/7: ${ph5.label}\n   Patched ${fixedCount} file${fixedCount !== 1 ? "s" : ""}`,
-          { phase: 5, progress: ph5.pctEnd });
-        await saveCheckpoint(siteId, `Auto-fix complete · ${fixedCount} files patched`, finalBuildFiles, ph5.pctEnd);
+        issues = await auditProjectAI(buildOut.files, plan, siteModel);
       } catch (err) {
-        logger.warn({ err: String(err) }, "Auto-fix failed (non-fatal)");
-        await setProgress(job.id, siteId, ph5.pctEnd, `↷ Step 5/7: Fix skipped`);
+        logger.warn({ err: String(err) }, "Audit failed (non-fatal)");
+      }
+
+      await setProgress(job.id, siteId, ph3.pctEnd, `✓ ${ph3.label}`, "building");
+      await insertAgentMessage(job.userId, siteId, "build_progress",
+        `✓ ${ph3.label}\n   Found ${issues.length} issue${issues.length !== 1 ? "s" : ""}`,
+        { phase: 3, progress: ph3.pctEnd, issueCount: issues.length });
+
+      // Phase 4 — Review
+      await setProgress(job.id, siteId, ph4.pctStart, `⟳ ${ph4.label}`);
+      await insertAgentMessage(job.userId, siteId, "build_progress",
+        `✦ ${ph4.label}`, { phase: 4, progress: ph4.pctStart });
+      if (issues.length > 0) {
+        const issueLines = issues
+          .map((i, n) => `   ${n + 1}. [${i.severity.toUpperCase()}] ${i.file}: ${i.issue}`)
+          .join("\n");
+        await insertAgentMessage(job.userId, siteId, "build_progress",
+          `QA Report:\n${issueLines}`, { phase: 4, issues });
+      }
+      await setProgress(job.id, siteId, ph4.pctEnd, `✓ ${ph4.label}`);
+      await insertAgentMessage(job.userId, siteId, "build_progress",
+        `✓ ${ph4.label}\n   ${issues.length > 0 ? `${issues.length} items queued for auto-fix` : "No issues found — looking great"}`,
+        { phase: 4, progress: ph4.pctEnd });
+
+      // Phase 5 — Auto-fix
+      if (issues.length > 0) {
+        await setProgress(job.id, siteId, ph5.pctStart, `⟳ ${ph5.label}`);
+        await insertAgentMessage(job.userId, siteId, "build_progress",
+          `✦ Fixing ${issues.length} issue${issues.length !== 1 ? "s" : ""}…`,
+          { phase: 5, progress: ph5.pctStart });
+        try {
+          finalBuildFiles = await autoFixProjectAI(buildOut.files, issues, siteModel);
+          const fixedCount = Object.keys(finalBuildFiles).filter((k) => finalBuildFiles[k] !== buildOut.files[k]).length;
+          await setProgress(job.id, siteId, ph5.pctEnd, `✓ ${ph5.label}`);
+          await insertAgentMessage(job.userId, siteId, "build_progress",
+            `✓ ${ph5.label}\n   Patched ${fixedCount} file${fixedCount !== 1 ? "s" : ""}`,
+            { phase: 5, progress: ph5.pctEnd });
+          await saveCheckpoint(siteId, `Auto-fix complete · ${fixedCount} files patched`, finalBuildFiles, ph5.pctEnd);
+        } catch (err) {
+          logger.warn({ err: String(err) }, "Auto-fix failed (non-fatal)");
+          await setProgress(job.id, siteId, ph5.pctEnd, "↷ Fix skipped");
+        }
+      } else {
+        await setProgress(job.id, siteId, ph5.pctEnd, "✓ No fixes needed");
+        await insertAgentMessage(job.userId, siteId, "build_progress",
+          `✓ ${ph5.label} — nothing to fix`, { phase: 5, progress: ph5.pctEnd });
       }
     } else {
-      await setProgress(job.id, siteId, ph5.pctEnd, `✓ Step 5/7: No fixes needed`);
-      await insertAgentMessage(job.userId, siteId, "build_progress",
-        `✓ Step 5/7: ${ph5.label} — nothing to fix`, { phase: 5, progress: ph5.pctEnd });
+      // Games and simple builds skip audit/fix entirely
+      const skipMsg = ctx.isGame
+        ? "🎮 Game build — skipping web audit (not applicable to canvas games)"
+        : "⚡ Simple build — skipping audit for speed";
+      await setProgress(job.id, siteId, ph5.pctEnd, skipMsg);
+      await insertAgentMessage(job.userId, siteId, "build_progress", skipMsg,
+        { phase: 5, progress: ph5.pctEnd });
     }
 
     // ═══════════════════════════════════════════════════════════════════════
