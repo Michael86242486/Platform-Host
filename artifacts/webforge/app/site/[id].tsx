@@ -2583,6 +2583,272 @@ const SEV_META = {
   info:     { label: "Info",     color: "#58A6FF", icon: "info" as const },
 };
 
+// ---------------------------------------------------------------------------
+// Project Intent Dashboard — real-time reasoning trace display
+// ---------------------------------------------------------------------------
+
+const DOMAIN_ICONS: Record<string, keyof typeof Feather.glyphMap> = {
+  saas: "box",
+  portfolio: "user",
+  restaurant: "coffee",
+  ecommerce: "shopping-bag",
+  event: "calendar",
+  editorial: "book-open",
+  art: "aperture",
+  music: "music",
+  game: "target",
+  tool: "tool",
+  bot: "cpu",
+  docs: "file-text",
+  nonprofit: "heart",
+  personal: "user",
+  agency: "briefcase",
+  directory: "list",
+  website: "globe",
+};
+
+const DOMAIN_COLORS: Record<string, string> = {
+  saas: "#58A6FF",
+  portfolio: "#B48EFF",
+  restaurant: "#FF8C61",
+  ecommerce: "#4ADE80",
+  event: "#FEBC2E",
+  editorial: "#E879F9",
+  art: "#F472B6",
+  music: "#34D399",
+  game: "#F87171",
+  tool: "#60A5FA",
+  bot: "#A78BFA",
+  docs: "#94A3B8",
+  nonprofit: "#FB7185",
+  personal: "#818CF8",
+  agency: "#FBBF24",
+  directory: "#6EE7B7",
+  website: "#67E8F9",
+};
+
+const MODE_LABELS: Record<string, string> = {
+  standard: "Standard",
+  minimal: "Minimal",
+  immersive: "Immersive",
+  editorial: "Editorial",
+  artistic: "Artistic",
+  terminal: "Terminal",
+  brutalist: "Brutalist",
+  "3d": "3D",
+  scrollytelling: "Scrollytelling",
+};
+
+function TraceRow({ label, value, color, icon, colors: c }: {
+  label: string;
+  value: string;
+  color?: string;
+  icon?: keyof typeof Feather.glyphMap;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.border + "60" }}>
+      <View style={{ width: 92 }}>
+        <Text style={{ color: c.mutedForeground, fontSize: 10, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.8, marginTop: 1 }}>
+          {label}
+        </Text>
+      </View>
+      <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        {icon && <Feather name={icon} size={11} color={color ?? c.foreground} />}
+        <Text style={{ color: color ?? c.foreground, fontSize: 12, fontWeight: "500", flex: 1, lineHeight: 17 }}>
+          {value}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function IntentChip({ label, color, colors: c }: { label: string; color: string; colors: ReturnType<typeof useColors> }) {
+  return (
+    <View style={{ borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3, backgroundColor: color + "18", borderWidth: 1, borderColor: color + "30" }}>
+      <Text style={{ color, fontSize: 10, fontWeight: "700", letterSpacing: 0.5 }}>{label}</Text>
+    </View>
+  );
+}
+
+function ProjectIntentDashboard({
+  site,
+  accent,
+  colors,
+}: {
+  site: Site;
+  accent: string;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const analysis = (site as unknown as { analysis?: {
+    type: string; intent: string; audience?: string | null;
+    features: string[]; pages: string[]; styleHints: string[];
+  } }).analysis;
+
+  const plan = (site as unknown as { plan?: {
+    summary?: string;
+    pages?: { path: string; title: string; purpose: string; sections: string[] }[];
+    styles?: { palette: string; mood: string };
+    features?: string[];
+    notes?: string[];
+  } }).plan;
+
+  if (!analysis && !plan) return null;
+
+  const domainType = analysis?.type ?? "website";
+  const domainColor = DOMAIN_COLORS[domainType] ?? accent;
+  const domainIcon = DOMAIN_ICONS[domainType] ?? "globe";
+
+  const features = analysis?.features ?? plan?.features ?? [];
+  const pages = plan?.pages ?? [];
+  const mood = plan?.styles?.mood ?? "";
+  const styleHints = analysis?.styleHints ?? [];
+
+  // Try to extract creative mode from plan notes or style hints
+  const creativeMode = ((): string => {
+    const notes = plan?.notes ?? [];
+    for (const note of notes) {
+      const m = note.match(/creative(?:Mode|mode|_mode)[:\s]+(\w+)/i);
+      if (m) return MODE_LABELS[m[1]] ?? m[1];
+    }
+    const modeHint = styleHints.find(h => Object.keys(MODE_LABELS).includes(h.toLowerCase()));
+    return modeHint ? (MODE_LABELS[modeHint.toLowerCase()] ?? modeHint) : "Standard";
+  })();
+
+  const techHints = styleHints.filter(h =>
+    ["gsap", "three.js", "alpine", "vue", "react", "chart.js", "p5", "d3", "tone.js"].some(t => h.toLowerCase().includes(t))
+  );
+
+  return (
+    <View style={{ marginHorizontal: 16, marginTop: 16, marginBottom: 8 }}>
+      {/* Header */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <View style={{ width: 26, height: 26, borderRadius: 8, backgroundColor: domainColor + "20", alignItems: "center", justifyContent: "center" }}>
+          <Feather name="cpu" size={13} color={domainColor} />
+        </View>
+        <Text style={{ color: colors.mutedForeground, fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 1, flex: 1 }}>
+          Agent Reasoning Trace
+        </Text>
+        <View style={{ borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: domainColor + "15", borderWidth: 1, borderColor: domainColor + "30" }}>
+          <Text style={{ color: domainColor, fontSize: 9, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8 }}>
+            {domainType}
+          </Text>
+        </View>
+      </View>
+
+      {/* Domain detection card */}
+      <LinearGradient
+        colors={[domainColor + "12", domainColor + "06", "transparent"]}
+        style={{ borderRadius: 16, borderWidth: 1, borderColor: domainColor + "25", padding: 14, marginBottom: 10 }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
+          <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: domainColor + "20", alignItems: "center", justifyContent: "center" }}>
+            <Feather name={domainIcon} size={18} color={domainColor} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: "700", lineHeight: 20 }}>
+              {analysis?.intent ?? site.name}
+            </Text>
+            {analysis?.audience ? (
+              <Text style={{ color: colors.mutedForeground, fontSize: 11, marginTop: 2 }}>
+                For: {analysis.audience}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+
+        {/* Style hints */}
+        {styleHints.length > 0 && (
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+            {styleHints.slice(0, 5).map((hint, i) => (
+              <IntentChip key={i} label={hint} color={domainColor} colors={colors} />
+            ))}
+          </View>
+        )}
+      </LinearGradient>
+
+      {/* Architecture decisions */}
+      <View style={{ backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 10 }}>
+        <Text style={{ color: colors.mutedForeground, fontSize: 10, fontWeight: "600", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+          Architecture Decisions
+        </Text>
+        {mood ? (
+          <TraceRow label="Mood" value={mood} color={colors.foreground} icon="wind" colors={colors} />
+        ) : null}
+        <TraceRow label="Style" value={creativeMode} color={accent} icon="layers" colors={colors} />
+        {plan?.summary ? (
+          <TraceRow label="Plan" value={plan.summary.slice(0, 120)} color={colors.foreground} icon="file-text" colors={colors} />
+        ) : null}
+        {pages.length > 0 && (
+          <TraceRow
+            label="Pages"
+            value={pages.map(p => p.title).join(" · ")}
+            color={colors.mutedForeground}
+            icon="layout"
+            colors={colors}
+          />
+        )}
+        {techHints.length > 0 && (
+          <TraceRow label="Tech" value={techHints.join(", ")} color="#60A5FA" icon="code" colors={colors} />
+        )}
+      </View>
+
+      {/* Feature trace */}
+      {features.length > 0 && (
+        <View style={{ backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 10 }}>
+          <Text style={{ color: colors.mutedForeground, fontSize: 10, fontWeight: "600", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
+            Planned Features
+          </Text>
+          <View style={{ gap: 8 }}>
+            {features.slice(0, 8).map((feat, i) => (
+              <View key={i} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+                <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: accent + "20", alignItems: "center", justifyContent: "center", marginTop: 1 }}>
+                  <Feather name="check" size={9} color={accent} />
+                </View>
+                <Text style={{ color: colors.foreground, fontSize: 12, lineHeight: 18, flex: 1 }}>
+                  {feat}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+
+      {/* Page plan */}
+      {pages.length > 0 && (
+        <View style={{ backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14 }}>
+          <Text style={{ color: colors.mutedForeground, fontSize: 10, fontWeight: "600", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
+            Page Architecture
+          </Text>
+          {pages.map((p, i) => (
+            <View key={i} style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 8, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: colors.border + "60" }}>
+              <View style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: accent + "15", alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ color: accent, fontSize: 10, fontWeight: "700" }}>{i + 1}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{p.title}</Text>
+                {p.purpose ? (
+                  <Text style={{ color: colors.mutedForeground, fontSize: 11, marginTop: 2 }}>{p.purpose}</Text>
+                ) : null}
+                {p.sections && p.sections.length > 0 && (
+                  <Text style={{ color: colors.mutedForeground, fontSize: 10, marginTop: 4, opacity: 0.7 }}>
+                    {p.sections.slice(0, 4).join(" · ")}
+                  </Text>
+                )}
+              </View>
+              <MonoText style={{ color: colors.mutedForeground, fontSize: 9 }}>/{p.path}</MonoText>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Intel tab
+// ---------------------------------------------------------------------------
+
 function IntelTab({
   site,
   accent,
@@ -2645,27 +2911,37 @@ function IntelTab({
 
   if (loading) {
     return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 16, backgroundColor: colors.background }}>
-        <ActivityIndicator size="large" color={accent} />
-        <Text style={{ color: colors.mutedForeground, fontFamily: "monospace", fontSize: 13 }}>
-          Scanning site files…
-        </Text>
-      </View>
+      <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 48 }}>
+        {(site.analysis || site.plan) && (
+          <ProjectIntentDashboard site={site} accent={accent} colors={colors} />
+        )}
+        <View style={{ alignItems: "center", justifyContent: "center", gap: 16, padding: 48 }}>
+          <ActivityIndicator size="large" color={accent} />
+          <Text style={{ color: colors.mutedForeground, fontFamily: "monospace", fontSize: 13 }}>
+            Scanning site quality…
+          </Text>
+        </View>
+      </ScrollView>
     );
   }
 
   if (error) {
     return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 32, gap: 16, backgroundColor: colors.background }}>
-        <Feather name="alert-circle" size={36} color={colors.destructive} />
-        <Text style={{ color: colors.destructive, textAlign: "center", fontSize: 14 }}>{error}</Text>
-        <Pressable
-          onPress={() => void runAnalysis()}
-          style={{ borderWidth: 1, borderColor: accent, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10 }}
-        >
-          <Text style={{ color: accent, fontSize: 14 }}>Retry</Text>
-        </Pressable>
-      </View>
+      <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 48 }}>
+        {(site.analysis || site.plan) && (
+          <ProjectIntentDashboard site={site} accent={accent} colors={colors} />
+        )}
+        <View style={{ alignItems: "center", justifyContent: "center", padding: 32, gap: 16 }}>
+          <Feather name="alert-circle" size={36} color={colors.destructive} />
+          <Text style={{ color: colors.destructive, textAlign: "center", fontSize: 14 }}>{error}</Text>
+          <Pressable
+            onPress={() => void runAnalysis()}
+            style={{ borderWidth: 1, borderColor: accent, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10 }}
+          >
+            <Text style={{ color: accent, fontSize: 14 }}>Retry Quality Scan</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
     );
   }
 
@@ -2728,6 +3004,11 @@ function IntelTab({
           ))}
         </View>
       </LinearGradient>
+
+      {/* ── Project Intent Dashboard ── */}
+      {(site.analysis || site.plan) && (
+        <ProjectIntentDashboard site={site} accent={accent} colors={colors} />
+      )}
 
       {/* ── Category score grid ── */}
       <View style={{ paddingHorizontal: 16, marginTop: 4 }}>
