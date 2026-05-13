@@ -89,4 +89,37 @@ router.delete("/me/telegram-link", requireAuth, async (req, res) => {
   }
 });
 
+// ── Expo Push Token ───────────────────────────────────────────────────────────
+
+const pushTokenSchema = z.object({
+  token: z.string().min(10).max(200),
+});
+
+router.post("/me/push-token", requireAuth, async (req, res) => {
+  const parsed = pushTokenSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_token" });
+    return;
+  }
+  try {
+    await db.update(usersTable)
+      .set({ expoPushToken: parsed.data.token, updatedAt: new Date() })
+      .where(eq(usersTable.id, req.user!.id));
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: "save_failed" });
+  }
+});
+
+router.delete("/me/push-token", requireAuth, async (req, res) => {
+  try {
+    await db.update(usersTable)
+      .set({ expoPushToken: null, updatedAt: new Date() })
+      .where(eq(usersTable.id, req.user!.id));
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: "remove_failed" });
+  }
+});
+
 export default router;

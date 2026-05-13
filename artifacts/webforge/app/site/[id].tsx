@@ -634,6 +634,11 @@ function OverviewTab({
         </Pressable>
       ) : null}
 
+      {/* ── GitHub Pages Deploy ── */}
+      {site.status === "ready" && site.files && site.files.length > 0 ? (
+        <GitHubPagesSection site={site} accent={accent} colors={colors} />
+      ) : null}
+
       <PuterHostingSection
         site={site}
         isBusy={republishPending}
@@ -699,6 +704,149 @@ function OverviewTab({
         <IntelTimelineSection site={site} accent={accent} colors={colors} />
       ) : null}
     </ScrollView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// GitHub Pages deploy section
+// ---------------------------------------------------------------------------
+
+function GitHubPagesSection({
+  site,
+  accent,
+  colors,
+}: {
+  site: Site;
+  accent: string;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const { getToken } = useAuth();
+  const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+  const [ghConnected, setGhConnected] = React.useState<null | boolean>(null);
+  const [ghUsername, setGhUsername] = React.useState<string | null>(null);
+  const [deploying, setDeploying] = React.useState(false);
+  const [pagesUrl, setPagesUrl] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    void (async () => {
+      try {
+        const token = await getToken();
+        const res = await fetch(`${apiBase}/api/github/status`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const d = await res.json() as { connected: boolean; username: string | null };
+          setGhConnected(d.connected);
+          setGhUsername(d.username);
+        }
+      } catch { setGhConnected(false); }
+    })();
+  }, [getToken, apiBase]);
+
+  const onDeploy = async () => {
+    setDeploying(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${apiBase}/api/github/pages-deploy`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ siteId: site.id }),
+      });
+      const d = await res.json() as { ok?: boolean; pagesUrl?: string; message?: string; error?: string };
+      if (!res.ok) throw new Error(d.message ?? d.error ?? `HTTP ${res.status}`);
+      setPagesUrl(d.pagesUrl ?? null);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Deploy failed");
+    } finally {
+      setDeploying(false);
+    }
+  };
+
+  if (ghConnected === null) return null;
+
+  return (
+    <View style={{ marginTop: 12 }}>
+      {pagesUrl ? (
+        <Surface padded style={{ gap: 10 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.success }} />
+            <MonoText style={{ color: colors.success, fontSize: 10, letterSpacing: 1.2 }}>LIVE ON GITHUB PAGES</MonoText>
+          </View>
+          <Text style={{ color: colors.foreground, fontSize: 13, fontFamily: "Inter_600SemiBold" }} numberOfLines={1}>
+            {pagesUrl}
+          </Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Pressable
+              onPress={() => void Linking.openURL(pagesUrl)}
+              style={({ pressed }) => ({
+                flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center",
+                gap: 6, paddingVertical: 10, borderRadius: 10,
+                backgroundColor: "#24292e", opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <Feather name="external-link" size={14} color="#fff" />
+              <Text style={{ color: "#fff", fontFamily: "Inter_600SemiBold", fontSize: 13 }}>Open Site</Text>
+            </Pressable>
+            <Pressable
+              onPress={async () => { await Clipboard.setStringAsync(pagesUrl); void Haptics.selectionAsync(); }}
+              style={({ pressed }) => ({
+                paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10,
+                borderWidth: 1, borderColor: colors.border, opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <Feather name="copy" size={14} color={colors.mutedForeground} />
+            </Pressable>
+          </View>
+        </Surface>
+      ) : ghConnected ? (
+        <Pressable
+          onPress={onDeploy}
+          disabled={deploying}
+          style={({ pressed }) => ({
+            flexDirection: "row", alignItems: "center", justifyContent: "center",
+            gap: 8, paddingVertical: 13, borderRadius: 12,
+            borderWidth: 1, borderColor: "#2d333b",
+            backgroundColor: "#161b22",
+            opacity: pressed || deploying ? 0.7 : 1,
+          })}
+        >
+          {deploying ? (
+            <ActivityIndicator size="small" color="#7d8590" />
+          ) : (
+            <Feather name="github" size={16} color="#e6edf3" />
+          )}
+          <Text style={{ color: "#e6edf3", fontFamily: "Inter_600SemiBold", fontSize: 14 }}>
+            {deploying ? "Deploying to GitHub Pages…" : `Deploy to GitHub Pages`}
+          </Text>
+          {ghUsername && !deploying && (
+            <MonoText style={{ color: "#7d8590", fontSize: 11 }}>@{ghUsername}</MonoText>
+          )}
+        </Pressable>
+      ) : (
+        <Pressable
+          onPress={() => void Linking.openURL(`${apiBase}/api/auth/github`)}
+          style={({ pressed }) => ({
+            flexDirection: "row", alignItems: "center", justifyContent: "center",
+            gap: 8, paddingVertical: 12, borderRadius: 12,
+            borderWidth: 1, borderColor: "#30363d",
+            backgroundColor: "#0d1117", opacity: pressed ? 0.7 : 1,
+          })}
+        >
+          <Feather name="github" size={15} color="#7d8590" />
+          <Text style={{ color: "#7d8590", fontFamily: "Inter_500Medium", fontSize: 13 }}>
+            Connect GitHub to deploy to Pages
+          </Text>
+        </Pressable>
+      )}
+      {error && (
+        <MonoText style={{ color: colors.destructive, fontSize: 11, marginTop: 6, textAlign: "center" }}>
+          {error}
+        </MonoText>
+      )}
+    </View>
   );
 }
 

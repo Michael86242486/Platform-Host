@@ -4,7 +4,7 @@
  */
 import { Router, type IRouter } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { requireAuth } from "../middlewares/auth";
 import { db, usersTable, sitesTable } from "../lib/db";
@@ -130,6 +130,99 @@ router.get("/github/repos", requireAuth, async (req, res) => {
   } catch (err) {
     logger.error({ err }, "GitHub repos fetch failed");
     res.status(500).json({ error: "fetch_failed" });
+  }
+});
+
+// ── GitHub Pages deploy ───────────────────────────────────────────────────────
+
+const pagesDeploySchema = z.object({
+  siteId: z.string().uuid(),
+});
+
+router.post("/github/pages-deploy", requireAuth, async (req, res) => {
+  const parsed = pagesDeploySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+
+  const user = req.user! as { id: string; githubAccessToken?: string | null; githubUsername?: string | null };
+  if (!user.githubAccessToken || !user.githubUsername) {
+    res.status(401).json({ error: "github_not_connected", message: "Connect GitHub first in your profile." });
+    return;
+  }
+
+  const [site] = await db
+    .select({ name: sitesTable.name, files: sitesTable.files, slug: sitesTable.slug })
+    .from(sitesTable)
+    .where(and(eq(sitesTable.id, parsed.data.siteId), eq(sitesTable.userId, user.id)))
+    .limit(1);
+
+  if (!site || !site.files || Object.keys(site.files as Record<string, string>).length === 0) {
+    res.status(404).json({ error: "site_not_ready", message: "Build your site first." });
+    return;
+  }
+
+  const files = site.files as Record<string, string>;
+  const repoName = `webforge-${(site.slug ?? site.name).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").slice(0, 40)}`;
+  const owner = user.githubUsername;
+  const token = user.githubAccessToken;
+  const ghHeaders = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "Content-Type": "application/json",
+  };
+
+  try {
+    // 1. Create repo (or use existing)
+    const repoRes = await fetch(`https://api.github.com/user/repos`, {
+      method: "POST",
+      headers: ghHeaders,
+      body: JSON.stringify({ name: repoName, description: `${site.name} — built by WebForge AI`, auto_init: false, private: false }),
+    });
+    if (!repoRes.ok && repoRes.status !== 422) {
+      const t = await repoRes.text().catch(() => "");
+      res.status(502).json({ error: "repo_create_failed", detail: t.slice(0, 200) });
+      return;
+    }
+
+    // 2. Push all files via GitHub Contents API
+    for (const [path, content] of Object.entries(files)) {
+      const filePath = path === "index.html" ? "index.html" : path;
+      // Check if file exists (to get sha for update)
+      let sha: string | undefined;
+      try {
+        const chk = await fetch(`https://api.github.com/repos/${owner}/${repoName}/contents/${filePath}`, { headers: ghHeaders });
+        if (chk.ok) {
+          const existing = await chk.json() as { sha?: string };
+          sha = existing.sha;
+        }
+      } catch { }
+      await fetch(`https://api.github.com/repos/${owner}/${repoName}/contents/${filePath}`, {
+        method: "PUT",
+        headers: ghHeaders,
+        body: JSON.stringify({
+          message: `Deploy ${filePath} via WebForge AI`,
+          content: Buffer.from(content, "utf-8").toString("base64"),
+          ...(sha ? { sha } : {}),
+        }),
+      });
+    }
+
+    // 3. Enable GitHub Pages on main branch
+    await fetch(`https://api.github.com/repos/${owner}/${repoName}/pages`, {
+      method: "POST",
+      headers: ghHeaders,
+      body: JSON.stringify({ source: { branch: "main", path: "/" } }),
+    });
+
+    const pagesUrl = `https://${owner}.github.io/${repoName}/`;
+    logger.info({ userId: user.id, repoName, pagesUrl }, "GitHub Pages deploy complete");
+    res.json({ ok: true, repoName, pagesUrl, repoUrl: `https://github.com/${owner}/${repoName}` });
+  } catch (err) {
+    logger.error({ err, siteId: parsed.data.siteId }, "GitHub Pages deploy failed");
+    res.status(500).json({ error: "deploy_failed", message: err instanceof Error ? err.message : "Unknown error" });
   }
 });
 

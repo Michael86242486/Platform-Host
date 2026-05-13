@@ -1,0 +1,120 @@
+Programming Languages WebForge Should Know
+Since WebForge is meant to become an autonomous software engineering system, it should understand multiple ecosystems — not just one language.
+But don’t make the mistake of trying to master EVERYTHING at once.
+WebForge should learn languages based on:
+popularity
+backend power
+frontend power
+AI ecosystem
+mobile support
+system programming
+game development
+🚀 TIER 1 — CORE LANGUAGES (MOST IMPORTANT)
+These are ESSENTIAL.
+1. Python 🐍
+Best for:
+AI
+backend
+automation
+agents
+ML
+scripting
+WebForge needs Python for:
+AI orchestration
+FastAPI backend
+OpenClaw/OpenHands systems
+automation
+model integration
+Frameworks:
+FastAPI
+Django
+Flask
+2. TypeScript ⚡
+(More important than plain JavaScript)
+Best for:
+modern frontend
+scalable apps
+full-stack systems
+WebForge needs it for:
+React/Next.js
+frontend architecture
+Node backend
+realtime systems
+Frameworks:
+Next.js
+React
+NestJS
+3. SQL 🗄️
+VERY important.
+WebForge must understand:
+schema design
+joins
+indexing
+migrations
+optimization
+Databases:
+PostgreSQL
+MySQL
+SQLite
+🔥 TIER 2 — VERY IMPORTANT
+4. JavaScript
+Needed because:
+web ecosystem
+browser APIs
+npm ecosystem
+5. Bash / Shell
+Critical for:
+automation
+server setup
+deployment
+terminal commands
+WebForge MUST understand commands like:
+Bash
+pnpm install
+docker compose up
+uvicorn main:app
+6. HTML + CSS
+Even if AI generates UI, WebForge must deeply understand:
+layouts
+responsive systems
+accessibility
+animations
+⚡ TIER 3 — ADVANCED / OPTIONAL
+7. Go
+Excellent for:
+scalable backends
+performance
+microservices
+Useful later.
+8. Rust
+Great for:
+performance
+memory safety
+AI runtimes
+system tools
+Advanced.
+9. Dart (Flutter)
+Needed if WebForge builds:
+mobile apps
+Android/iOS apps
+10. C#
+Important for:
+Unity games
+enterprise systems
+🎮 FOR GAME DEVELOPMENT
+If you later revisit gaming:
+Needed:
+C#
+GDScript
+C++
+shader languages
+🧠 MOST IMPORTANT THING
+WebForge should NOT:
+memorize syntax only.
+It should understand:
+architecture
+engineering patterns
+runtime behavior
+scalability
+systems thinking
+That matters FAR more.

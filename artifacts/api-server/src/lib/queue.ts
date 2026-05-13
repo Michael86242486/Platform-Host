@@ -7,6 +7,7 @@ import {
   jobsTable,
   messagesTable,
   sitesTable,
+  usersTable,
   type Job,
   type SiteCheckpoint,
   type SiteFiles,
@@ -34,6 +35,34 @@ import { getDecryptedSecrets, injectSecretsIntoFiles } from "./secrets";
 import { siteEventBus } from "./eventBus";
 import { streamNarration } from "./narrate";
 import { PUTER_CONFIGURED, uploadSite } from "./puter";
+
+// ---------------------------------------------------------------------------
+// Expo Push Notifications
+// ---------------------------------------------------------------------------
+
+async function sendPushNotification(
+  userId: string,
+  title: string,
+  body: string,
+  data: Record<string, unknown> = {},
+): Promise<void> {
+  try {
+    const [user] = await db
+      .select({ expoPushToken: usersTable.expoPushToken })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1);
+    const token = (user as { expoPushToken?: string | null } | undefined)?.expoPushToken;
+    if (!token) return;
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ to: token, title, body, data, sound: "default", priority: "high" }),
+    });
+  } catch (err) {
+    logger.warn({ err }, "sendPushNotification failed (non-fatal)");
+  }
+}
 
 const MAX_CONCURRENCY = 3;
 const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
@@ -713,6 +742,25 @@ class JobQueue {
 
     siteEventBus.emitSite({ type: "site_updated", siteId });
     siteEventBus.emitSite({ type: "site_ready", siteId, userId: job.userId, siteName: site.name, publicUrl: puterPublicUrl, isEdit, fileCount: totalFiles, changedFileCount: totalFiles });
+
+    // Push notification — fires non-blocking after the site is ready
+    if (!isEdit) {
+      void sendPushNotification(
+        job.userId,
+        `🚀 ${site.name} is live!`,
+        puterPublicUrl
+          ? `Your site is ready. Tap to preview it live.`
+          : `Your site finished building — tap to open it in WebForge.`,
+        { siteId, publicUrl: puterPublicUrl ?? "" },
+      );
+    } else {
+      void sendPushNotification(
+        job.userId,
+        `✓ ${site.name} updated`,
+        `Your edits are live. Tap to preview.`,
+        { siteId, publicUrl: puterPublicUrl ?? "" },
+      );
+    }
 
     void streamNarration({
       userId: job.userId, siteId, intent: "done",

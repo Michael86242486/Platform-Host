@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -49,6 +49,67 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+// ---------------------------------------------------------------------------
+// Push notification registration — runs once after sign-in on native
+// ---------------------------------------------------------------------------
+
+function PushNotificationRegistrar() {
+  const { isSignedIn, isLoaded, getToken } = useAuth();
+  const registered = useRef(false);
+  const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || registered.current || Platform.OS === "web") return;
+    registered.current = true;
+
+    void (async () => {
+      try {
+        const Notifications = await import("expo-notifications");
+
+        // Configure notification appearance on native
+        await Notifications.setNotificationHandler({
+          handleNotification: async () => ({
+            shouldShowAlert: true,
+            shouldPlaySound: true,
+            shouldSetBadge: true,
+            shouldShowBanner: true,
+            shouldShowList: true,
+          }),
+        });
+
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let finalStatus = existingStatus;
+
+        if (existingStatus !== "granted") {
+          const { status } = await Notifications.requestPermissionsAsync();
+          finalStatus = status;
+        }
+
+        if (finalStatus !== "granted") return;
+
+        const projectId = process.env.EXPO_PUBLIC_REPL_ID ?? undefined;
+        const tokenData = await Notifications.getExpoPushTokenAsync(
+          projectId ? { projectId } : undefined,
+        );
+        const token = tokenData.data;
+
+        const authToken = await getToken();
+        await fetch(`${apiBase}/api/me/push-token`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ token }),
+        });
+      } catch {
+      }
+    })();
+  }, [isLoaded, isSignedIn, getToken, apiBase]);
+
+  return null;
+}
 
 function OnboardingGate() {
   const { isSignedIn, isLoaded, updateUser } = useAuth();
@@ -101,6 +162,7 @@ function RootLayoutNav() {
         />
       </Stack>
       <OnboardingGate />
+      <PushNotificationRegistrar />
     </>
   );
 }

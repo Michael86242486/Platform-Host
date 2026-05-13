@@ -14,6 +14,7 @@ export const usersTable = pgTable("users", {
   plan: text("plan", { enum: ["free", "pro", "enterprise"] }).default("free"),
   telegramChatId: text("telegram_chat_id"),
   telegramLinkCode: text("telegram_link_code"),
+  expoPushToken: text("expo_push_token"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

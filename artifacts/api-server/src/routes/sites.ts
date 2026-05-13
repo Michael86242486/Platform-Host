@@ -37,7 +37,7 @@ import { analyzeSiteFiles } from "../lib/analyze.js";
 const router: IRouter = Router();
 
 const createSchema = z.object({
-  prompt: z.string().min(4).max(1000),
+  prompt: z.string().min(4).max(12000),
   name: z.string().max(80).optional().nullable(),
   autoBuild: z.boolean().optional(),
   model: z.string().max(80).optional().nullable(),
@@ -46,7 +46,7 @@ const createSchema = z.object({
 const AUTO_BUILD_SENTINEL = "__AUTO_BUILD__";
 
 const editSchema = z.object({
-  prompt: z.string().min(4).max(1000),
+  prompt: z.string().min(4).max(4000),
 });
 
 const regeneratePageSchema = z.object({

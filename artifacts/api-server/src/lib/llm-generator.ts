@@ -212,16 +212,50 @@ Features must be SPECIFIC and REAL — not template placeholders:
 
 Let the user's prompt guide EVERYTHING — read it carefully and build what they ACTUALLY asked for.`;
 
+/**
+ * Compresses an overly-long prompt into a focused summary that the AI can
+ * classify accurately. This prevents token-limit hangs on massive spec docs
+ * (e.g. 4000+ char enterprise prompts like "ForgeFlow platform").
+ * Short prompts (<= 2000 chars) pass through unchanged.
+ */
+async function compressPromptIfNeeded(prompt: string, model?: string): Promise<string> {
+  const THRESHOLD = 2000;
+  if (prompt.length <= THRESHOLD) return prompt;
+
+  const COMPRESS_SYSTEM = `You are a technical analyst. Extract the CORE INTENT from this project spec.
+Return ONLY 1-3 sentences (max 300 chars) that capture:
+  1. What type of site/app this is
+  2. The primary name and purpose
+  3. The top 3 features
+
+No preamble. No lists. Just the compressed intent.`;
+
+  try {
+    const compressed = await aiComplete(
+      [
+        { role: "system", content: COMPRESS_SYSTEM },
+        { role: "user", content: prompt.slice(0, 8000) },
+      ],
+      { model: model ?? FAST_MODEL, timeout: 30_000 },
+    );
+    logger.info({ originalLen: prompt.length, compressedLen: compressed.length }, "Prompt compressed for analysis");
+    return compressed.trim() || prompt.slice(0, THRESHOLD);
+  } catch {
+    return prompt.slice(0, THRESHOLD);
+  }
+}
+
 export async function analyzeProjectAI(
   prompt: string,
   name?: string,
   model?: string,
 ): Promise<SiteAnalysis> {
   clawPhase("PLAN", name ?? prompt.slice(0, 60));
+  const effectivePrompt = await compressPromptIfNeeded(prompt, model);
   try {
     const messages: PuterAIMessage[] = [
       { role: "system", content: ANALYSIS_SYSTEM },
-      { role: "user", content: `Project prompt: ${prompt}\n${name ? `Suggested name: ${name}\n` : ""}Return the JSON.` },
+      { role: "user", content: `Project prompt: ${effectivePrompt}\n${name ? `Suggested name: ${name}\n` : ""}Return the JSON.` },
     ];
     const text = await aiComplete(messages, { model: model ?? CODEX_MODEL, jsonMode: true });
     if (!text) throw new Error("empty analysis");
