@@ -354,7 +354,18 @@ class JobQueue {
     await insertAgentMessage(job.userId, siteId, "plan", planSummary(plan), { plan });
     await saveCheckpoint(siteId, "Analysis complete — plan ready");
 
+    // ── CLARIFY SKILL — ask targeted questions for vague or short prompts ──
+    // Only shown when user will manually confirm (not auto-build from Telegram)
     if (!autoBuild) {
+      const clarifyQuestions = generateClarifyingQuestions(prompt, analysis);
+      if (clarifyQuestions.length > 0) {
+        const clarifyMsg = [
+          "Before I start building, a few quick questions to get this exactly right:",
+          ...clarifyQuestions.map((q, i) => `\n${i + 1}. ${q}`),
+          "\n\nFeel free to answer any or all — or just tap **Confirm** to build with the defaults.",
+        ].join("");
+        await insertAgentMessage(job.userId, siteId, "log", clarifyMsg, { clarifyQuestions });
+      }
       await insertAgentMessage(job.userId, siteId, "awaiting_confirmation",
         "Looks good? Reply 'build' (or tap Confirm) to start the build. I'll wait.", null);
     }
@@ -399,6 +410,24 @@ class JobQueue {
     await db.update(jobsTable).set({ status: "running", message: "⚡ WebForge Core initialising…", progress: 1 }).where(eq(jobsTable.id, job.id));
     await db.update(sitesTable).set({ status: "building", progress: 1, message: "⚡ WebForge Core initialising…", error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
     await insertAgentMessage(job.userId, siteId, "build_started", startMsg, null);
+
+    // ── RETRY short-circuit (resume partial build → skip AI, go straight to finalize) ──
+    if (job.kind === "retry") {
+      const existingFiles = (site.files ?? {}) as SiteFiles;
+      const fileCount = Object.keys(existingFiles).length;
+      if (fileCount >= 3) {
+        logger.info({ siteId, fileCount }, "Retry with existing files — skipping to finalize");
+        await db.update(jobsTable).set({ status: "running", message: "Resuming…", progress: 75 }).where(eq(jobsTable.id, job.id));
+        await db.update(sitesTable).set({ status: "building", progress: 75, message: "Resuming build…", error: null, updatedAt: new Date() }).where(eq(sitesTable.id, siteId));
+        await insertAgentMessage(job.userId, siteId, "build_progress",
+          `⚡ Resume — ${fileCount} files already built. Skipping straight to deploy…`,
+          { phase: 7, progress: 75 });
+        const userSecrets = await getDecryptedSecrets(job.userId);
+        const finalFiles = injectSecretsIntoFiles(existingFiles, userSecrets);
+        await this.finalize(job, siteId, site, finalFiles, site.coverColor ?? "#00FFC2", plan, false);
+        return;
+      }
+    }
 
     // ── EDIT short-circuit ──────────────────────────────────────────────────
     if (job.kind === "edit" && job.instructions && site.files) {
@@ -790,34 +819,52 @@ class JobQueue {
     );
   }
 
-  /** Re-queue a job after a delay, but only if the site is still in failed state. */
+  /** Re-queue a job after a delay, but only if the site is still in failed state.
+   *  If the site already has partial files, uses kind="retry" so runBuild can
+   *  detect them and skip straight to finalize rather than starting from scratch. */
   private async scheduleRetry(job: Job, delayMs: number): Promise<void> {
     await sleep(delayMs);
     try {
       const [site] = await db
-        .select({ status: sitesTable.status })
+        .select({ status: sitesTable.status, files: sitesTable.files, progress: sitesTable.progress })
         .from(sitesTable)
         .where(eq(sitesTable.id, job.siteId))
         .limit(1);
       if (!site || site.status !== "failed") return; // user already retried manually
+
+      // If the site already has a meaningful number of partial files, resume with
+      // kind="retry" so we can finalize what was already built instead of starting over.
+      const existingFileCount = Object.keys((site.files as Record<string, string>) ?? {}).length;
+      const resumeKind = existingFileCount >= 3 ? "retry" : (job.kind === "analyze" ? "create" : job.kind);
+      const resumeProgress = existingFileCount >= 3 ? Math.max(site.progress ?? 0, 50) : 0;
+      const resumeMsg = existingFileCount >= 3
+        ? "Resuming build — finalizing partial files…"
+        : "Auto-retry — agent back online";
+
       const [newJob] = await db
         .insert(jobsTable)
         .values({
           userId: job.userId,
           siteId: job.siteId,
-          kind: job.kind === "analyze" ? "create" : job.kind,
+          kind: resumeKind,
           status: "queued",
-          progress: 0,
-          message: "Auto-retry — agent back online",
+          progress: resumeProgress,
+          message: resumeMsg,
           instructions: job.instructions,
         })
         .returning();
       await db
         .update(sitesTable)
-        .set({ status: "queued", progress: 0, message: "Auto-retry — agent back online", error: null, updatedAt: new Date() })
+        .set({ status: "queued", progress: resumeProgress, message: resumeMsg, error: null, updatedAt: new Date() })
         .where(eq(sitesTable.id, job.siteId));
       siteEventBus.emitSite({ type: "site_updated", siteId: job.siteId });
-      await insertAgentMessage(job.userId, job.siteId, "log", "🔄 Auto-retry started — agent back online.", null);
+      await insertAgentMessage(
+        job.userId, job.siteId, "log",
+        existingFileCount >= 3
+          ? `🔄 Resuming build — ${existingFileCount} files already written, finalizing…`
+          : "🔄 Auto-retry started — agent back online.",
+        null,
+      );
       await this.enqueue(newJob.id);
     } catch (err) {
       logger.warn({ err, siteId: job.siteId }, "scheduleRetry failed");
@@ -893,6 +940,48 @@ async function insertAgentMessage(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * CLARIFY SKILL — Generate targeted clarifying questions for vague or short prompts.
+ * Returns an empty array when the prompt is detailed enough to proceed without questions.
+ */
+function generateClarifyingQuestions(
+  prompt: string,
+  analysis: { type: string; features: string[]; pages: string[]; audience?: string | null },
+): string[] {
+  const p = prompt.toLowerCase();
+  const questions: string[] = [];
+
+  // Only fire for short/vague prompts — skip if the user gave rich detail
+  const isVague = prompt.trim().length < 80 || analysis.features.length < 2;
+  if (!isVague) return [];
+
+  // Type-specific questions
+  if (analysis.type === "ecommerce" && !p.match(/product|item|shop|sell|store|catalog/)) {
+    questions.push("What products or services will be listed? (e.g. handmade jewellery, digital downloads, courses)");
+  }
+  if (analysis.type === "portfolio" && !p.match(/skill|project|work|experience|role/)) {
+    questions.push("What role or skills should be highlighted? (e.g. frontend developer, photographer, UX designer)");
+  }
+  if (analysis.type === "restaurant" && !p.match(/cuisine|menu|food|dish/)) {
+    questions.push("What cuisine or menu style? Any must-have sections like reservations or delivery?");
+  }
+  if (analysis.type === "saas" && !p.match(/feature|plan|pricing|trial/)) {
+    questions.push("What's the core feature or problem this SaaS solves? Should it have pricing plans?");
+  }
+
+  // Universal style question — ask if no style hints provided
+  if (!p.match(/dark|light|color|theme|minimal|bold|elegant|modern|retro|neon/)) {
+    questions.push("Any style preference? (e.g. dark & technical, clean & minimal, bold & colorful)");
+  }
+
+  // Contact / CTA — ask if a contact page is planned but no details given
+  if (analysis.pages.some(pg => pg.includes("contact")) && !p.match(/email|phone|contact|form/)) {
+    questions.push("What contact details should appear? (email, phone number, booking link, social handles)");
+  }
+
+  return questions.slice(0, 3);
 }
 
 function streamLabel(path: string): string {

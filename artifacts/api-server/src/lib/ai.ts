@@ -95,7 +95,7 @@ export async function aiComplete(
 /**
  * Streaming AI completion — fires onChunk for each token, returns full text.
  */
-export async function aiStream(
+async function aiStreamOnce(
   messages: AIMessage[],
   onChunk: (text: string) => void,
   opts: { model?: string; timeout?: number } = {},
@@ -169,6 +169,36 @@ export async function aiStream(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Streaming AI completion with automatic retry on transient failures.
+ * Retries up to 2 additional times (3 total) with exponential backoff.
+ * Does NOT retry on 4xx client errors.
+ */
+export async function aiStream(
+  messages: AIMessage[],
+  onChunk: (text: string) => void,
+  opts: { model?: string; timeout?: number } = {},
+): Promise<string> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      const delay = 2000 * Math.pow(2, attempt - 1); // 2s, 4s
+      logger.warn({ attempt, delay }, "aiStream retry");
+      await new Promise(r => setTimeout(r, delay));
+    }
+    try {
+      return await aiStreamOnce(messages, onChunk, opts);
+    } catch (err) {
+      lastErr = err;
+      // Don't retry on 4xx — those are permanent client errors
+      if (err instanceof AIError && err.status >= 400 && err.status < 500) {
+        throw err;
+      }
+    }
+  }
+  throw lastErr;
 }
 
 /**

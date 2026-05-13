@@ -2,8 +2,10 @@
  * WebForge AI — OpenClaw Intelligence Engine v2
  *
  * Client-side AI model definitions for the Codex assistant.
- * Powered by OpenClaw v2 — thinks like a Replit Agent.
+ * Calls the WebForge API server (/api/ai/chat) — no direct Puter dependency.
  */
+
+import { Platform } from "react-native";
 
 export type CodexModel =
   | "openai/gpt-5.3-codex"
@@ -12,7 +14,6 @@ export type CodexModel =
   | "openai/gpt-4o"
   | "openai/gpt-4o-mini";
 
-// Keep backward compat
 export type AIModel = CodexModel;
 
 export const CODEX_MODELS: {
@@ -53,7 +54,6 @@ export const CODEX_MODELS: {
   },
 ];
 
-// Legacy alias
 export const AI_MODELS = CODEX_MODELS;
 
 export type AgentMode =
@@ -119,18 +119,98 @@ Output the complete working game as a single HTML file.`,
   },
 ];
 
+/** AI engine is always available — uses the WebForge API server. */
 export function isPuterAvailable(): boolean {
-  return false;
+  return true;
 }
 
+async function getAuthToken(): Promise<string | null> {
+  const AUTH_KEY = "auth_session_token";
+  try {
+    if (Platform.OS === "web") {
+      return globalThis.localStorage?.getItem(AUTH_KEY) ?? null;
+    }
+    const SecureStore = await import("expo-secure-store");
+    return await SecureStore.getItemAsync(AUTH_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Send a message through the WebForge AI API with SSE streaming.
+ * Falls back to a non-stream response if streaming fails.
+ */
 export async function sendCodexMessage(
   history: Array<{ role: string; content: string }>,
   model: CodexModel,
   mode: AgentMode,
   onChunk: (text: string) => void,
 ): Promise<string> {
-  throw new Error(
-    "Direct AI calls are not available in this environment. Use the WebForge API.",
-  );
-  void history; void model; void mode; void onChunk;
+  const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
+  const token = await getAuthToken();
+
+  const modeConfig = AGENT_MODES.find(m => m.value === mode);
+  const systemPrompt = modeConfig?.prompt ?? AGENT_MODES[0].prompt;
+
+  const modelId = model.replace("openai/", "");
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history,
+  ];
+
+  const res = await fetch(`${apiBase}/api/ai/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ messages, model: modelId, stream: true }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`AI error (${res.status}): ${text.slice(0, 300)}`);
+  }
+
+  if (!res.body) throw new Error("No response body from AI");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  let buf = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+        const data = trimmed.slice(6).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const chunk = JSON.parse(data) as {
+            choices?: Array<{ delta?: { content?: string } }>;
+            error?: string;
+          };
+          if (chunk.error) throw new Error(chunk.error);
+          const delta = chunk.choices?.[0]?.delta?.content ?? "";
+          if (delta) { full += delta; onChunk(delta); }
+        } catch (parseErr) {
+          if (parseErr instanceof Error && parseErr.message !== "SyntaxError") {
+            throw parseErr;
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return full;
 }

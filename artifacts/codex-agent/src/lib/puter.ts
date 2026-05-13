@@ -1,27 +1,8 @@
-declare global {
-  interface Window {
-    puter: {
-      ai: {
-        chat: (
-          message: string | Array<{ role: string; content: string }>,
-          options?: {
-            model?: string;
-            stream?: boolean;
-            temperature?: number;
-            max_tokens?: number;
-            system_prompt?: string;
-          }
-        ) => Promise<string | AsyncIterable<{ text: string; finished?: boolean }>>;
-      };
-      auth: {
-        isSignedIn: () => boolean;
-        signIn: () => Promise<void>;
-        signOut: () => Promise<void>;
-        getUser: () => Promise<{ username: string; uuid: string; email?: string }>;
-      };
-    };
-  }
-}
+/**
+ * WebForge Codex Agent — AI client
+ * Calls the WebForge API server (/api/ai/chat) via the Vite dev proxy.
+ * No Puter.js dependency.
+ */
 
 export type CodexModel =
   | "gpt-5.3-codex"
@@ -59,7 +40,7 @@ export const CODEX_MODELS: { value: CodexModel; label: string; description: stri
 ];
 
 export const SYSTEM_PROMPTS = {
-  general: `You are Codex, a professional AI software engineer powered by OpenAI via Puter.js. You:
+  general: `You are Codex, a professional AI software engineer powered by OpenClaw v2. You:
 - Write clean, efficient, production-quality code with best practices
 - Provide clear explanations with your code
 - Detect bugs, vulnerabilities, and performance issues proactively
@@ -95,45 +76,74 @@ Structure your response: Summary → Root Cause → Affected Components → Fix 
 Always show the fixed code with diff-style annotations or inline comments.`,
 };
 
+/** AI engine is always available via the WebForge API. */
 export function isPuterAvailable(): boolean {
-  return typeof window !== "undefined" && typeof window.puter !== "undefined";
+  return true;
 }
 
+/**
+ * Send a chat message using the WebForge API with SSE streaming.
+ */
 export async function sendMessage(
   messages: Array<{ role: string; content: string }>,
   model: CodexModel,
   systemPromptKey: keyof typeof SYSTEM_PROMPTS = "general",
-  onChunk?: (chunk: string) => void
+  onChunk?: (chunk: string) => void,
 ): Promise<string> {
-  if (!isPuterAvailable()) {
-    throw new Error("Puter.js is not loaded. Please refresh the page.");
+  const systemPrompt = SYSTEM_PROMPTS[systemPromptKey];
+  const allMessages = [{ role: "system", content: systemPrompt }, ...messages];
+
+  const res = await fetch("/api/ai/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: allMessages, model, stream: !!onChunk }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`AI error (${res.status}): ${text.slice(0, 300)}`);
   }
 
-  const systemPrompt = SYSTEM_PROMPTS[systemPromptKey];
+  if (!onChunk) {
+    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+    return data.choices?.[0]?.message?.content ?? "";
+  }
 
-  const messagesWithSystem = [
-    { role: "system", content: systemPrompt },
-    ...messages,
-  ];
+  if (!res.body) throw new Error("No response body");
 
-  if (onChunk) {
-    const stream = await window.puter.ai.chat(messagesWithSystem, {
-      model,
-      stream: true,
-    }) as AsyncIterable<{ text: string; finished?: boolean }>;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  let buf = "";
 
-    let fullText = "";
-    for await (const chunk of stream) {
-      if (chunk.text) {
-        fullText += chunk.text;
-        onChunk(chunk.text);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+        const data = trimmed.slice(6).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const chunk = JSON.parse(data) as {
+            choices?: Array<{ delta?: { content?: string } }>;
+            error?: string;
+          };
+          if (chunk.error) throw new Error(chunk.error);
+          const delta = chunk.choices?.[0]?.delta?.content ?? "";
+          if (delta) { full += delta; onChunk(delta); }
+        } catch {
+          /* ignore malformed lines */
+        }
       }
     }
-    return fullText;
-  } else {
-    const response = await window.puter.ai.chat(messagesWithSystem, {
-      model,
-    }) as string;
-    return response;
+  } finally {
+    reader.releaseLock();
   }
+
+  return full;
 }

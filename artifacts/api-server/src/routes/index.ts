@@ -7,6 +7,7 @@ import jobsRouter from "./jobs";
 import botsRouter from "./bots";
 import voiceRouter from "./voice";
 import githubRouter from "./github";
+import aiChatRouter from "./ai-chat";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use(jobsRouter);
 router.use(botsRouter);
 router.use(voiceRouter);
 router.use(githubRouter);
+router.use(aiChatRouter);
 
 export default router;

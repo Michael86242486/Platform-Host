@@ -374,7 +374,7 @@ export default function CodexScreen() {
               ]}
             >
               <MonoText style={{ color: colors.primary, fontSize: 9, letterSpacing: 1 }}>
-                PUTER.JS
+                AI ENGINE
               </MonoText>
             </View>
           </View>
