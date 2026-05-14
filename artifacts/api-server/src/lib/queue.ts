@@ -27,6 +27,8 @@ import {
   scoreDeliveryAI,
   copilotExpandPrompt,
   extractUserPreferencesAI,
+  analyzeFileIntelligence,
+  consciousnessPass,
   AgentUnavailableError,
   type ResearchBrief,
   type AuditIssue,
@@ -608,7 +610,23 @@ class JobQueue {
             seenFiles.add(currentFile);
             void fileCount;
             buildLog.log(2, `File ready`, currentFile);
-            await insertAgentMessage(job.userId, siteId, "build_progress", streamLabel(currentFile), { progress: pct, file: currentFile });
+            // ── REAL-TIME CODE INTELLIGENCE FEED ─────────────────────────
+            // Analyse the completed file instantly (pure CPU, no LLM) and
+            // surface a one-line intelligence note so users see the AI "thinking".
+            const intel = analyzeFileIntelligence(
+              currentFile,
+              files[currentFile] ?? "",
+              new Set(Object.keys(files)),
+            );
+            const sizePart  = `${(intel.bytes / 1024).toFixed(1)} KB`;
+            const warnParts: string[] = [];
+            if (intel.apiCalls   > 0) warnParts.push(`⚠ ${intel.apiCalls} backend call${intel.apiCalls > 1 ? "s" : ""} (will be patched)`);
+            if (intel.brokenLinks > 0) warnParts.push(`⚠ ${intel.brokenLinks} broken link${intel.brokenLinks > 1 ? "s" : ""} (will be healed)`);
+            const intelMsg = [
+              `📡 ${currentFile} · ${sizePart} · ${intel.headline}`,
+              warnParts.length > 0 ? `   ${warnParts.join(", ")}` : "",
+            ].filter(Boolean).join("\n");
+            await insertAgentMessage(job.userId, siteId, "build_progress", intelMsg, { progress: pct, file: currentFile, intel });
           }
         }
       },
@@ -743,7 +761,27 @@ class JobQueue {
     // Inject secrets & finalize
     // ═══════════════════════════════════════════════════════════════════════
     const userSecrets = await getDecryptedSecrets(job.userId);
-    const finalFiles = injectSecretsIntoFiles(finalBuildFiles, userSecrets);
+    const rawFinalFiles = injectSecretsIntoFiles(finalBuildFiles, userSecrets);
+
+    // ── CONSCIOUSNESS PASS — agent reads its own output and self-heals ─────
+    // Pure CPU analysis: fixes broken internal links, patches backend fetch()
+    // calls to localStorage mocks, adds missing alt attributes. Fires before
+    // the user sees anything so every site arrives already debugged.
+    const { files: finalFiles, report: cpReport } = await consciousnessPass(rawFinalFiles);
+    if (cpReport.totalIssuesFixed > 0) {
+      const healLines = cpReport.findings.slice(0, 6).map(f => `  • ${f}`).join("\n");
+      const cpMsg = [
+        `🧠 Consciousness Pass — reviewed ${Object.keys(finalFiles).length} file${Object.keys(finalFiles).length !== 1 ? "s" : ""}`,
+        healLines,
+        `\n${cpReport.totalIssuesFixed} issue${cpReport.totalIssuesFixed !== 1 ? "s" : ""} auto-patched before delivery.`,
+      ].join("\n");
+      await insertAgentMessage(job.userId, siteId, "build_progress", cpMsg, { consciousnessReport: cpReport });
+      siteEventBus.emitSite({ type: "site_updated", siteId });
+      // Persist healed files immediately
+      await db.update(sitesTable)
+        .set({ files: finalFiles as Record<string, string>, updatedAt: new Date() })
+        .where(eq(sitesTable.id, siteId));
+    }
 
     await this.finalize(job, siteId, site, finalFiles, buildOut.coverColor, plan, false);
   }
