@@ -54,6 +54,36 @@ export default function ProfileScreen() {
   const { getToken } = useAuth();
   const apiBase = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/$/, "");
 
+  type AIProfileShape = {
+    designTaste?: string; favoriteStack?: string[]; styleKeywords?: string[];
+    colorPreferences?: string[]; totalBuilds?: number; avgScore?: number; memory?: string;
+  };
+  const [aiProfile, setAiProfile] = useState<AIProfileShape | null>(null);
+  const [aiProfileLoading, setAiProfileLoading] = useState(true);
+  const [clearingProfile, setClearingProfile] = useState(false);
+
+  const fetchAiProfile = useCallback(async () => {
+    try {
+      const token = await getToken();
+      const res = await fetch(`${apiBase}/api/me/profile`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const d = await res.json() as { profile: AIProfileShape | null; hasProfile: boolean };
+        setAiProfile(d.hasProfile ? d.profile : null);
+      }
+    } catch { } finally { setAiProfileLoading(false); }
+  }, [getToken, apiBase]);
+
+  useEffect(() => { void fetchAiProfile(); }, [fetchAiProfile]);
+
+  const onClearAiProfile = async () => {
+    setClearingProfile(true);
+    try {
+      const token = await getToken();
+      await fetch(`${apiBase}/api/me/profile`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+      setAiProfile(null);
+    } catch { } finally { setClearingProfile(false); }
+  };
+
   const fetchTgStatus = useCallback(async () => {
     try {
       const token = await getToken();
@@ -298,6 +328,81 @@ export default function ProfileScreen() {
               </Text>
             </View>
           </View>
+        </Surface>
+
+        {/* ── OpenClaw Memory — AI Profile ── */}
+        <Surface padded style={{ marginBottom: 16, gap: 12 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+              <Feather name="cpu" size={11} color={colors.primary} />
+              <MonoText style={{ color: colors.mutedForeground, fontSize: 11, letterSpacing: 1.4, textTransform: "uppercase" }}>
+                OpenClaw Memory
+              </MonoText>
+            </View>
+            {aiProfile && (
+              <Pressable onPress={onClearAiProfile} disabled={clearingProfile} style={({ pressed }) => ({ opacity: pressed || clearingProfile ? 0.5 : 1 })}>
+                <MonoText style={{ color: colors.destructive, fontSize: 10 }}>
+                  {clearingProfile ? "clearing…" : "reset"}
+                </MonoText>
+              </Pressable>
+            )}
+          </View>
+          {aiProfileLoading ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : aiProfile ? (
+            <View style={{ gap: 10 }}>
+              <View style={{ backgroundColor: `${colors.primary}10`, borderRadius: 10, padding: 10, borderLeftWidth: 2, borderLeftColor: colors.primary }}>
+                <Text style={{ color: colors.foreground, fontSize: 12, lineHeight: 18 }}>
+                  {aiProfile.memory ?? "Learning your style…"}
+                </Text>
+              </View>
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                <View style={{ flex: 1 }}>
+                  <MonoText style={{ color: colors.mutedForeground, fontSize: 9, marginBottom: 3, letterSpacing: 0.8 }}>DESIGN TASTE</MonoText>
+                  <Text style={{ color: colors.foreground, fontFamily: "Inter_600SemiBold", fontSize: 12 }}>
+                    {aiProfile.designTaste ?? "—"}
+                  </Text>
+                </View>
+                {aiProfile.avgScore != null && (
+                  <View style={{ backgroundColor: colors.cardElevated, borderRadius: 10, padding: 10, alignItems: "center", minWidth: 58, borderWidth: 1, borderColor: `${colors.primary}30` }}>
+                    <Text style={{ color: colors.primary, fontFamily: "Inter_700Bold", fontSize: 20 }}>{aiProfile.avgScore}</Text>
+                    <MonoText style={{ color: colors.mutedForeground, fontSize: 9 }}>avg score</MonoText>
+                  </View>
+                )}
+              </View>
+              {aiProfile.favoriteStack && aiProfile.favoriteStack.length > 0 && (
+                <View style={{ gap: 5 }}>
+                  <MonoText style={{ color: colors.mutedForeground, fontSize: 9, letterSpacing: 0.8 }}>PREFERRED STACK</MonoText>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
+                    {aiProfile.favoriteStack.map((lib, i) => (
+                      <View key={i} style={{ backgroundColor: `${colors.accent}15`, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: `${colors.accent}30` }}>
+                        <MonoText style={{ color: colors.accent, fontSize: 10 }}>{lib}</MonoText>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+              {aiProfile.styleKeywords && aiProfile.styleKeywords.length > 0 && (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
+                  {aiProfile.styleKeywords.map((kw, i) => (
+                    <View key={i} style={{ backgroundColor: `${colors.primary}10`, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 }}>
+                      <MonoText style={{ color: colors.primary, fontSize: 9 }}>#{kw}</MonoText>
+                    </View>
+                  ))}
+                </View>
+              )}
+              <MonoText style={{ color: colors.mutedForeground, fontSize: 9, opacity: 0.7 }}>
+                {aiProfile.totalBuilds ?? 0} builds trained · gets smarter with every site you create
+              </MonoText>
+            </View>
+          ) : (
+            <View style={{ alignItems: "center", paddingVertical: 10, gap: 7 }}>
+              <Feather name="cpu" size={22} color={colors.border} />
+              <Text style={{ color: colors.mutedForeground, fontSize: 12, textAlign: "center", lineHeight: 18 }}>
+                No AI memory yet.{"\n"}Build your first site and I'll start learning your style.
+              </Text>
+            </View>
+          )}
         </Surface>
 
         {/* ── Edit profile ── */}

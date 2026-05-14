@@ -8,6 +8,7 @@ export {
   jobsTable,
   messagesTable,
   telegramBotsTable,
+  userProfilesTable,
 } from "@workspace/db";
 export type {
   User,
@@ -29,4 +30,7 @@ export type {
   InsertMessage,
   TelegramBot,
   InsertTelegramBot,
+  UserProfile,
+  InsertUserProfile,
+  UserAIProfile,
 } from "@workspace/db";

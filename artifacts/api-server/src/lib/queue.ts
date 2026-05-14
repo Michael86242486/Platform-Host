@@ -8,10 +8,12 @@ import {
   messagesTable,
   sitesTable,
   usersTable,
+  userProfilesTable,
   type Job,
   type SiteCheckpoint,
   type SiteFiles,
   type SitePlan,
+  type UserAIProfile,
 } from "./db";
 import { buildPlan, analyzeProject } from "./generator";
 import {
@@ -22,10 +24,15 @@ import {
   researchInspirationAI,
   auditProjectAI,
   autoFixProjectAI,
+  scoreDeliveryAI,
+  copilotExpandPrompt,
+  extractUserPreferencesAI,
   AgentUnavailableError,
   type ResearchBrief,
   type AuditIssue,
   type BuildQualityReport,
+  type DeliveryScore,
+  type UserPreferencesSignal,
 } from "./llm-generator";
 import {
   AgentBuildLog,
@@ -61,6 +68,58 @@ async function sendPushNotification(
     });
   } catch (err) {
     logger.warn({ err }, "sendPushNotification failed (non-fatal)");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OpenClaw Memory — User Profile helpers
+// ---------------------------------------------------------------------------
+
+async function getUserProfile(userId: string): Promise<{ profile: UserAIProfile } | null> {
+  try {
+    const [row] = await db.select({ profile: userProfilesTable.profile })
+      .from(userProfilesTable)
+      .where(eq(userProfilesTable.userId, userId))
+      .limit(1);
+    return row ?? null;
+  } catch { return null; }
+}
+
+async function updateUserProfile(
+  userId: string,
+  signals: UserPreferencesSignal,
+  score: number,
+): Promise<void> {
+  try {
+    const existing = await getUserProfile(userId);
+    const totalBuilds = (existing?.profile.totalBuilds ?? 0) + 1;
+    const avgScore = existing?.profile.avgScore != null
+      ? Math.round((existing.profile.avgScore * (totalBuilds - 1) + score) / totalBuilds)
+      : score;
+
+    const newProfile: UserAIProfile = {
+      designTaste: signals.designTaste,
+      favoriteStack: signals.stack,
+      preferredSiteTypes: existing
+        ? [...new Set([...existing.profile.preferredSiteTypes, signals.siteType])].slice(-6)
+        : [signals.siteType],
+      styleKeywords: signals.styleKeywords,
+      colorPreferences: signals.colorPreferences,
+      totalBuilds,
+      avgScore,
+      memory: signals.memory,
+      lastUpdated: new Date().toISOString(),
+    };
+
+    if (existing) {
+      await db.update(userProfilesTable)
+        .set({ profile: newProfile, updatedAt: new Date() })
+        .where(eq(userProfilesTable.userId, userId));
+    } else {
+      await db.insert(userProfilesTable).values({ userId, profile: newProfile });
+    }
+  } catch (err) {
+    logger.warn({ err: String(err) }, "updateUserProfile failed (non-fatal)");
   }
 }
 
@@ -324,7 +383,27 @@ class JobQueue {
       fallback: "Reading your idea now — picking out the vibe, the pages, and a palette that fits.",
     });
 
-    const analysisPromise = analyzeProjectAI(prompt, name, model);
+    // ── CO-PILOT EXPANSION: Enrich vague prompts using user's AI Memory ──────
+    let effectivePrompt = prompt;
+    if (prompt.trim().length < 120 && job.instructions !== AUTO_BUILD_SENTINEL) {
+      try {
+        const userProfile = await getUserProfile(job.userId);
+        const expanded = await copilotExpandPrompt(prompt, userProfile?.profile ?? null);
+        if (expanded.length > prompt.length + 40) {
+          effectivePrompt = expanded;
+          await db.update(sitesTable)
+            .set({ prompt: expanded, updatedAt: new Date() })
+            .where(eq(sitesTable.id, siteId));
+          await insertAgentMessage(job.userId, siteId, "copilot_expand",
+            expanded.slice(0, 500) + (expanded.length > 500 ? "…" : ""),
+            { originalPrompt: prompt });
+        }
+      } catch (expandErr) {
+        logger.warn({ err: String(expandErr) }, "copilot expansion skipped (non-fatal)");
+      }
+    }
+
+    const analysisPromise = analyzeProjectAI(effectivePrompt, name, model);
 
     for (const stage of ANALYSIS_STAGES) {
       await sleep(stage.ms);
@@ -796,6 +875,11 @@ class JobQueue {
       context: `Just shipped "${site.name}". ${totalFiles} files, ${(totalBytes / 1024).toFixed(1)} KB. Files: ${Object.keys(finalFiles).slice(0, 5).join(", ")}.`,
       fallback: "Shipped it. All 7 phases complete — tap Preview to see your site live.",
     });
+
+    // ── Score delivery + update OpenClaw Memory (non-blocking) ────────────
+    // Fires AFTER the user sees build_done so the score card arrives as a
+    // follow-up message, just like a human reviewer posting notes after delivery.
+    void this.scoreAndLearn(job, siteId, finalFiles, plan);
   }
 
   private async failJob(job: Job, message: string): Promise<void> {
@@ -817,6 +901,45 @@ class JobQueue {
         : `Build failed: ${message}`,
       null,
     );
+  }
+
+  // ─── OpenClaw Memory: Score delivery + learn from build ──────────────────
+  private async scoreAndLearn(job: Job, siteId: string, finalFiles: SiteFiles, plan: SitePlan): Promise<void> {
+    try {
+      const [site] = await db.select().from(sitesTable).where(eq(sitesTable.id, siteId)).limit(1);
+      if (!site?.prompt) return;
+
+      const score: import("./llm-generator").DeliveryScore = await scoreDeliveryAI(finalFiles, site.prompt, plan, site.model ?? undefined);
+
+      // Format score summary message
+      const stars = "★".repeat(Math.round(score.overall / 20)) + "☆".repeat(5 - Math.round(score.overall / 20));
+      const scoreMsg = [
+        `🎯 Build Score: ${score.overall}/100  ${stars}  ${score.passed ? "PASS" : "FAIL"}`,
+        `\n${score.summary}`,
+        score.delivered.length ? `\n\n✅ Delivered: ${score.delivered.slice(0, 3).join(", ")}` : "",
+        score.missing.length ? `\n⚠ Missing: ${score.missing.slice(0, 2).join(", ")}` : "",
+        score.suggestions.length ? `\n\n💡 Quick win: ${score.suggestions[0]}` : "",
+      ].join("").trim();
+
+      await insertAgentMessage(job.userId, siteId, "score_report", scoreMsg, { score });
+      siteEventBus.emitSite({ type: "site_updated", siteId });
+
+      // Extract preferences and update OpenClaw Memory (non-blocking)
+      if (site.analysis) {
+        try {
+          const existingProfile = await getUserProfile(job.userId);
+          const signals = await extractUserPreferencesAI(
+            site.prompt, finalFiles, site.analysis as import("./db").SiteAnalysis, score,
+            existingProfile?.profile.memory ?? null,
+          );
+          await updateUserProfile(job.userId, signals, score.overall);
+        } catch (profileErr) {
+          logger.warn({ err: String(profileErr) }, "profile update skipped (non-fatal)");
+        }
+      }
+    } catch (err) {
+      logger.warn({ err: String(err) }, "scoreAndLearn failed (non-fatal)");
+    }
   }
 
   /** Re-queue a job after a delay, but only if the site is still in failed state.

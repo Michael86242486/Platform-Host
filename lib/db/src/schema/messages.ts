@@ -37,6 +37,8 @@ export const messagesTable = pgTable(
         "build_progress",
         "build_done",
         "build_failed",
+        "score_report",
+        "copilot_expand",
       ],
     })
       .notNull()

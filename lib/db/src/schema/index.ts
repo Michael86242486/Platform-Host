@@ -6,3 +6,4 @@ export * from "./jobs";
 export * from "./messages";
 export * from "./telegramBots";
 export * from "./otps";
+export * from "./userProfiles";

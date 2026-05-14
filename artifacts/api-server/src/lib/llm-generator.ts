@@ -1510,3 +1510,200 @@ function fillMissingFromFallback(files: SiteFiles, plan: SitePlan): SiteFiles {
   }
   return out;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUCCESS SCORE CARD — AI-powered delivery assessment
+// ═══════════════════════════════════════════════════════════════════════════
+
+export interface DeliveryScore {
+  overall: number;
+  featureDelivery: number;
+  seoScore: number;
+  interactivity: number;
+  mobileReadiness: number;
+  designCoherence: number;
+  pageCount: { delivered: number; planned: number };
+  delivered: string[];
+  missing: string[];
+  suggestions: string[];
+  summary: string;
+  passed: boolean;
+}
+
+export async function scoreDeliveryAI(
+  files: SiteFiles,
+  prompt: string,
+  plan: SitePlan,
+  model?: string,
+): Promise<DeliveryScore> {
+  clawPhase("SCORE", prompt.slice(0, 60));
+
+  const allContent = Object.values(files).join("\n");
+  const indexHtml = files["index.html"] ?? "";
+
+  // ── Static checks (fast, no AI) ──────────────────────────────────────────
+  const deliveredPages = Object.keys(files).filter(f => f.endsWith(".html")).length;
+  const plannedPages = Math.max(plan.pages.length, 1);
+  const hasSeoTitle    = /<title>[^<]{3,}<\/title>/i.test(indexHtml);
+  const hasSeoDesc     = /name=.?description.?\s+content/i.test(indexHtml);
+  const hasOgTags      = /property=.?og:/i.test(indexHtml);
+  const hasViewport    = /name=.?viewport/i.test(indexHtml);
+  const hasResponsive  = /@media\s*\(.*max-width/i.test(allContent);
+  const hasJs          = /addEventListener|onclick\s*=|x-data|Alpine/i.test(allContent);
+  const hasAnimation   = /animation|transition\s*:|transform:|gsap|ScrollReveal/i.test(allContent);
+
+  const promptWords   = prompt.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+  const matchedWords  = promptWords.filter(w => allContent.toLowerCase().includes(w));
+  const featureDelivery = promptWords.length > 0
+    ? Math.min(100, Math.round((matchedWords.length / promptWords.length) * 130))
+    : 80;
+
+  const seoScore         = Math.round((hasSeoTitle ? 35 : 0) + (hasSeoDesc ? 35 : 0) + (hasOgTags ? 30 : 0));
+  const mobileReadiness  = Math.round((hasViewport ? 50 : 0) + (hasResponsive ? 50 : 0));
+  const interactivity    = Math.round((hasJs ? 60 : 20) + (hasAnimation ? 40 : 0));
+
+  const fallback: DeliveryScore = {
+    overall: Math.round((featureDelivery * 0.35 + seoScore * 0.15 + interactivity * 0.15 + mobileReadiness * 0.15 + 80 * 0.2)),
+    featureDelivery, seoScore, interactivity, mobileReadiness, designCoherence: 80,
+    pageCount: { delivered: deliveredPages, planned: plannedPages },
+    delivered: ["Home page", "Navigation", "Core content"],
+    missing: [],
+    suggestions: ["Add social meta tags (og:image, og:description) for better sharing", "Consider adding a sitemap.xml"],
+    summary: `Delivered ${deliveredPages}/${plannedPages} pages with ${featureDelivery}% feature coverage.`,
+    passed: featureDelivery > 55,
+  };
+
+  try {
+    const filesSnippet = Object.entries(files).slice(0, 4)
+      .map(([p, c]) => `${p}: ${c.slice(0, 200)}…`).join("\n---\n");
+
+    const messages: PuterAIMessage[] = [
+      { role: "system", content: `You are a web quality analyst for WebForge. Evaluate a delivered website against the user's prompt. Return ONLY JSON — no prose.` },
+      {
+        role: "user",
+        content: `Prompt: "${prompt}"\n\nPlanned pages: ${plan.pages.map(p => p.path).join(", ")}\nDelivered files: ${Object.keys(files).join(", ")}\n\nSample content:\n${filesSnippet}\n\nReturn:\n{"designCoherence":0-100,"delivered":["feature1","feature2"],"missing":["missing1"],"suggestions":["quick win 1","quick win 2"],"summary":"1-sentence verdict"}`,
+      },
+    ];
+
+    const text = await aiComplete(messages, { model: model ?? FAST_MODEL, jsonMode: true, timeout: 20_000 });
+    if (!text) throw new Error("empty score response");
+    const parsed = JSON.parse(text) as Partial<{ designCoherence: number; delivered: string[]; missing: string[]; suggestions: string[]; summary: string }>;
+
+    const designCoherence = Math.min(100, Math.max(0, parsed.designCoherence ?? 80));
+    const overall = Math.round(featureDelivery * 0.35 + seoScore * 0.15 + interactivity * 0.15 + mobileReadiness * 0.15 + designCoherence * 0.2);
+
+    return {
+      overall, featureDelivery, seoScore, interactivity, mobileReadiness, designCoherence,
+      pageCount: { delivered: deliveredPages, planned: plannedPages },
+      delivered: Array.isArray(parsed.delivered) ? parsed.delivered.slice(0, 6) : fallback.delivered,
+      missing: Array.isArray(parsed.missing) ? parsed.missing.slice(0, 4) : fallback.missing,
+      suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 3) : fallback.suggestions,
+      summary: parsed.summary ?? fallback.summary,
+      passed: overall >= 60,
+    };
+  } catch (err) {
+    logger.warn({ err: String(err) }, "scoreDeliveryAI AI call failed; using static scores");
+    return fallback;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CO-PILOT EXPANSION — Enrich vague prompts with AI creativity + user taste
+// ═══════════════════════════════════════════════════════════════════════════
+
+const COPILOT_EXPAND_SYSTEM = `${OPENCLAW_SYSTEM_PREFIX}
+
+Mode: CO-PILOT EXPANSION. You are WebForge Co-Pilot, an expert creative director and technical architect. A user has given you a brief, vague website description. Your job is to ENRICH it into a specific, actionable build brief.
+
+RULES:
+- Keep the CORE IDEA intact — never change what the user fundamentally wants
+- Add specific pages, sections, UI elements, content details, and tech suggestions
+- Suggest a cohesive design style (palette mood, typography feel, visual direction)
+- Recommend tech stack additions (Alpine.js, Chart.js, GSAP, Lucide icons, etc.)
+- If user history is provided, personalize to their known taste
+- Target 180-260 words for the enriched brief
+- Return ONLY the expanded brief text — no intro, no "Here's your expanded brief:", no markdown headers
+- Write it as if the user themselves wrote this detailed brief`;
+
+export async function copilotExpandPrompt(
+  prompt: string,
+  userProfile: null | { designTaste?: string; favoriteStack?: string[]; styleKeywords?: string[]; memory?: string },
+): Promise<string> {
+  try {
+    const profileCtx = userProfile
+      ? `\n\nUser's known preferences:\n- Design taste: ${userProfile.designTaste ?? "not set"}\n- Favorite libraries: ${(userProfile.favoriteStack ?? []).join(", ") || "none recorded"}\n- Past style: ${(userProfile.styleKeywords ?? []).join(", ") || "none"}\n- Memory: ${userProfile.memory ?? "first build"}`
+      : "";
+
+    const text = await aiComplete([
+      { role: "system", content: COPILOT_EXPAND_SYSTEM },
+      { role: "user", content: `Original brief: "${prompt}"${profileCtx}\n\nWrite the enriched build brief:` },
+    ], { model: FAST_MODEL, timeout: 18_000 });
+
+    const expanded = text?.trim() ?? "";
+    if (expanded.length < prompt.length + 30) return prompt;
+    return expanded;
+  } catch (err) {
+    logger.warn({ err: String(err) }, "copilotExpandPrompt failed; using original prompt");
+    return prompt;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// USER PREFERENCE EXTRACTION — Learn from each build (OpenClaw Memory)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export interface UserPreferencesSignal {
+  designTaste: string;
+  stack: string[];
+  siteType: string;
+  styleKeywords: string[];
+  colorPreferences: string[];
+  memory: string;
+}
+
+export async function extractUserPreferencesAI(
+  prompt: string,
+  files: SiteFiles,
+  analysis: SiteAnalysis,
+  score: DeliveryScore,
+  existingMemory: string | null,
+): Promise<UserPreferencesSignal> {
+  const fallback: UserPreferencesSignal = {
+    designTaste: analysis.styleHints[0] ?? "modern & clean",
+    stack: ["HTML5", "CSS3", "Alpine.js"],
+    siteType: analysis.type,
+    styleKeywords: analysis.styleHints.slice(0, 4),
+    colorPreferences: [],
+    memory: `Builds ${analysis.type} sites with ${analysis.styleHints[0] ?? "modern"} style.`,
+  };
+
+  try {
+    const cssContent = files["assets/styles.css"] ?? Object.values(files).find(f => f.includes("color:")) ?? "";
+    const colors = [...(cssContent.match(/#[0-9a-fA-F]{3,6}/g) ?? [])].slice(0, 6);
+    const techMatches = Object.values(files).join(" ").match(/Alpine\.js|Chart\.js|GSAP|Three\.js|Lucide|Tailwind|Bootstrap/gi) ?? [];
+    const detectedTech = [...new Set(techMatches)].slice(0, 5);
+
+    const text = await aiComplete([
+      { role: "system", content: `You are a user preference analyst for WebForge. After a build, extract what this user cares about for future personalization. Return ONLY JSON.` },
+      {
+        role: "user",
+        content: `Prompt: "${prompt}"\nSite type: ${analysis.type}\nStyle hints: ${analysis.styleHints.join(", ")}\nScore: ${score.overall}/100\nDetected libraries: ${detectedTech.join(", ") || "standard"}\nDetected colors: ${colors.join(", ") || "none"}\nPrevious memory: ${existingMemory ?? "none (first build)"}\n\nReturn:\n{"designTaste":"2-4 word style descriptor","stack":["lib1","lib2"],"siteType":"${analysis.type}","styleKeywords":["word1","word2"],"colorPreferences":["#hex"],"memory":"1 concise sentence about this user's preferences for future builds"}`,
+      },
+    ], { model: FAST_MODEL, jsonMode: true, timeout: 15_000 });
+
+    if (!text) throw new Error("empty preferences response");
+    const p = JSON.parse(text) as Partial<UserPreferencesSignal>;
+
+    return {
+      designTaste: p.designTaste ?? fallback.designTaste,
+      stack: Array.isArray(p.stack) ? p.stack.slice(0, 6) : (detectedTech.length ? detectedTech : fallback.stack),
+      siteType: p.siteType ?? fallback.siteType,
+      styleKeywords: Array.isArray(p.styleKeywords) ? p.styleKeywords.slice(0, 6) : fallback.styleKeywords,
+      colorPreferences: Array.isArray(p.colorPreferences) ? p.colorPreferences.slice(0, 4) : colors,
+      memory: p.memory ?? fallback.memory,
+    };
+  } catch (err) {
+    logger.warn({ err: String(err) }, "extractUserPreferencesAI failed; using fallback signals");
+    return fallback;
+  }
+}

@@ -876,6 +876,19 @@ function MessageBubble({ message }: { message: AgentMessage }) {
   }
 
   // Agent — render based on kind.
+  // Handle extended kinds emitted by the server that may not yet be in the generated TS type.
+  if ((message.kind as string) === "score_report") return <ScoreCard message={message} />;
+  if ((message.kind as string) === "copilot_expand") {
+    return (
+      <AgentBubble>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 5 }}>
+          <Feather name="zap" size={11} color={colors.accent} />
+          <MonoText style={{ color: colors.accent, fontSize: 9, letterSpacing: 1 }}>CO-PILOT ENRICHED</MonoText>
+        </View>
+        <Text style={{ color: colors.mutedForeground, fontSize: 13, lineHeight: 18 }}>{message.content}</Text>
+      </AgentBubble>
+    );
+  }
   switch (message.kind) {
     case "analysis":
       return <AnalysisCard message={message} />;
@@ -1257,6 +1270,107 @@ function PlanCard({ message }: { message: AgentMessage }) {
         </View>
       ) : null}
     </AgentBubble>
+  );
+}
+
+function ScoreCard({ message }: { message: AgentMessage }) {
+  const colors = useColors();
+  type ScoreData = {
+    overall?: number; featureDelivery?: number; seoScore?: number;
+    interactivity?: number; mobileReadiness?: number; designCoherence?: number;
+    pageCount?: { delivered: number; planned: number };
+    delivered?: string[]; missing?: string[]; suggestions?: string[];
+    summary?: string; passed?: boolean;
+  };
+  const score = (message.data as Record<string, unknown> | undefined)?.score as ScoreData | undefined;
+  if (!score) {
+    return (
+      <AgentBubble>
+        <Text style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{message.content}</Text>
+      </AgentBubble>
+    );
+  }
+  const overall = score.overall ?? 0;
+  const passed = score.passed ?? overall >= 60;
+  const statusColor = overall >= 80 ? colors.success : overall >= 60 ? "#F59E0B" : colors.destructive;
+  const stars = Math.round(overall / 20);
+  const metrics = [
+    { label: "Features", value: score.featureDelivery ?? 0, icon: "check-circle" as const },
+    { label: "SEO", value: score.seoScore ?? 0, icon: "search" as const },
+    { label: "Interactive", value: score.interactivity ?? 0, icon: "zap" as const },
+    { label: "Mobile", value: score.mobileReadiness ?? 0, icon: "smartphone" as const },
+    { label: "Design", value: score.designCoherence ?? 0, icon: "layers" as const },
+  ];
+  return (
+    <View style={{ borderRadius: 16, borderWidth: 1.5, borderColor: `${statusColor}55`, backgroundColor: `${statusColor}08`, overflow: "hidden", maxWidth: "92%" }}>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 14, paddingVertical: 11, backgroundColor: `${statusColor}18`, borderBottomWidth: 1, borderBottomColor: `${statusColor}30` }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+          <Feather name={passed ? "award" : "alert-triangle"} size={13} color={statusColor} />
+          <Text style={{ color: colors.foreground, fontFamily: "Inter_700Bold", fontSize: 13 }}>Build Score</Text>
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Text style={{ color: statusColor, fontFamily: "Inter_700Bold", fontSize: 22, letterSpacing: -0.5 }}>{overall}</Text>
+          <Text style={{ color: colors.mutedForeground, fontSize: 11 }}>/100</Text>
+          <View style={{ backgroundColor: passed ? `${colors.success}22` : `${colors.destructive}22`, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 }}>
+            <Text style={{ color: passed ? colors.success : colors.destructive, fontFamily: "Inter_700Bold", fontSize: 10, letterSpacing: 0.8 }}>{passed ? "PASS" : "FAIL"}</Text>
+          </View>
+        </View>
+      </View>
+      <View style={{ padding: 14, gap: 10 }}>
+        {score.summary ? (
+          <Text style={{ color: colors.mutedForeground, fontSize: 12, lineHeight: 17, fontStyle: "italic" }}>{score.summary}</Text>
+        ) : null}
+        <View style={{ flexDirection: "row", gap: 3, alignItems: "center" }}>
+          {[1,2,3,4,5].map(i => (
+            <Text key={i} style={{ color: i <= stars ? statusColor : colors.border, fontSize: 14 }}>{i <= stars ? "★" : "☆"}</Text>
+          ))}
+          {score.pageCount ? (
+            <MonoText style={{ color: colors.mutedForeground, fontSize: 10, marginLeft: 8 }}>
+              {score.pageCount.delivered}/{score.pageCount.planned} pages
+            </MonoText>
+          ) : null}
+        </View>
+        <View style={{ gap: 5 }}>
+          {metrics.map(m => {
+            const barColor = m.value >= 70 ? colors.success : m.value >= 45 ? "#F59E0B" : colors.destructive;
+            return (
+              <View key={m.label} style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+                <Feather name={m.icon} size={9} color={barColor} />
+                <Text style={{ color: colors.mutedForeground, fontSize: 10, width: 68 }}>{m.label}</Text>
+                <View style={{ flex: 1, height: 4, backgroundColor: colors.border, borderRadius: 2, overflow: "hidden" }}>
+                  <View style={{ width: `${m.value}%` as `${number}%`, height: "100%", backgroundColor: barColor, borderRadius: 2 }} />
+                </View>
+                <Text style={{ color: colors.mutedForeground, fontSize: 9, width: 26, textAlign: "right" }}>{m.value}%</Text>
+              </View>
+            );
+          })}
+        </View>
+        {score.delivered && score.delivered.length > 0 ? (
+          <View style={{ gap: 3 }}>
+            <MonoText style={{ color: colors.success, fontSize: 9, letterSpacing: 0.8 }}>✓ DELIVERED</MonoText>
+            {score.delivered.slice(0, 4).map((d, i) => (
+              <Text key={i} style={{ color: colors.foreground, fontSize: 11, lineHeight: 16 }}>· {d}</Text>
+            ))}
+          </View>
+        ) : null}
+        {score.missing && score.missing.length > 0 ? (
+          <View style={{ gap: 3 }}>
+            <MonoText style={{ color: "#F59E0B", fontSize: 9, letterSpacing: 0.8 }}>⚠ MISSING</MonoText>
+            {score.missing.slice(0, 3).map((m, i) => (
+              <Text key={i} style={{ color: colors.mutedForeground, fontSize: 11, lineHeight: 16 }}>· {m}</Text>
+            ))}
+          </View>
+        ) : null}
+        {score.suggestions && score.suggestions.length > 0 ? (
+          <View style={{ backgroundColor: `${colors.accent}12`, borderRadius: 8, padding: 10, gap: 4 }}>
+            <MonoText style={{ color: colors.accent, fontSize: 9, letterSpacing: 0.8 }}>💡 QUICK WINS</MonoText>
+            {score.suggestions.slice(0, 2).map((s, i) => (
+              <Text key={i} style={{ color: colors.foreground, fontSize: 11, lineHeight: 16 }}>{i + 1}. {s}</Text>
+            ))}
+          </View>
+        ) : null}
+      </View>
+    </View>
   );
 }
 
